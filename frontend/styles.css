@@ -12,6 +12,23 @@ body {
   flex-direction: column;
 }
 
+body.floor-editing {
+  height: 100vh;
+  overflow: hidden;
+}
+
+body.floor-editing .app {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body.floor-editing .floor-page,
+body.floor-editing .floor-plan-layout {
+  min-height: 0;
+  height: 100%;
+}
+
 .app-header {
   background: #111827;
   color: #f9fafb;
@@ -20,9 +37,10 @@ body {
 
 .app-header-content {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
 }
 
 .header-copy {
@@ -44,6 +62,15 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.header-actions.floor-edit-actions {
+  flex-direction: row;
+  align-items: center;
+}
+
+.header-actions.floor-edit-actions button {
+  width: auto;
 }
 
 .header-actions .ghost {
@@ -322,26 +349,69 @@ button:disabled {
   display: grid;
   gap: 0;
   grid-template-rows: auto 1fr auto;
-  min-height: 100%;
+  min-height: 0;
+  height: 100%;
 }
 
 .floor-plan-layout {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 16px;
+  column-gap: 16px;
+  row-gap: 10px;
   margin-top: 12px;
   align-items: start;
+  height: 100%;
+  min-height: 0;
 }
 
 .floor-plan-layout.is-editing {
-  grid-template-columns: minmax(240px, 320px) 1fr;
+  grid-template-columns: minmax(220px, 320px) 1fr;
+  grid-template-rows: minmax(0, 1fr) auto;
+  align-items: stretch;
+}
+
+.floor-plan-layout.is-editing:not(.has-floor-plan) {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto;
 }
 
 .floor-plan-layout .floor-plan {
   margin-top: 0;
 }
 
+.floor-plan-layout.is-editing .floor-plan {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  padding-bottom: 12px;
+}
+
+.floor-plan-layout.is-editing:not(.has-floor-plan) .floor-plan {
+  grid-column: 1;
+  grid-row: 1;
+}
+
 .floor-plan-actions {
+  grid-column: 1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-self: start;
+  position: static;
+  padding-bottom: 12px;
+}
+
+.floor-plan-actions .ghost {
+  margin-top: 0;
+}
+
+.floor-plan-modal .floor-plan-actions {
+  min-height: auto;
+}
+
+.floor-plan-spaces {
+  grid-column: 1;
+  grid-row: 1;
   background: #ffffff;
   border-radius: 12px;
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
@@ -349,11 +419,82 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: 260px;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
+  margin-bottom: 10px;
 }
 
-.floor-plan-actions .ghost {
-  margin-top: 0;
+.floor-plan-layout.is-editing .floor-plan-spaces {
+  height: auto;
+}
+
+.floor-spaces-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.add-space-btn {
+  flex-shrink: 0;
+}
+
+.floor-plan-spaces .floor-actions-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.floor-spaces-list {
+  display: grid;
+  gap: 5px;
+  grid-auto-rows: 30px;
+  align-content: start;
+  overflow-y: auto;
+  padding-right: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.space-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  padding: 0 12px;
+  height: 30px;
+  font-size: 14px;
+  color: #111827;
+}
+
+.space-list-item.is-selected {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.space-list-item:hover {
+  border-color: #d1d5db;
+  background: #f9fafb;
+}
+
+.space-list-item:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.space-color-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(17, 24, 39, 0.12);
+  flex-shrink: 0;
 }
 
 .floor-actions-title {
@@ -368,6 +509,10 @@ button:disabled {
 
 .floor-actions-cancel {
   margin-top: auto;
+}
+
+.header-actions .floor-actions-cancel {
+  margin-top: 0;
 }
 
 .muted {
@@ -575,6 +720,10 @@ button:disabled {
 @media (max-width: 900px) {
   .floor-plan-layout {
     grid-template-columns: 1fr;
+  }
+
+  .floor-plan-spaces {
+    order: 2;
   }
 
   .floor-plan-actions {

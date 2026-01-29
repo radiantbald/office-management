@@ -514,10 +514,6 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			payload.PlanSVG = strings.TrimSpace(payload.PlanSVG)
-			if payload.PlanSVG == "" {
-				respondError(w, http.StatusBadRequest, "plan_svg is required")
-				return
-			}
 			updated, err := a.updateFloorPlan(id, payload.PlanSVG)
 			if err != nil {
 				if errors.Is(err, errNotFound) {
@@ -883,7 +879,16 @@ func (a *app) getFloor(id int64) (floor, error) {
 }
 
 func (a *app) updateFloorPlan(id int64, planSVG string) (floor, error) {
-	result, err := a.db.Exec(`UPDATE floors SET plan_svg = ? WHERE id = ?`, planSVG, id)
+	tx, err := a.db.Begin()
+	if err != nil {
+		return floor{}, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	result, err := tx.Exec(`UPDATE floors SET plan_svg = ? WHERE id = ?`, planSVG, id)
 	if err != nil {
 		return floor{}, err
 	}
@@ -893,6 +898,14 @@ func (a *app) updateFloorPlan(id int64, planSVG string) (floor, error) {
 	}
 	if rows == 0 {
 		return floor{}, errNotFound
+	}
+	if planSVG == "" {
+		if _, err = tx.Exec(`DELETE FROM spaces WHERE floor_id = ?`, id); err != nil {
+			return floor{}, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return floor{}, err
 	}
 	return a.getFloor(id)
 }

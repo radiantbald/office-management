@@ -15,7 +15,7 @@
           </div>
           <p id="pageSubtitle">Добавляйте здания и выбирайте нужное из списка.</p>
         </div>
-        <div class="header-actions">
+        <div id="headerActions" class="header-actions">
           <button id="openAddModalBtn" class="primary" type="button">Добавить здание</button>
           <button id="editBuildingBtn" class="ghost is-hidden" type="button">Редактировать</button>
           <button id="editFloorBtn" class="ghost is-hidden" type="button">Редактировать</button>
@@ -52,21 +52,34 @@
         </div>
         <div id="floorPlanLayout" class="floor-plan-layout">
           <aside id="floorPlanActions" class="floor-plan-actions is-hidden" aria-hidden="true">
-            <div class="floor-actions-section">
-              <h3 class="floor-actions-title">Действия</h3>
-              <label class="field">
-                <span id="floorPlanActionLabel">План этажа (изображение)</span>
-                <input id="floorPlanFile" type="file" accept="image/*" />
-                <span class="hint">Файл будет преобразован в SVG и сохранен.</span>
-              </label>
-              <button id="uploadFloorPlanBtn" class="primary" type="button">Загрузить план</button>
-            </div>
-            <div class="floor-actions-section">
-              <button id="addSpaceBtn" class="ghost" type="button">Добавить пространство</button>
-            </div>
+            <button id="openFloorPlanModalBtn" class="primary" type="button">Изменить план</button>
             <button id="cancelFloorEditBtn" class="ghost floor-actions-cancel" type="button">
               Отменить
             </button>
+          </aside>
+          <aside id="floorPlanSpaces" class="floor-plan-spaces is-hidden" aria-hidden="true">
+            <div class="floor-spaces-header">
+              <h3 class="floor-actions-title">Пространства</h3>
+              <button
+                id="addSpaceBtn"
+                class="icon-button add-space-btn"
+                type="button"
+                aria-label="Добавить пространство"
+                title="Добавить пространство"
+                data-label="Добавить пространство"
+                data-active-label="Отменить выделение"
+                data-icon="+"
+                data-active-icon="×"
+              >
+                +
+              </button>
+            </div>
+            <div class="floor-actions-section">
+              <div id="floorSpacesList" class="floor-spaces-list"></div>
+              <div id="floorSpacesEmpty" class="placeholder app-empty is-hidden">
+                Пространств пока нет.
+              </div>
+            </div>
           </aside>
           <div class="floor-plan">
             <div id="floorPlanPreview" class="floor-plan-preview">
@@ -77,11 +90,35 @@
             </div>
           </div>
         </div>
-        <div class="card">
-          <div id="floorStatus" class="status" role="status" aria-live="polite"></div>
-        </div>
       </section>
     </main>
+
+    <div id="floorPlanModal" class="modal floor-plan-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="floorPlanModalTitle">
+        <div class="modal-header">
+          <h2 id="floorPlanModalTitle">Добавить план этажа</h2>
+          <button id="floorPlanModalCloseBtn" class="icon-button" type="button" data-modal-close="true">
+            ✕
+          </button>
+        </div>
+        <div id="floorPlanModalBody">
+          <div class="floor-actions-section">
+            <label class="field">
+              <span id="floorPlanActionLabel">План этажа (изображение)</span>
+              <input id="floorPlanFile" type="file" accept="image/*" />
+              <span class="hint">Файл будет преобразован в SVG и сохранен.</span>
+            </label>
+            <button id="uploadFloorPlanBtn" class="primary" type="button">Загрузить план</button>
+          </div>
+          <div class="form-actions">
+            <button id="deleteFloorPlanBtn" class="context-action danger is-hidden" type="button">
+              Удалить план
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div id="buildingModal" class="modal" aria-hidden="true">
       <div class="modal-backdrop" data-modal-close="true"></div>
