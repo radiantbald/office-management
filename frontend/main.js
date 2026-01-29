@@ -11,7 +11,9 @@ const imagePreviewImg = document.getElementById("imagePreviewImg");
 const removeImageBtn = document.getElementById("removeImageBtn");
 const imageHint = document.getElementById("imageHint");
 const buildingModal = document.getElementById("buildingModal");
-const floorPlanModal = document.getElementById("floorPlanModal");
+const floorPlanLayout = document.getElementById("floorPlanLayout");
+const floorPlanActions = document.getElementById("floorPlanActions");
+const floorPlanActionLabel = document.getElementById("floorPlanActionLabel");
 const modalTitle = document.getElementById("modalTitle");
 const floorsFields = document.getElementById("floorsFields");
 const buildingUndergroundFloorsInput = document.getElementById("buildingUndergroundFloors");
@@ -38,6 +40,16 @@ const floorPlanPlaceholder = document.getElementById("floorPlanPlaceholder");
 const floorPlanCanvas = document.getElementById("floorPlanCanvas");
 const floorPlanFile = document.getElementById("floorPlanFile");
 const uploadFloorPlanBtn = document.getElementById("uploadFloorPlanBtn");
+const cancelFloorEditBtn = document.getElementById("cancelFloorEditBtn");
+const addSpaceBtn = document.getElementById("addSpaceBtn");
+const spaceModal = document.getElementById("spaceModal");
+const spaceForm = document.getElementById("spaceForm");
+const spaceNameField = document.getElementById("spaceNameField");
+const spaceColorInput = document.getElementById("spaceColorInput");
+const spaceSaveBtn = document.getElementById("spaceSaveBtn");
+const spaceModalCloseBtn = document.getElementById("spaceModalCloseBtn");
+const spaceCancelBtn = document.getElementById("spaceCancelBtn");
+const spaceStatus = document.getElementById("spaceStatus");
 const breadcrumbBuildings = document.getElementById("breadcrumbBuildings");
 const breadcrumbBuilding = document.getElementById("breadcrumbBuilding");
 
@@ -45,8 +57,42 @@ let buildings = [];
 let editingId = null;
 let currentBuilding = null;
 let currentFloor = null;
+let isFloorEditing = false;
+let hasFloorPlan = false;
 let removeImage = false;
 let previewObjectUrl = null;
+const svgNamespace = "http://www.w3.org/2000/svg";
+const lassoDefaults = {
+  kind: "polygon",
+  fillOpacity: 0.35,
+};
+const lassoState = {
+  active: false,
+  points: [],
+  pendingPoints: null,
+  svg: null,
+  spacesLayer: null,
+  previewLayer: null,
+  previewPolygon: null,
+  handlesLayer: null,
+};
+const spaceEditDefaults = {
+  handleRadius: 4,
+  edgeSnapDistance: 8,
+};
+const spaceEditState = {
+  selectedPolygon: null,
+  selectedLabel: null,
+  handleElements: [],
+  points: [],
+  draggingIndex: null,
+  isDragging: false,
+  dragPointerId: null,
+  lastHandleClickTime: 0,
+  lastHandleClickIndex: null,
+};
+let floorPlanDirty = false;
+const addSpaceBtnLabel = addSpaceBtn ? addSpaceBtn.textContent : "Добавить пространство";
 const fallbackBuildingImages = [
   "/assets/buildings/1.png",
   "/assets/buildings/2.png",
@@ -113,6 +159,54 @@ const clearFloorStatus = () => {
   floorStatus.dataset.tone = "";
 };
 
+const setSpaceStatus = (message, tone = "info") => {
+  if (!spaceStatus) {
+    return;
+  }
+  spaceStatus.textContent = message;
+  spaceStatus.dataset.tone = tone;
+};
+
+const clearSpaceStatus = () => {
+  if (!spaceStatus) {
+    return;
+  }
+  spaceStatus.textContent = "";
+  spaceStatus.dataset.tone = "";
+};
+
+const openSpaceModal = () => {
+  if (!spaceModal) {
+    return;
+  }
+  spaceModal.classList.add("is-open");
+  spaceModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  clearSpaceStatus();
+  if (spaceNameField) {
+    spaceNameField.value = "";
+    spaceNameField.focus();
+  }
+  if (spaceColorInput && !spaceColorInput.value) {
+    spaceColorInput.value = "#60a5fa";
+  }
+};
+
+const closeSpaceModal = () => {
+  if (!spaceModal) {
+    return;
+  }
+  spaceModal.classList.remove("is-open");
+  spaceModal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+  clearSpaceStatus();
+  if (spaceForm) {
+    spaceForm.reset();
+  }
+  lassoState.pendingPoints = null;
+  lassoState.points = [];
+};
+
 const showImagePreview = (src) => {
   if (!imagePreview || !imagePreviewImg) {
     return;
@@ -164,14 +258,551 @@ const resetFloorPlanTransform = () => {
   applyFloorPlanTransform();
 };
 
+const ensureSpaceLayers = (svg) => {
+  if (!svg) {
+    return;
+  }
+  let spacesLayer = svg.querySelector("#spacesLayer");
+  if (!spacesLayer) {
+    spacesLayer = document.createElementNS(svgNamespace, "g");
+    spacesLayer.setAttribute("id", "spacesLayer");
+    svg.appendChild(spacesLayer);
+  }
+  let previewLayer = svg.querySelector("#lassoLayer");
+  if (!previewLayer) {
+    previewLayer = document.createElementNS(svgNamespace, "g");
+    previewLayer.setAttribute("id", "lassoLayer");
+    svg.appendChild(previewLayer);
+  }
+  let handlesLayer = svg.querySelector("#spaceHandlesLayer");
+  if (!handlesLayer) {
+    handlesLayer = document.createElementNS(svgNamespace, "g");
+    handlesLayer.setAttribute("id", "spaceHandlesLayer");
+    svg.appendChild(handlesLayer);
+  }
+  lassoState.svg = svg;
+  lassoState.spacesLayer = spacesLayer;
+  lassoState.previewLayer = previewLayer;
+  lassoState.handlesLayer = handlesLayer;
+};
+
+const resetLassoPreview = () => {
+  if (lassoState.previewPolygon) {
+    lassoState.previewPolygon.remove();
+  }
+  lassoState.previewPolygon = null;
+};
+
+const setLassoActive = (active) => {
+  lassoState.active = active;
+  if (floorPlanPreview) {
+    floorPlanPreview.classList.toggle("is-lasso", active);
+  }
+  if (addSpaceBtn) {
+    addSpaceBtn.textContent = active ? "Отменить выделение" : addSpaceBtnLabel;
+    addSpaceBtn.setAttribute("aria-pressed", String(active));
+  }
+};
+
+const getSvgPoint = (event) => {
+  const svg = lassoState.svg;
+  if (!svg) {
+    return null;
+  }
+  const ctm = svg.getScreenCTM();
+  if (!ctm) {
+    return null;
+  }
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const svgPoint = point.matrixTransform(ctm.inverse());
+  return { x: svgPoint.x, y: svgPoint.y };
+};
+
+const updateLassoPreview = (cursorPoint) => {
+  if (!lassoState.previewPolygon) {
+    return;
+  }
+  const points = [...lassoState.points];
+  if (cursorPoint) {
+    points.push(cursorPoint);
+  }
+  if (points.length === 0) {
+    lassoState.previewPolygon.removeAttribute("points");
+    return;
+  }
+  lassoState.previewPolygon.setAttribute(
+    "points",
+    points.map((point) => `${point.x},${point.y}`).join(" ")
+  );
+};
+
+const startLassoMode = () => {
+  if (!currentFloor) {
+    setFloorStatus("Сначала выберите этаж.", "error");
+    return;
+  }
+  if (!isFloorEditing) {
+    setFloorStatus("Сначала включите режим редактирования.", "error");
+    return;
+  }
+  if (!hasFloorPlan || !lassoState.svg) {
+    setFloorStatus("Сначала загрузите план этажа.", "error");
+    return;
+  }
+  setLassoActive(true);
+  clearSpaceSelection();
+  ensureSpaceLayers(lassoState.svg);
+  lassoState.points = [];
+  lassoState.pendingPoints = null;
+  resetLassoPreview();
+  if (lassoState.previewLayer) {
+    const previewPolygon = document.createElementNS(svgNamespace, "polygon");
+    previewPolygon.classList.add("lasso-preview");
+    lassoState.previewLayer.appendChild(previewPolygon);
+    lassoState.previewPolygon = previewPolygon;
+  }
+  setFloorStatus(
+    "Кликните по плану, чтобы поставить точки. Двойной клик — завершить, Esc — отменить.",
+    "info"
+  );
+};
+
+const cancelLassoMode = (message = "") => {
+  if (!lassoState.active && lassoState.points.length === 0) {
+    return;
+  }
+  setLassoActive(false);
+  lassoState.points = [];
+  lassoState.pendingPoints = null;
+  resetLassoPreview();
+  if (message) {
+    setFloorStatus(message, "info");
+  }
+};
+
+const finishLassoMode = () => {
+  if (lassoState.points.length < 3) {
+    setFloorStatus("Нужно минимум 3 точки для пространства.", "error");
+    return;
+  }
+  lassoState.pendingPoints = [...lassoState.points];
+  setLassoActive(false);
+  resetLassoPreview();
+  openSpaceModal();
+};
+
+const createSpacePolygon = (points, name, color) => {
+  if (!lassoState.svg || !lassoState.spacesLayer || points.length < 3) {
+    return null;
+  }
+  const polygon = document.createElementNS(svgNamespace, "polygon");
+  polygon.classList.add("space-polygon");
+  polygon.setAttribute(
+    "points",
+    points.map((point) => `${point.x},${point.y}`).join(" ")
+  );
+  polygon.setAttribute("fill", color);
+  polygon.setAttribute("data-space-name", name);
+  polygon.setAttribute("data-space-color", color);
+
+  const centroid = points.reduce(
+    (acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }),
+    { x: 0, y: 0 }
+  );
+  centroid.x /= points.length;
+  centroid.y /= points.length;
+
+  const label = document.createElementNS(svgNamespace, "text");
+  label.classList.add("space-label");
+  label.setAttribute("x", centroid.x.toString());
+  label.setAttribute("y", centroid.y.toString());
+  label.setAttribute("text-anchor", "middle");
+  label.setAttribute("dominant-baseline", "middle");
+  label.setAttribute("data-space-name", name);
+  label.textContent = name;
+
+  lassoState.spacesLayer.appendChild(polygon);
+  lassoState.spacesLayer.appendChild(label);
+  return { polygon, label };
+};
+
+const escapeSelectorValue = (value) => {
+  if (window.CSS && typeof window.CSS.escape === "function") {
+    return window.CSS.escape(value);
+  }
+  return value.replace(/["\\]/g, "\\$&");
+};
+
+const parsePolygonPoints = (polygon) => {
+  const raw = polygon.getAttribute("points");
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .trim()
+    .split(/\s+/)
+    .map((pair) => {
+      const [x, y] = pair.split(",").map((value) => Number(value));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return null;
+      }
+      return { x, y };
+    })
+    .filter(Boolean);
+};
+
+const stringifyPoints = (points) =>
+  points.map((point) => `${point.x},${point.y}`).join(" ");
+
+const stripEditorArtifacts = (svg) => {
+  if (!svg) {
+    return;
+  }
+  const handlesLayer = svg.querySelector("#spaceHandlesLayer");
+  if (handlesLayer) {
+    handlesLayer.remove();
+  }
+  svg.querySelectorAll(".space-handle").forEach((handle) => handle.remove());
+  svg.querySelectorAll(".space-polygon.is-selected").forEach((polygon) => {
+    polygon.classList.remove("is-selected");
+  });
+};
+
+const getCleanFloorPlanMarkup = () => {
+  if (!lassoState.svg) {
+    return "";
+  }
+  const clone = lassoState.svg.cloneNode(true);
+  stripEditorArtifacts(clone);
+  return new XMLSerializer().serializeToString(clone);
+};
+
+const getPolygonLabel = (polygon) => {
+  if (!lassoState.spacesLayer) {
+    return null;
+  }
+  const name = polygon.getAttribute("data-space-name");
+  if (name) {
+    const escapedName = escapeSelectorValue(name);
+    const found = lassoState.spacesLayer.querySelector(
+      `.space-label[data-space-name="${escapedName}"]`
+    );
+    if (found) {
+      return found;
+    }
+  }
+  const nextElement = polygon.nextElementSibling;
+  if (nextElement && nextElement.classList.contains("space-label")) {
+    if (name) {
+      nextElement.setAttribute("data-space-name", name);
+    }
+    return nextElement;
+  }
+  return null;
+};
+
+const updatePolygonLabelPosition = (polygon, points) => {
+  const label = getPolygonLabel(polygon);
+  if (!label || points.length === 0) {
+    return;
+  }
+  const centroid = points.reduce(
+    (acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }),
+    { x: 0, y: 0 }
+  );
+  centroid.x /= points.length;
+  centroid.y /= points.length;
+  label.setAttribute("x", centroid.x.toString());
+  label.setAttribute("y", centroid.y.toString());
+};
+
+const clearSpaceSelection = () => {
+  if (spaceEditState.handleElements.length > 0) {
+    spaceEditState.handleElements.forEach((handle) => handle.remove());
+  }
+  if (spaceEditState.selectedPolygon) {
+    spaceEditState.selectedPolygon.classList.remove("is-selected");
+  }
+  spaceEditState.selectedPolygon = null;
+  spaceEditState.selectedLabel = null;
+  spaceEditState.handleElements = [];
+  spaceEditState.points = [];
+  spaceEditState.draggingIndex = null;
+  spaceEditState.isDragging = false;
+  spaceEditState.dragPointerId = null;
+};
+
+const rebuildSpaceHandles = () => {
+  if (!lassoState.handlesLayer) {
+    return;
+  }
+  spaceEditState.handleElements.forEach((handle) => handle.remove());
+  spaceEditState.handleElements = spaceEditState.points.map((point, index) => {
+    const handle = document.createElementNS(svgNamespace, "circle");
+    handle.classList.add("space-handle");
+    handle.setAttribute("cx", point.x.toString());
+    handle.setAttribute("cy", point.y.toString());
+    handle.setAttribute("r", spaceEditDefaults.handleRadius.toString());
+    handle.dataset.index = String(index);
+    handle.addEventListener("pointerdown", (event) => {
+      if (!isFloorEditing || lassoState.active) {
+        return;
+      }
+      const now = event.timeStamp || Date.now();
+      const isDoubleClick =
+        spaceEditState.lastHandleClickIndex === index &&
+        now - spaceEditState.lastHandleClickTime < 300;
+      spaceEditState.lastHandleClickTime = now;
+      spaceEditState.lastHandleClickIndex = index;
+      if (isDoubleClick) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (spaceEditState.points.length <= 3) {
+          setFloorStatus("У пространства должно быть минимум 3 точки.", "error");
+          return;
+        }
+        spaceEditState.points.splice(index, 1);
+        updateSelectedPolygon();
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      spaceEditState.draggingIndex = index;
+      spaceEditState.isDragging = true;
+      spaceEditState.dragPointerId = event.pointerId;
+      if (floorPlanPreview) {
+        floorPlanPreview.setPointerCapture(event.pointerId);
+      }
+    });
+    lassoState.handlesLayer.appendChild(handle);
+    return handle;
+  });
+};
+
+const updateSpaceHandlesPosition = () => {
+  if (spaceEditState.handleElements.length === 0) {
+    return;
+  }
+  spaceEditState.handleElements.forEach((handle, index) => {
+    const point = spaceEditState.points[index];
+    if (!point) {
+      return;
+    }
+    handle.setAttribute("cx", point.x.toString());
+    handle.setAttribute("cy", point.y.toString());
+  });
+};
+
+const updateSelectedPolygon = () => {
+  if (!spaceEditState.selectedPolygon) {
+    return;
+  }
+  spaceEditState.selectedPolygon.setAttribute("points", stringifyPoints(spaceEditState.points));
+  updatePolygonLabelPosition(spaceEditState.selectedPolygon, spaceEditState.points);
+  if (spaceEditState.handleElements.length !== spaceEditState.points.length) {
+    rebuildSpaceHandles();
+  } else {
+    updateSpaceHandlesPosition();
+  }
+  floorPlanDirty = true;
+};
+
+const selectSpacePolygon = (polygon) => {
+  clearSpaceSelection();
+  spaceEditState.selectedPolygon = polygon;
+  spaceEditState.selectedLabel = getPolygonLabel(polygon);
+  spaceEditState.points = parsePolygonPoints(polygon);
+  polygon.classList.add("is-selected");
+  rebuildSpaceHandles();
+};
+
+const distanceToSegment = (point, start, end) => {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  if (dx === 0 && dy === 0) {
+    return Math.hypot(point.x - start.x, point.y - start.y);
+  }
+  const t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy);
+  const clamped = Math.min(Math.max(t, 0), 1);
+  const projX = start.x + clamped * dx;
+  const projY = start.y + clamped * dy;
+  return Math.hypot(point.x - projX, point.y - projY);
+};
+
+const findEdgeInsertionIndex = (points, cursorPoint, tolerance = spaceEditDefaults.edgeSnapDistance) => {
+  if (points.length < 2) {
+    return null;
+  }
+  let bestIndex = null;
+  let bestDistance = Infinity;
+  points.forEach((point, index) => {
+    const nextPoint = points[(index + 1) % points.length];
+    const distance = distanceToSegment(cursorPoint, point, nextPoint);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  if (bestDistance <= tolerance) {
+    return bestIndex;
+  }
+  return null;
+};
+
+const getEdgeSnapTolerance = () => {
+  const scale = floorPlanState.scale || 1;
+  const scaled = spaceEditDefaults.edgeSnapDistance / Math.max(scale, 0.1);
+  return Math.min(Math.max(scaled, 4), 24);
+};
+
+const findSpacePolygonFromEvent = (event) => {
+  const target = event.target;
+  if (target instanceof SVGElement) {
+    const polygonTarget =
+      typeof target.closest === "function" ? target.closest(".space-polygon") : null;
+    if (polygonTarget && polygonTarget instanceof SVGElement) {
+      return polygonTarget;
+    }
+    if (target.classList.contains("space-polygon")) {
+      return target;
+    }
+  }
+  if (typeof event.composedPath === "function") {
+    const path = event.composedPath();
+    const polygonInPath = path.find(
+      (node) => node instanceof SVGElement && node.classList?.contains("space-polygon")
+    );
+    if (polygonInPath) {
+      return polygonInPath;
+    }
+  }
+  if (typeof event.clientX === "number" && typeof event.clientY === "number") {
+    const hit = document.elementFromPoint(event.clientX, event.clientY);
+    if (hit instanceof SVGElement) {
+      const polygonHit =
+        typeof hit.closest === "function" ? hit.closest(".space-polygon") : null;
+      if (polygonHit && polygonHit instanceof SVGElement) {
+        return polygonHit;
+      }
+      if (hit.classList.contains("space-polygon")) {
+        return hit;
+      }
+    }
+  }
+  return null;
+};
+
+const bindSpaceInteractions = (svg) => {
+  if (!svg || svg.dataset.spaceInteractions === "true") {
+    return;
+  }
+  svg.dataset.spaceInteractions = "true";
+  svg.addEventListener("dblclick", (event) => {
+    if (!isFloorEditing || lassoState.active) {
+      return;
+    }
+    const polygon = findSpacePolygonFromEvent(event);
+    if (polygon) {
+      event.preventDefault();
+      event.stopPropagation();
+      selectSpacePolygon(polygon);
+    }
+  });
+  svg.addEventListener("click", (event) => {
+    if (!isFloorEditing || lassoState.active) {
+      return;
+    }
+    if (event.detail && event.detail > 1) {
+      return;
+    }
+    const target = event.target;
+    const handleTarget =
+      target instanceof SVGElement && typeof target.closest === "function"
+        ? target.closest(".space-handle")
+        : null;
+    if (handleTarget || (target instanceof SVGElement && target.classList.contains("space-handle"))) {
+      return;
+    }
+    const polygon = findSpacePolygonFromEvent(event);
+    if (polygon) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (spaceEditState.selectedPolygon !== polygon) {
+        selectSpacePolygon(polygon);
+      }
+      const point = getSvgPoint(event);
+      if (!point) {
+        return;
+      }
+      const tolerance = getEdgeSnapTolerance();
+      const insertionIndex = findEdgeInsertionIndex(spaceEditState.points, point, tolerance);
+      if (insertionIndex === null) {
+        return;
+      }
+      spaceEditState.points.splice(insertionIndex + 1, 0, point);
+      updateSelectedPolygon();
+      return;
+    }
+    clearSpaceSelection();
+  });
+};
+
+const updateFloorPlanActionLabel = () => {
+  if (uploadFloorPlanBtn) {
+    uploadFloorPlanBtn.textContent = hasFloorPlan ? "Изменить план" : "Загрузить план";
+  }
+  if (floorPlanActionLabel) {
+    floorPlanActionLabel.textContent = hasFloorPlan
+      ? "Новый план этажа (изображение)"
+      : "План этажа (изображение)";
+  }
+};
+
+const resetFloorEditForm = () => {
+  if (floorPlanFile) {
+    floorPlanFile.value = "";
+  }
+  cancelLassoMode();
+  closeSpaceModal();
+};
+
+const setFloorEditMode = (editing) => {
+  isFloorEditing = editing;
+  if (floorPlanLayout) {
+    floorPlanLayout.classList.toggle("is-editing", editing);
+  }
+  if (floorPlanActions) {
+    floorPlanActions.classList.toggle("is-hidden", !editing);
+    floorPlanActions.setAttribute("aria-hidden", String(!editing));
+  }
+  if (editFloorBtn) {
+    editFloorBtn.textContent = editing ? "Сохранить" : "Редактировать";
+    editFloorBtn.classList.toggle("primary", editing);
+    editFloorBtn.classList.toggle("ghost", !editing);
+  }
+  if (!editing) {
+    clearSpaceSelection();
+    resetFloorEditForm();
+  }
+};
+
 const renderFloorPlan = (svgMarkup) => {
   if (!floorPlanPreview || !floorPlanPlaceholder || !floorPlanCanvas) {
     return;
   }
+  floorPlanDirty = false;
+  clearSpaceSelection();
+  hasFloorPlan = Boolean(svgMarkup);
+  updateFloorPlanActionLabel();
   floorPlanCanvas.innerHTML = "";
   if (!svgMarkup) {
     floorPlanPreview.classList.add("is-hidden");
     floorPlanPlaceholder.classList.remove("is-hidden");
+    lassoState.svg = null;
+    lassoState.spacesLayer = null;
+    lassoState.previewLayer = null;
     return;
   }
   floorPlanPreview.classList.remove("is-hidden");
@@ -179,6 +810,7 @@ const renderFloorPlan = (svgMarkup) => {
   floorPlanCanvas.innerHTML = svgMarkup;
   const svg = floorPlanCanvas.querySelector("svg");
   if (svg) {
+    stripEditorArtifacts(svg);
     if (!svg.hasAttribute("viewBox")) {
       const width = parseFloat(svg.getAttribute("width"));
       const height = parseFloat(svg.getAttribute("height"));
@@ -189,6 +821,8 @@ const renderFloorPlan = (svgMarkup) => {
     svg.setAttribute("width", "100%");
     svg.setAttribute("height", "100%");
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    ensureSpaceLayers(svg);
+    bindSpaceInteractions(svg);
   }
   resetFloorPlanTransform();
 };
@@ -280,6 +914,7 @@ const setPageMode = (mode) => {
     return;
   }
   if (mode === "building") {
+    setFloorEditMode(false);
     buildingsPage.classList.add("is-hidden");
     buildingPage.classList.remove("is-hidden");
     if (floorPage) {
@@ -301,6 +936,7 @@ const setPageMode = (mode) => {
     return;
   }
   if (mode === "floor") {
+    setFloorEditMode(false);
     buildingsPage.classList.add("is-hidden");
     buildingPage.classList.add("is-hidden");
     if (floorPage) {
@@ -321,6 +957,7 @@ const setPageMode = (mode) => {
     }
     return;
   }
+  setFloorEditMode(false);
   buildingsPage.classList.remove("is-hidden");
   buildingPage.classList.add("is-hidden");
   if (floorPage) {
@@ -420,35 +1057,6 @@ const closeModal = () => {
   buildingModal.setAttribute("aria-hidden", "true");
   document.body.classList.remove("modal-open");
   clearStatus();
-};
-
-const resetFloorPlanUpload = () => {
-  if (floorPlanFile) {
-    floorPlanFile.value = "";
-  }
-};
-
-const openFloorPlanModal = () => {
-  if (!currentFloor) {
-    setFloorStatus("Сначала выберите этаж.", "error");
-    return;
-  }
-  clearFloorStatus();
-  resetFloorPlanUpload();
-  if (floorPlanModal) {
-    floorPlanModal.classList.add("is-open");
-    floorPlanModal.setAttribute("aria-hidden", "false");
-  }
-  document.body.classList.add("modal-open");
-};
-
-const closeFloorPlanModal = () => {
-  if (floorPlanModal) {
-    floorPlanModal.classList.remove("is-open");
-    floorPlanModal.setAttribute("aria-hidden", "true");
-  }
-  document.body.classList.remove("modal-open");
-  resetFloorPlanUpload();
 };
 
 const openEditModal = () => {
@@ -642,11 +1250,9 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     }
 
     const floorDetails = await apiRequest(`/api/floors/${floor.id}`);
-    if (floorDetails && floorDetails.plan_svg) {
-      renderFloorPlan(floorDetails.plan_svg);
-    } else {
-      renderFloorPlan("");
-    }
+    const planSvg = floorDetails && floorDetails.plan_svg ? floorDetails.plan_svg : "";
+    currentFloor = { ...floor, plan_svg: planSvg };
+    renderFloorPlan(planSvg);
   } catch (error) {
     setFloorStatus(error.message, "error");
   }
@@ -800,8 +1406,41 @@ if (deleteBuildingBtn) {
 }
 
 if (editFloorBtn) {
-  editFloorBtn.addEventListener("click", () => {
-    openFloorPlanModal();
+  editFloorBtn.addEventListener("click", async () => {
+    if (!currentFloor) {
+      setFloorStatus("Сначала выберите этаж.", "error");
+      return;
+    }
+    clearFloorStatus();
+    if (isFloorEditing) {
+      if (floorPlanDirty && lassoState.svg) {
+        editFloorBtn.disabled = true;
+        try {
+          const svgMarkup = getCleanFloorPlanMarkup();
+          const updated = await apiRequest(`/api/floors/${currentFloor.id}`, {
+            method: "PUT",
+            body: JSON.stringify({ plan_svg: svgMarkup }),
+          });
+          currentFloor = { ...currentFloor, plan_svg: updated.plan_svg || svgMarkup };
+          floorPlanDirty = false;
+          setFloorStatus("Изменения плана сохранены.", "success");
+        } catch (error) {
+          setFloorStatus(error.message, "error");
+          return;
+        } finally {
+          editFloorBtn.disabled = false;
+        }
+      }
+      setFloorEditMode(false);
+      return;
+    }
+    setFloorEditMode(true);
+  });
+}
+
+if (cancelFloorEditBtn) {
+  cancelFloorEditBtn.addEventListener("click", () => {
+    setFloorEditMode(false);
   });
 }
 
@@ -809,6 +1448,10 @@ if (uploadFloorPlanBtn) {
   uploadFloorPlanBtn.addEventListener("click", async () => {
     if (!currentFloor) {
       setFloorStatus("Сначала выберите этаж.", "error");
+      return;
+    }
+    if (!isFloorEditing) {
+      setFloorStatus("Сначала включите режим редактирования.", "error");
       return;
     }
     if (!floorPlanFile || !floorPlanFile.files || !floorPlanFile.files[0]) {
@@ -823,15 +1466,83 @@ if (uploadFloorPlanBtn) {
         method: "PUT",
         body: JSON.stringify({ plan_svg: svgMarkup }),
       });
-      currentFloor = updated;
+      currentFloor = { ...currentFloor, plan_svg: updated.plan_svg || svgMarkup };
       renderFloorPlan(updated.plan_svg || svgMarkup);
       floorPlanFile.value = "";
       setFloorStatus("План этажа обновлен.", "success");
-      closeFloorPlanModal();
     } catch (error) {
       setFloorStatus(error.message, "error");
     } finally {
       uploadFloorPlanBtn.disabled = false;
+    }
+  });
+}
+
+if (addSpaceBtn) {
+  addSpaceBtn.addEventListener("click", async () => {
+    if (lassoState.active) {
+      cancelLassoMode("Выделение отменено.");
+      return;
+    }
+    clearFloorStatus();
+    startLassoMode();
+  });
+}
+
+if (spaceForm) {
+  spaceForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!currentFloor) {
+      setSpaceStatus("Сначала выберите этаж.", "error");
+      return;
+    }
+    const points = lassoState.pendingPoints;
+    if (!points || points.length < 3) {
+      setSpaceStatus("Сначала выделите область на плане.", "error");
+      return;
+    }
+    const name = spaceNameField ? spaceNameField.value.trim() : "";
+    const color = spaceColorInput && spaceColorInput.value ? spaceColorInput.value : "#60a5fa";
+    if (!name) {
+      setSpaceStatus("Укажите название пространства.", "error");
+      return;
+    }
+    clearSpaceStatus();
+    if (spaceSaveBtn) {
+      spaceSaveBtn.disabled = true;
+    }
+    let createdElements = null;
+    try {
+      createdElements = createSpacePolygon(points, name, color);
+      if (!createdElements || !lassoState.svg) {
+        throw new Error("Не удалось создать пространство на плане.");
+      }
+      const svgMarkup = new XMLSerializer().serializeToString(lassoState.svg);
+      await apiRequest("/api/spaces", {
+        method: "POST",
+        body: JSON.stringify({
+          floor_id: currentFloor.id,
+          name,
+          kind: lassoDefaults.kind,
+        }),
+      });
+      const updated = await apiRequest(`/api/floors/${currentFloor.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ plan_svg: svgMarkup }),
+      });
+      currentFloor = { ...currentFloor, plan_svg: updated.plan_svg || svgMarkup };
+      setFloorStatus("Пространство добавлено.", "success");
+      closeSpaceModal();
+    } catch (error) {
+      if (createdElements) {
+        createdElements.polygon.remove();
+        createdElements.label.remove();
+      }
+      setSpaceStatus(error.message, "error");
+    } finally {
+      if (spaceSaveBtn) {
+        spaceSaveBtn.disabled = false;
+      }
     }
   });
 }
@@ -869,6 +1580,24 @@ if (floorPlanPreview && floorPlanCanvas) {
     if (!floorPlanCanvas.firstElementChild) {
       return;
     }
+    const target = event.target;
+    if (
+      isFloorEditing &&
+      ((target instanceof SVGElement &&
+        (target.classList.contains("space-polygon") || target.classList.contains("space-handle"))) ||
+        findSpacePolygonFromEvent(event))
+    ) {
+      return;
+    }
+    if (lassoState.active) {
+      event.preventDefault();
+      const point = getSvgPoint(event);
+      if (point) {
+        lassoState.points.push(point);
+        updateLassoPreview();
+      }
+      return;
+    }
     floorPlanState.isDragging = true;
     floorPlanState.dragStartX = event.clientX;
     floorPlanState.dragStartY = event.clientY;
@@ -879,6 +1608,19 @@ if (floorPlanPreview && floorPlanCanvas) {
   });
 
   floorPlanPreview.addEventListener("pointermove", (event) => {
+    if (spaceEditState.isDragging) {
+      const point = getSvgPoint(event);
+      if (point && Number.isInteger(spaceEditState.draggingIndex)) {
+        spaceEditState.points[spaceEditState.draggingIndex] = point;
+        updateSelectedPolygon();
+      }
+      return;
+    }
+    if (lassoState.active) {
+      const point = getSvgPoint(event);
+      updateLassoPreview(point);
+      return;
+    }
     if (!floorPlanState.isDragging) {
       return;
     }
@@ -887,14 +1629,61 @@ if (floorPlanPreview && floorPlanCanvas) {
     applyFloorPlanTransform();
   });
 
+  floorPlanPreview.addEventListener("dblclick", (event) => {
+    if (lassoState.active) {
+      event.preventDefault();
+      finishLassoMode();
+      return;
+    }
+    if (!isFloorEditing) {
+      return;
+    }
+    const polygon = findSpacePolygonFromEvent(event);
+    if (!polygon) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const wasSelected = spaceEditState.selectedPolygon === polygon;
+    if (!wasSelected) {
+      selectSpacePolygon(polygon);
+    }
+    const point = getSvgPoint(event);
+    if (point) {
+      const tolerance = getEdgeSnapTolerance();
+      const insertionIndex = findEdgeInsertionIndex(spaceEditState.points, point, tolerance);
+      if (insertionIndex !== null) {
+        spaceEditState.points.splice(insertionIndex + 1, 0, point);
+        updateSelectedPolygon();
+        return;
+      }
+    }
+    if (wasSelected) {
+      clearSpaceSelection();
+    }
+  });
+
   const stopDragging = (event) => {
     if (!floorPlanState.isDragging) {
+      if (spaceEditState.isDragging) {
+        spaceEditState.isDragging = false;
+        spaceEditState.draggingIndex = null;
+        if (floorPlanPreview && spaceEditState.dragPointerId !== null) {
+          floorPlanPreview.releasePointerCapture(spaceEditState.dragPointerId);
+        }
+        spaceEditState.dragPointerId = null;
+      }
       return;
     }
     floorPlanState.isDragging = false;
     floorPlanPreview.classList.remove("is-dragging");
     if (event && typeof event.pointerId === "number") {
       floorPlanPreview.releasePointerCapture(event.pointerId);
+    }
+    if (spaceEditState.isDragging) {
+      spaceEditState.isDragging = false;
+      spaceEditState.draggingIndex = null;
+      spaceEditState.dragPointerId = null;
     }
   };
 
@@ -933,27 +1722,35 @@ buildingModal.addEventListener("click", (event) => {
   }
 });
 
-if (floorPlanModal) {
-  floorPlanModal.addEventListener("click", (event) => {
+if (spaceModal) {
+  spaceModal.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
       return;
     }
     if (target.dataset.modalClose === "true") {
-      closeFloorPlanModal();
+      closeSpaceModal();
     }
   });
 }
 
 document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") {
+  if (event.key === "Escape") {
+    if (lassoState.active) {
+      cancelLassoMode("Выделение отменено.");
+      return;
+    }
+    if (spaceModal && spaceModal.classList.contains("is-open")) {
+      closeSpaceModal();
+      return;
+    }
+    if (buildingModal.classList.contains("is-open")) {
+      closeModal();
+    }
     return;
   }
-  if (buildingModal.classList.contains("is-open")) {
-    closeModal();
-  }
-  if (floorPlanModal && floorPlanModal.classList.contains("is-open")) {
-    closeFloorPlanModal();
+  if (event.key === "Enter" && lassoState.active) {
+    finishLassoMode();
   }
 });
 

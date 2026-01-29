@@ -33,12 +33,12 @@ type app struct {
 }
 
 type building struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	Address   string `json:"address"`
-	ImageURL  string `json:"image_url,omitempty"`
+	ID        int64   `json:"id"`
+	Name      string  `json:"name"`
+	Address   string  `json:"address"`
+	ImageURL  string  `json:"image_url,omitempty"`
 	Floors    []int64 `json:"floors"`
-	CreatedAt string `json:"created_at"`
+	CreatedAt string  `json:"created_at"`
 }
 
 type floor struct {

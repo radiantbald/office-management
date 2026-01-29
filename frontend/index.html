@@ -50,12 +50,31 @@
           <span class="breadcrumb-separator">/</span>
           <a id="breadcrumbBuilding" class="breadcrumb-link" href="/buildings">Здание</a>
         </div>
-        <div class="floor-plan">
-          <div id="floorPlanPreview" class="floor-plan-preview">
-            <div id="floorPlanCanvas" class="floor-plan-canvas"></div>
-          </div>
-          <div id="floorPlanPlaceholder" class="placeholder app-empty is-hidden">
-            План этажа пока не загружен.
+        <div id="floorPlanLayout" class="floor-plan-layout">
+          <aside id="floorPlanActions" class="floor-plan-actions is-hidden" aria-hidden="true">
+            <div class="floor-actions-section">
+              <h3 class="floor-actions-title">Действия</h3>
+              <label class="field">
+                <span id="floorPlanActionLabel">План этажа (изображение)</span>
+                <input id="floorPlanFile" type="file" accept="image/*" />
+                <span class="hint">Файл будет преобразован в SVG и сохранен.</span>
+              </label>
+              <button id="uploadFloorPlanBtn" class="primary" type="button">Загрузить план</button>
+            </div>
+            <div class="floor-actions-section">
+              <button id="addSpaceBtn" class="ghost" type="button">Добавить пространство</button>
+            </div>
+            <button id="cancelFloorEditBtn" class="ghost floor-actions-cancel" type="button">
+              Отменить
+            </button>
+          </aside>
+          <div class="floor-plan">
+            <div id="floorPlanPreview" class="floor-plan-preview">
+              <div id="floorPlanCanvas" class="floor-plan-canvas"></div>
+            </div>
+            <div id="floorPlanPlaceholder" class="placeholder app-empty is-hidden">
+              План этажа пока не загружен.
+            </div>
           </div>
         </div>
         <div class="card">
@@ -130,23 +149,32 @@
         <div id="status" class="status" role="status" aria-live="polite"></div>
       </div>
     </div>
-    <div id="floorPlanModal" class="modal" aria-hidden="true">
+    <div id="spaceModal" class="modal" aria-hidden="true">
       <div class="modal-backdrop" data-modal-close="true"></div>
-      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="floorPlanModalTitle">
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="spaceModalTitle">
         <div class="modal-header">
-          <h2 id="floorPlanModalTitle">План этажа</h2>
-          <button class="icon-button" type="button" data-modal-close="true">✕</button>
+          <h2 id="spaceModalTitle">Новое пространство</h2>
+          <button id="spaceModalCloseBtn" class="icon-button" type="button" data-modal-close="true">
+            ✕
+          </button>
         </div>
-        <div class="form">
+        <form id="spaceForm" class="form">
           <label class="field">
-            <span>План этажа (изображение)</span>
-            <input id="floorPlanFile" type="file" accept="image/*" />
-            <span class="hint">Файл будет преобразован в SVG и сохранен.</span>
+            <span>Название пространства</span>
+            <input id="spaceNameField" type="text" placeholder="Например, Open Space" required />
+          </label>
+          <label class="field">
+            <span>Цвет заливки</span>
+            <input id="spaceColorInput" type="color" value="#60a5fa" />
           </label>
           <div class="form-actions">
-            <button id="uploadFloorPlanBtn" class="primary" type="button">Загрузить план</button>
+            <button id="spaceSaveBtn" class="primary" type="submit">Сохранить</button>
+            <button id="spaceCancelBtn" class="ghost" type="button" data-modal-close="true">
+              Отменить
+            </button>
           </div>
-        </div>
+        </form>
+        <div id="spaceStatus" class="status" role="status" aria-live="polite"></div>
       </div>
     </div>
     <script src="/imagetracer.js"></script>
