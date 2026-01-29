@@ -5,11 +5,13 @@ const buildingImageInput = document.getElementById("buildingImage");
 const submitBtn = document.getElementById("submitBtn");
 const openAddModalBtn = document.getElementById("openAddModalBtn");
 const editBuildingBtn = document.getElementById("editBuildingBtn");
+const editFloorBtn = document.getElementById("editFloorBtn");
 const imagePreview = document.getElementById("imagePreview");
 const imagePreviewImg = document.getElementById("imagePreviewImg");
 const removeImageBtn = document.getElementById("removeImageBtn");
 const imageHint = document.getElementById("imageHint");
 const buildingModal = document.getElementById("buildingModal");
+const floorPlanModal = document.getElementById("floorPlanModal");
 const modalTitle = document.getElementById("modalTitle");
 const floorsFields = document.getElementById("floorsFields");
 const buildingUndergroundFloorsInput = document.getElementById("buildingUndergroundFloors");
@@ -26,10 +28,23 @@ const floorsCount = document.getElementById("floorsCount");
 const floorsList = document.getElementById("floorsList");
 const floorsEmpty = document.getElementById("floorsEmpty");
 const buildingStatus = document.getElementById("buildingStatus");
+const floorPage = document.getElementById("floorPage");
+const floorTitle = document.getElementById("floorTitle");
+const floorSubtitle = document.getElementById("floorSubtitle");
+const floorLevelTag = document.getElementById("floorLevelTag");
+const floorStatus = document.getElementById("floorStatus");
+const floorPlanPreview = document.getElementById("floorPlanPreview");
+const floorPlanPlaceholder = document.getElementById("floorPlanPlaceholder");
+const floorPlanCanvas = document.getElementById("floorPlanCanvas");
+const floorPlanFile = document.getElementById("floorPlanFile");
+const uploadFloorPlanBtn = document.getElementById("uploadFloorPlanBtn");
+const breadcrumbBuildings = document.getElementById("breadcrumbBuildings");
+const breadcrumbBuilding = document.getElementById("breadcrumbBuilding");
 
 let buildings = [];
 let editingId = null;
 let currentBuilding = null;
+let currentFloor = null;
 let removeImage = false;
 let previewObjectUrl = null;
 const fallbackBuildingImages = [
@@ -82,6 +97,22 @@ const clearBuildingStatus = () => {
   buildingStatus.dataset.tone = "";
 };
 
+const setFloorStatus = (message, tone = "info") => {
+  if (!floorStatus) {
+    return;
+  }
+  floorStatus.textContent = message;
+  floorStatus.dataset.tone = tone;
+};
+
+const clearFloorStatus = () => {
+  if (!floorStatus) {
+    return;
+  }
+  floorStatus.textContent = "";
+  floorStatus.dataset.tone = "";
+};
+
 const showImagePreview = (src) => {
   if (!imagePreview || !imagePreviewImg) {
     return;
@@ -106,6 +137,60 @@ const clearImagePreview = () => {
   if (imageHint) {
     imageHint.classList.remove("is-hidden");
   }
+};
+
+const floorPlanState = {
+  scale: 1,
+  translateX: 0,
+  translateY: 0,
+  isDragging: false,
+  dragStartX: 0,
+  dragStartY: 0,
+  dragOriginX: 0,
+  dragOriginY: 0,
+};
+
+const applyFloorPlanTransform = () => {
+  if (!floorPlanCanvas) {
+    return;
+  }
+  floorPlanCanvas.style.transform = `translate(${floorPlanState.translateX}px, ${floorPlanState.translateY}px) scale(${floorPlanState.scale})`;
+};
+
+const resetFloorPlanTransform = () => {
+  floorPlanState.scale = 1;
+  floorPlanState.translateX = 0;
+  floorPlanState.translateY = 0;
+  applyFloorPlanTransform();
+};
+
+const renderFloorPlan = (svgMarkup) => {
+  if (!floorPlanPreview || !floorPlanPlaceholder || !floorPlanCanvas) {
+    return;
+  }
+  floorPlanCanvas.innerHTML = "";
+  if (!svgMarkup) {
+    floorPlanPreview.classList.add("is-hidden");
+    floorPlanPlaceholder.classList.remove("is-hidden");
+    return;
+  }
+  floorPlanPreview.classList.remove("is-hidden");
+  floorPlanPlaceholder.classList.add("is-hidden");
+  floorPlanCanvas.innerHTML = svgMarkup;
+  const svg = floorPlanCanvas.querySelector("svg");
+  if (svg) {
+    if (!svg.hasAttribute("viewBox")) {
+      const width = parseFloat(svg.getAttribute("width"));
+      const height = parseFloat(svg.getAttribute("height"));
+      if (Number.isFinite(width) && Number.isFinite(height)) {
+        svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      }
+    }
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("height", "100%");
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  }
+  resetFloorPlanTransform();
 };
 
 const setFormMode = (mode) => {
@@ -181,9 +266,7 @@ const renderBuildings = () => {
     tile.style.setProperty("--tile-image", `url("${getBuildingImageUrl(building)}")`);
     const name = document.createElement("strong");
     name.textContent = building.name;
-    const address = document.createElement("span");
-    address.textContent = building.address;
-    tile.append(name, address);
+    tile.append(name);
     tile.addEventListener("click", () => {
       clearStatus();
       window.location.assign(`/buildings/${encodeURIComponent(building.id)}`);
@@ -199,9 +282,15 @@ const setPageMode = (mode) => {
   if (mode === "building") {
     buildingsPage.classList.add("is-hidden");
     buildingPage.classList.remove("is-hidden");
+    if (floorPage) {
+      floorPage.classList.add("is-hidden");
+    }
     openAddModalBtn.classList.add("is-hidden");
     if (editBuildingBtn) {
       editBuildingBtn.classList.remove("is-hidden");
+    }
+    if (editFloorBtn) {
+      editFloorBtn.classList.add("is-hidden");
     }
     if (pageTitle) {
       pageTitle.textContent = "Здание";
@@ -209,19 +298,46 @@ const setPageMode = (mode) => {
     if (pageSubtitle) {
       pageSubtitle.textContent = "Просмотр этажей и планировок.";
     }
-  } else {
-    buildingsPage.classList.remove("is-hidden");
+    return;
+  }
+  if (mode === "floor") {
+    buildingsPage.classList.add("is-hidden");
     buildingPage.classList.add("is-hidden");
-    openAddModalBtn.classList.remove("is-hidden");
+    if (floorPage) {
+      floorPage.classList.remove("is-hidden");
+    }
+    openAddModalBtn.classList.add("is-hidden");
     if (editBuildingBtn) {
       editBuildingBtn.classList.add("is-hidden");
     }
+    if (editFloorBtn) {
+      editFloorBtn.classList.remove("is-hidden");
+    }
     if (pageTitle) {
-      pageTitle.textContent = "Офисные здания";
+      pageTitle.textContent = "Этаж";
     }
     if (pageSubtitle) {
-      pageSubtitle.textContent = "Добавляйте здания и выбирайте нужное из списка.";
+      pageSubtitle.textContent = "Загрузка плана и данные этажа.";
     }
+    return;
+  }
+  buildingsPage.classList.remove("is-hidden");
+  buildingPage.classList.add("is-hidden");
+  if (floorPage) {
+    floorPage.classList.add("is-hidden");
+  }
+  openAddModalBtn.classList.remove("is-hidden");
+  if (editBuildingBtn) {
+    editBuildingBtn.classList.add("is-hidden");
+  }
+  if (editFloorBtn) {
+    editFloorBtn.classList.add("is-hidden");
+  }
+  if (pageTitle) {
+    pageTitle.textContent = "Офисные здания";
+  }
+  if (pageSubtitle) {
+    pageSubtitle.textContent = "Добавляйте здания и выбирайте нужное из списка.";
   }
 };
 
@@ -238,7 +354,8 @@ const renderFloors = (floors) => {
   floorsList.classList.remove("is-hidden");
   floorsEmpty.classList.add("is-hidden");
   floors.forEach((floor) => {
-    const card = document.createElement("div");
+    const card = document.createElement("button");
+    card.type = "button";
     card.className = "floor-card";
 
     const header = document.createElement("div");
@@ -260,6 +377,16 @@ const renderFloors = (floors) => {
     meta.textContent = `Пространств: ${spacesCount}`;
 
     card.append(header, meta);
+    if (currentBuilding) {
+      card.addEventListener("click", () => {
+        clearBuildingStatus();
+        window.location.assign(
+          `/buildings/${encodeURIComponent(currentBuilding.id)}/floors/${encodeURIComponent(
+            floor.level
+          )}`
+        );
+      });
+    }
     floorsList.appendChild(card);
   });
 };
@@ -293,6 +420,35 @@ const closeModal = () => {
   buildingModal.setAttribute("aria-hidden", "true");
   document.body.classList.remove("modal-open");
   clearStatus();
+};
+
+const resetFloorPlanUpload = () => {
+  if (floorPlanFile) {
+    floorPlanFile.value = "";
+  }
+};
+
+const openFloorPlanModal = () => {
+  if (!currentFloor) {
+    setFloorStatus("Сначала выберите этаж.", "error");
+    return;
+  }
+  clearFloorStatus();
+  resetFloorPlanUpload();
+  if (floorPlanModal) {
+    floorPlanModal.classList.add("is-open");
+    floorPlanModal.setAttribute("aria-hidden", "false");
+  }
+  document.body.classList.add("modal-open");
+};
+
+const closeFloorPlanModal = () => {
+  if (floorPlanModal) {
+    floorPlanModal.classList.remove("is-open");
+    floorPlanModal.setAttribute("aria-hidden", "true");
+  }
+  document.body.classList.remove("modal-open");
+  resetFloorPlanUpload();
 };
 
 const openEditModal = () => {
@@ -348,6 +504,40 @@ const getBuildingIdFromPath = () => {
   return Number.isNaN(id) ? null : id;
 };
 
+const getFloorParamsFromPath = () => {
+  const match = window.location.pathname.match(/^\/buildings\/(\d+)\/floors\/(-?\d+)(?:\/)?$/);
+  if (!match) {
+    return null;
+  }
+  const buildingID = Number(match[1]);
+  const floorNumber = Number(match[2]);
+  if (Number.isNaN(buildingID) || Number.isNaN(floorNumber)) {
+    return null;
+  }
+  return { buildingID, floorNumber };
+};
+
+const traceImageToSvg = (file) =>
+  new Promise((resolve, reject) => {
+    if (!file) {
+      reject(new Error("Файл не выбран."));
+      return;
+    }
+    if (!window.ImageTracer || typeof window.ImageTracer.imageToSVG !== "function") {
+      reject(new Error("Не удалось загрузить модуль преобразования изображения."));
+      return;
+    }
+    const objectUrl = URL.createObjectURL(file);
+    window.ImageTracer.imageToSVG(
+      objectUrl,
+      (svg) => {
+        URL.revokeObjectURL(objectUrl);
+        resolve(svg);
+      },
+      { scale: 1 }
+    );
+  });
+
 const loadBuildingPage = async (buildingID) => {
   setPageMode("building");
   clearBuildingStatus();
@@ -373,9 +563,6 @@ const loadBuildingPage = async (buildingID) => {
     if (pageTitle) {
       pageTitle.textContent = building.name;
     }
-    if (pageSubtitle) {
-      pageSubtitle.textContent = building.address;
-    }
 
     const floorsResponse = await apiRequest(`/api/buildings/${buildingID}/floors`);
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
@@ -392,6 +579,76 @@ const loadBuildingPage = async (buildingID) => {
     renderFloors(floorsWithSpaces);
   } catch (error) {
     setBuildingStatus(error.message, "error");
+  }
+};
+
+const loadFloorPage = async (buildingID, floorNumber) => {
+  setPageMode("floor");
+  clearFloorStatus();
+  renderFloorPlan("");
+  currentFloor = null;
+  try {
+    await refreshBuildings();
+    const building = buildings.find((item) => item.id === buildingID);
+    if (!building) {
+      currentBuilding = null;
+      setFloorStatus("Здание не найдено.", "error");
+      if (pageTitle) {
+        pageTitle.textContent = "Здание не найдено";
+      }
+      if (pageSubtitle) {
+        pageSubtitle.textContent = "Проверьте ссылку или вернитесь к списку.";
+      }
+      return;
+    }
+    currentBuilding = building;
+    if (breadcrumbBuilding) {
+      breadcrumbBuilding.href = `/buildings/${encodeURIComponent(building.id)}`;
+      breadcrumbBuilding.textContent = building.name || "Здание";
+    }
+    if (pageTitle) {
+      pageTitle.textContent = `Этаж ${floorNumber}`;
+    }
+    if (pageSubtitle) {
+      pageSubtitle.textContent = building.name || "";
+    }
+
+    const floorsResponse = await apiRequest(`/api/buildings/${buildingID}/floors`);
+    const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
+    const floor = floors.find((item) => item.level === floorNumber);
+    if (!floor) {
+      setFloorStatus("Этаж не найден.", "error");
+      if (floorTitle) {
+        floorTitle.textContent = `Этаж ${floorNumber}`;
+      }
+      if (floorSubtitle) {
+        floorSubtitle.textContent = building.address || "";
+      }
+      if (floorLevelTag) {
+        floorLevelTag.textContent = `Этаж ${floorNumber}`;
+      }
+      return;
+    }
+    currentFloor = floor;
+    if (floorTitle) {
+      floorTitle.textContent = floor.name || `Этаж ${floor.level}`;
+    }
+    if (floorSubtitle) {
+      floorSubtitle.textContent = "";
+      floorSubtitle.textContent = "";
+    }
+    if (floorLevelTag) {
+      floorLevelTag.textContent = `Этаж ${floor.level}`;
+    }
+
+    const floorDetails = await apiRequest(`/api/floors/${floor.id}`);
+    if (floorDetails && floorDetails.plan_svg) {
+      renderFloorPlan(floorDetails.plan_svg);
+    } else {
+      renderFloorPlan("");
+    }
+  } catch (error) {
+    setFloorStatus(error.message, "error");
   }
 };
 
@@ -542,7 +799,116 @@ if (deleteBuildingBtn) {
   });
 }
 
+if (editFloorBtn) {
+  editFloorBtn.addEventListener("click", () => {
+    openFloorPlanModal();
+  });
+}
+
+if (uploadFloorPlanBtn) {
+  uploadFloorPlanBtn.addEventListener("click", async () => {
+    if (!currentFloor) {
+      setFloorStatus("Сначала выберите этаж.", "error");
+      return;
+    }
+    if (!floorPlanFile || !floorPlanFile.files || !floorPlanFile.files[0]) {
+      setFloorStatus("Выберите изображение с планом.", "error");
+      return;
+    }
+    clearFloorStatus();
+    uploadFloorPlanBtn.disabled = true;
+    try {
+      const svgMarkup = await traceImageToSvg(floorPlanFile.files[0]);
+      const updated = await apiRequest(`/api/floors/${currentFloor.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ plan_svg: svgMarkup }),
+      });
+      currentFloor = updated;
+      renderFloorPlan(updated.plan_svg || svgMarkup);
+      floorPlanFile.value = "";
+      setFloorStatus("План этажа обновлен.", "success");
+      closeFloorPlanModal();
+    } catch (error) {
+      setFloorStatus(error.message, "error");
+    } finally {
+      uploadFloorPlanBtn.disabled = false;
+    }
+  });
+}
+
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+if (floorPlanPreview && floorPlanCanvas) {
+  const minScale = 0.5;
+  const maxScale = 4;
+  floorPlanPreview.addEventListener("wheel", (event) => {
+    if (!floorPlanCanvas.firstElementChild) {
+      return;
+    }
+    event.preventDefault();
+    const rect = floorPlanPreview.getBoundingClientRect();
+    const cursorX = event.clientX - rect.left;
+    const cursorY = event.clientY - rect.top;
+    const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9;
+    const nextScale = clamp(floorPlanState.scale * zoomFactor, minScale, maxScale);
+    if (nextScale === floorPlanState.scale) {
+      return;
+    }
+    const offsetX = (cursorX - floorPlanState.translateX) / floorPlanState.scale;
+    const offsetY = (cursorY - floorPlanState.translateY) / floorPlanState.scale;
+    floorPlanState.scale = nextScale;
+    floorPlanState.translateX = cursorX - offsetX * nextScale;
+    floorPlanState.translateY = cursorY - offsetY * nextScale;
+    applyFloorPlanTransform();
+  });
+
+  floorPlanPreview.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    if (!floorPlanCanvas.firstElementChild) {
+      return;
+    }
+    floorPlanState.isDragging = true;
+    floorPlanState.dragStartX = event.clientX;
+    floorPlanState.dragStartY = event.clientY;
+    floorPlanState.dragOriginX = floorPlanState.translateX;
+    floorPlanState.dragOriginY = floorPlanState.translateY;
+    floorPlanPreview.classList.add("is-dragging");
+    floorPlanPreview.setPointerCapture(event.pointerId);
+  });
+
+  floorPlanPreview.addEventListener("pointermove", (event) => {
+    if (!floorPlanState.isDragging) {
+      return;
+    }
+    floorPlanState.translateX = floorPlanState.dragOriginX + (event.clientX - floorPlanState.dragStartX);
+    floorPlanState.translateY = floorPlanState.dragOriginY + (event.clientY - floorPlanState.dragStartY);
+    applyFloorPlanTransform();
+  });
+
+  const stopDragging = (event) => {
+    if (!floorPlanState.isDragging) {
+      return;
+    }
+    floorPlanState.isDragging = false;
+    floorPlanPreview.classList.remove("is-dragging");
+    if (event && typeof event.pointerId === "number") {
+      floorPlanPreview.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  floorPlanPreview.addEventListener("pointerup", stopDragging);
+  floorPlanPreview.addEventListener("pointercancel", stopDragging);
+  floorPlanPreview.addEventListener("pointerleave", stopDragging);
+}
+
 const init = async () => {
+  const floorParams = getFloorParamsFromPath();
+  if (floorParams) {
+    await loadFloorPage(floorParams.buildingID, floorParams.floorNumber);
+    return;
+  }
   const buildingID = getBuildingIdFromPath();
   if (buildingID) {
     await loadBuildingPage(buildingID);
@@ -567,9 +933,27 @@ buildingModal.addEventListener("click", (event) => {
   }
 });
 
+if (floorPlanModal) {
+  floorPlanModal.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (target.dataset.modalClose === "true") {
+      closeFloorPlanModal();
+    }
+  });
+}
+
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && buildingModal.classList.contains("is-open")) {
+  if (event.key !== "Escape") {
+    return;
+  }
+  if (buildingModal.classList.contains("is-open")) {
     closeModal();
+  }
+  if (floorPlanModal && floorPlanModal.classList.contains("is-open")) {
+    closeFloorPlanModal();
   }
 });
 

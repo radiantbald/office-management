@@ -491,20 +491,60 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if suffix != "/spaces" {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		items, err := a.listSpacesByFloor(id)
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
-			return
+	switch suffix {
+	case "":
+		switch r.Method {
+		case http.MethodGet:
+			item, err := a.getFloor(id)
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					respondError(w, http.StatusNotFound, "floor not found")
+					return
+				}
+				respondError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			respondJSON(w, http.StatusOK, item)
+		case http.MethodPut:
+			var payload struct {
+				PlanSVG string `json:"plan_svg"`
+			}
+			if err := decodeJSON(r, &payload); err != nil {
+				respondError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			payload.PlanSVG = strings.TrimSpace(payload.PlanSVG)
+			if payload.PlanSVG == "" {
+				respondError(w, http.StatusBadRequest, "plan_svg is required")
+				return
+			}
+			updated, err := a.updateFloorPlan(id, payload.PlanSVG)
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					respondError(w, http.StatusNotFound, "floor not found")
+					return
+				}
+				respondError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			respondJSON(w, http.StatusOK, updated)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
-		respondJSON(w, http.StatusOK, map[string]any{"items": items})
+	case "/spaces":
+		switch r.Method {
+		case http.MethodGet:
+			items, err := a.listSpacesByFloor(id)
+			if err != nil {
+				respondError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			respondJSON(w, http.StatusOK, map[string]any{"items": items})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.WriteHeader(http.StatusNotFound)
 	}
 }
 
@@ -825,6 +865,36 @@ func (a *app) listFloorsByBuilding(buildingID int64) ([]floor, error) {
 		items = append(items, f)
 	}
 	return items, rows.Err()
+}
+
+func (a *app) getFloor(id int64) (floor, error) {
+	row := a.db.QueryRow(
+		`SELECT id, building_id, name, level, plan_svg, created_at FROM floors WHERE id = ?`,
+		id,
+	)
+	var f floor
+	if err := row.Scan(&f.ID, &f.BuildingID, &f.Name, &f.Level, &f.PlanSVG, &f.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return floor{}, errNotFound
+		}
+		return floor{}, err
+	}
+	return f, nil
+}
+
+func (a *app) updateFloorPlan(id int64, planSVG string) (floor, error) {
+	result, err := a.db.Exec(`UPDATE floors SET plan_svg = ? WHERE id = ?`, planSVG, id)
+	if err != nil {
+		return floor{}, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return floor{}, err
+	}
+	if rows == 0 {
+		return floor{}, errNotFound
+	}
+	return a.getFloor(id)
 }
 
 func (a *app) createFloor(buildingID int64, name string, level int, planSVG string) (floor, error) {

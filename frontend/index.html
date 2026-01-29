@@ -18,6 +18,7 @@
         <div class="header-actions">
           <button id="openAddModalBtn" class="primary" type="button">Добавить здание</button>
           <button id="editBuildingBtn" class="ghost is-hidden" type="button">Редактировать</button>
+          <button id="editFloorBtn" class="ghost is-hidden" type="button">Редактировать</button>
         </div>
       </div>
     </header>
@@ -40,6 +41,25 @@
           <div id="buildingStatus" class="status" role="status" aria-live="polite"></div>
           <div id="floorsList" class="floors-list"></div>
           <div id="floorsEmpty" class="placeholder app-empty is-hidden">Этажи пока не добавлены.</div>
+        </div>
+      </section>
+
+      <section id="floorPage" class="floor-page is-hidden">
+        <div class="breadcrumb">
+          <a id="breadcrumbBuildings" class="breadcrumb-link" href="/buildings">← К списку зданий</a>
+          <span class="breadcrumb-separator">/</span>
+          <a id="breadcrumbBuilding" class="breadcrumb-link" href="/buildings">Здание</a>
+        </div>
+        <div class="floor-plan">
+          <div id="floorPlanPreview" class="floor-plan-preview">
+            <div id="floorPlanCanvas" class="floor-plan-canvas"></div>
+          </div>
+          <div id="floorPlanPlaceholder" class="placeholder app-empty is-hidden">
+            План этажа пока не загружен.
+          </div>
+        </div>
+        <div class="card">
+          <div id="floorStatus" class="status" role="status" aria-live="polite"></div>
         </div>
       </section>
     </main>
@@ -110,6 +130,26 @@
         <div id="status" class="status" role="status" aria-live="polite"></div>
       </div>
     </div>
+    <div id="floorPlanModal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="floorPlanModalTitle">
+        <div class="modal-header">
+          <h2 id="floorPlanModalTitle">План этажа</h2>
+          <button class="icon-button" type="button" data-modal-close="true">✕</button>
+        </div>
+        <div class="form">
+          <label class="field">
+            <span>План этажа (изображение)</span>
+            <input id="floorPlanFile" type="file" accept="image/*" />
+            <span class="hint">Файл будет преобразован в SVG и сохранен.</span>
+          </label>
+          <div class="form-actions">
+            <button id="uploadFloorPlanBtn" class="primary" type="button">Загрузить план</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="/imagetracer.js"></script>
     <script src="/main.js"></script>
   </body>
 </html>

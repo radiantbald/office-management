@@ -7,6 +7,9 @@ body {
   font-family: "Inter", "Segoe UI", system-ui, sans-serif;
   background: #f5f6f8;
   color: #1f2937;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .app-header {
@@ -65,6 +68,8 @@ body {
   width: 100%;
   display: grid;
   gap: 24px;
+  flex: 1;
+  min-height: 0;
 }
 
 .card {
@@ -313,6 +318,13 @@ button:disabled {
   gap: 0;
 }
 
+.floor-page {
+  display: grid;
+  gap: 0;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100%;
+}
+
 .muted {
   color: #6b7280;
   margin: 0;
@@ -320,10 +332,11 @@ button:disabled {
 
 .breadcrumb {
   font-size: 13px;
+  margin-bottom: 10px;
 }
 
 .building-page .breadcrumb {
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .breadcrumb-link {
@@ -333,6 +346,11 @@ button:disabled {
 
 .breadcrumb-link:hover {
   text-decoration: underline;
+}
+
+.breadcrumb-separator {
+  margin: 0 8px;
+  color: #94a3b8;
 }
 
 .tag {
@@ -357,6 +375,18 @@ button:disabled {
   background: #ffffff;
   display: grid;
   gap: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.floor-card:hover {
+  border-color: #c7d2fe;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.12);
+}
+
+.floor-card:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 
 .floor-header {
@@ -383,6 +413,55 @@ button:disabled {
 .floor-meta {
   font-size: 12px;
   color: #6b7280;
+}
+
+.floor-plan {
+  display: grid;
+  gap: 16px;
+  margin-top: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.floor-plan-preview {
+  min-height: 260px;
+  height: 100%;
+  border: 1px dashed #d1d5db;
+  border-radius: 12px;
+  background: #f9fafb;
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+.floor-plan-preview.is-dragging {
+  cursor: grabbing;
+}
+
+.floor-plan-canvas {
+  position: absolute;
+  inset: 16px;
+  transform-origin: 0 0;
+}
+
+.floor-plan-canvas svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#floorPlanPlaceholder {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.floor-plan-actions {
+  display: grid;
+  gap: 12px;
 }
 
 .modal {
