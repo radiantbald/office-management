@@ -1,0 +1,18 @@
+.DS_Store
+.gocache/
+.gomodcache/
+
+# Go
+backend/office.db
+backend/go.sum
+backend/**/*.exe
+backend/**/*.test
+backend/**/*.out
+
+# Node (if ever added)
+node_modules/
+dist/
+
+# IDE
+.idea/
+.vscode/

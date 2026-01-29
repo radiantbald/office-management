@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Офисные здания</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="app-header-content">
+        <div class="header-copy">
+          <div class="header-top">
+            <h1 id="pageTitle">Офисные здания</h1>
+          </div>
+          <p id="pageSubtitle">Добавляйте здания и выбирайте нужное из списка.</p>
+        </div>
+        <div class="header-actions">
+          <button id="openAddModalBtn" class="primary" type="button">Добавить здание</button>
+          <button id="editBuildingBtn" class="ghost is-hidden" type="button">Редактировать</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="app">
+      <section id="buildingsPage" class="buildings-page">
+        <div id="emptyState" class="placeholder app-empty">Добавьте первое здание.</div>
+        <div id="buildingsGrid" class="buildings-grid"></div>
+      </section>
+
+      <section id="buildingPage" class="building-page is-hidden">
+        <div class="breadcrumb">
+          <a class="breadcrumb-link" href="/buildings">← К списку зданий</a>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h3>Этажи</h3>
+            <span id="floorsCount" class="tag">0</span>
+          </div>
+          <div id="buildingStatus" class="status" role="status" aria-live="polite"></div>
+          <div id="floorsList" class="floors-list"></div>
+          <div id="floorsEmpty" class="placeholder app-empty is-hidden">Этажи пока не добавлены.</div>
+        </div>
+      </section>
+    </main>
+
+    <div id="buildingModal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <div class="modal-header">
+          <h2 id="modalTitle">Добавить здание</h2>
+          <button id="modalCloseBtn" class="icon-button" type="button" data-modal-close="true">
+            ✕
+          </button>
+        </div>
+        <form id="buildingForm" class="form">
+          <label class="field">
+            <span>Название здания</span>
+            <input id="buildingName" type="text" placeholder="Например, БЦ Вега" required />
+          </label>
+          <label class="field">
+            <span>Адрес</span>
+            <input
+              id="buildingAddress"
+              type="text"
+              placeholder="Например, ул. Ленина, 12"
+              required
+            />
+          </label>
+          <label class="field">
+            <span>Изображение здания (необязательно)</span>
+            <input id="buildingImage" type="file" accept="image/*" />
+            <span id="imageHint" class="hint">Если не добавить, выберем случайную картинку.</span>
+          </label>
+          <div id="floorsFields" class="field-group">
+            <label class="field">
+              <span>Подземные этажи</span>
+              <input
+                id="buildingUndergroundFloors"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0"
+              />
+            </label>
+            <label class="field">
+              <span>Наземные этажи</span>
+              <input
+                id="buildingAbovegroundFloors"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0"
+              />
+            </label>
+          </div>
+          <div id="imagePreview" class="image-preview is-hidden">
+            <img id="imagePreviewImg" alt="Предпросмотр изображения здания" />
+            <button id="removeImageBtn" class="ghost image-remove" type="button">
+              Удалить изображение
+            </button>
+          </div>
+          <div class="form-actions">
+            <button id="submitBtn" class="primary" type="submit">Добавить</button>
+            <button id="deleteBuildingBtn" class="context-action danger is-hidden" type="button">
+              Удалить здание
+            </button>
+          </div>
+        </form>
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+    <script src="/main.js"></script>
+  </body>
+</html>
