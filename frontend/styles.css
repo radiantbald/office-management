@@ -525,6 +525,25 @@ button:disabled {
   pointer-events: none;
 }
 
+.space-tooltip {
+  position: absolute;
+  z-index: 5;
+  background: rgba(17, 24, 39, 0.92);
+  color: #f9fafb;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 8px));
+}
+
+.space-tooltip.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
 .lasso-preview {
   fill: rgba(37, 99, 235, 0.15);
   stroke: #2563eb;

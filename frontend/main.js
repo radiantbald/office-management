@@ -76,6 +76,10 @@ const lassoState = {
   previewPolygon: null,
   handlesLayer: null,
 };
+const spaceTooltipState = {
+  element: null,
+  polygon: null,
+};
 const spaceEditDefaults = {
   handleRadius: 4,
   edgeSnapDistance: 8,
@@ -88,6 +92,12 @@ const spaceEditState = {
   draggingIndex: null,
   isDragging: false,
   dragPointerId: null,
+  isPolygonDragging: false,
+  polygonDragPointerId: null,
+  polygonDragStartPoint: null,
+  polygonDragStartPoints: [],
+  isEditingPolygon: false,
+  skipClick: false,
   lastHandleClickTime: 0,
   lastHandleClickIndex: null,
 };
@@ -407,25 +417,8 @@ const createSpacePolygon = (points, name, color) => {
   polygon.setAttribute("data-space-name", name);
   polygon.setAttribute("data-space-color", color);
 
-  const centroid = points.reduce(
-    (acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }),
-    { x: 0, y: 0 }
-  );
-  centroid.x /= points.length;
-  centroid.y /= points.length;
-
-  const label = document.createElementNS(svgNamespace, "text");
-  label.classList.add("space-label");
-  label.setAttribute("x", centroid.x.toString());
-  label.setAttribute("y", centroid.y.toString());
-  label.setAttribute("text-anchor", "middle");
-  label.setAttribute("dominant-baseline", "middle");
-  label.setAttribute("data-space-name", name);
-  label.textContent = name;
-
   lassoState.spacesLayer.appendChild(polygon);
-  lassoState.spacesLayer.appendChild(label);
-  return { polygon, label };
+  return { polygon };
 };
 
 const escapeSelectorValue = (value) => {
@@ -468,6 +461,8 @@ const stripEditorArtifacts = (svg) => {
   svg.querySelectorAll(".space-polygon.is-selected").forEach((polygon) => {
     polygon.classList.remove("is-selected");
   });
+  svg.querySelectorAll(".space-label").forEach((label) => label.remove());
+  svg.querySelectorAll(".space-polygon title").forEach((title) => title.remove());
 };
 
 const getCleanFloorPlanMarkup = () => {
@@ -532,6 +527,12 @@ const clearSpaceSelection = () => {
   spaceEditState.draggingIndex = null;
   spaceEditState.isDragging = false;
   spaceEditState.dragPointerId = null;
+  spaceEditState.isPolygonDragging = false;
+  spaceEditState.polygonDragPointerId = null;
+  spaceEditState.polygonDragStartPoint = null;
+  spaceEditState.polygonDragStartPoints = [];
+  spaceEditState.isEditingPolygon = false;
+  spaceEditState.skipClick = false;
 };
 
 const rebuildSpaceHandles = () => {
@@ -694,11 +695,140 @@ const findSpacePolygonFromEvent = (event) => {
   return null;
 };
 
+const startPolygonDrag = (event, polygon) => {
+  if (!isFloorEditing || lassoState.active) {
+    return;
+  }
+  if (!polygon) {
+    return;
+  }
+  if (!spaceEditState.isEditingPolygon || spaceEditState.selectedPolygon !== polygon) {
+    return;
+  }
+  const point = getSvgPoint(event);
+  if (!point) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (spaceEditState.selectedPolygon !== polygon) {
+    selectSpacePolygon(polygon);
+  }
+  spaceEditState.polygonDragPointerId = event.pointerId;
+  spaceEditState.polygonDragStartPoint = point;
+  spaceEditState.polygonDragStartPoints = spaceEditState.points.map((p) => ({ ...p }));
+  spaceEditState.isPolygonDragging = false;
+  if (floorPlanPreview) {
+    floorPlanPreview.setPointerCapture(event.pointerId);
+  }
+};
+
+const ensureSpaceTooltip = () => {
+  if (!floorPlanPreview) {
+    return null;
+  }
+  if (!spaceTooltipState.element) {
+    const tooltip = document.createElement("div");
+    tooltip.className = "space-tooltip is-hidden";
+    floorPlanPreview.appendChild(tooltip);
+    spaceTooltipState.element = tooltip;
+  }
+  return spaceTooltipState.element;
+};
+
+const hideSpaceTooltip = () => {
+  const tooltip = ensureSpaceTooltip();
+  if (!tooltip) {
+    return;
+  }
+  tooltip.classList.add("is-hidden");
+  spaceTooltipState.polygon = null;
+};
+
+const getPolygonTopScreenPoint = (polygon) => {
+  const points = parsePolygonPoints(polygon);
+  if (points.length === 0) {
+    return null;
+  }
+  const svg = polygon.ownerSVGElement;
+  if (!svg) {
+    return null;
+  }
+  const matrix = polygon.getScreenCTM();
+  if (!matrix) {
+    return null;
+  }
+  const svgPoint = svg.createSVGPoint();
+  let best = null;
+  points.forEach((point) => {
+    svgPoint.x = point.x;
+    svgPoint.y = point.y;
+    const screenPoint = svgPoint.matrixTransform(matrix);
+    if (!best || screenPoint.y < best.y) {
+      best = { x: screenPoint.x, y: screenPoint.y };
+    }
+  });
+  return best;
+};
+
+const updateSpaceTooltipPosition = (polygon) => {
+  const tooltip = ensureSpaceTooltip();
+  if (!tooltip || !floorPlanPreview) {
+    return;
+  }
+  const name = polygon.getAttribute("data-space-name") || "";
+  if (!name) {
+    hideSpaceTooltip();
+    return;
+  }
+  const screenPoint = getPolygonTopScreenPoint(polygon);
+  if (!screenPoint) {
+    hideSpaceTooltip();
+    return;
+  }
+  const rect = floorPlanPreview.getBoundingClientRect();
+  tooltip.style.left = `${screenPoint.x - rect.left}px`;
+  tooltip.style.top = `${screenPoint.y - rect.top}px`;
+  tooltip.textContent = name;
+  tooltip.classList.remove("is-hidden");
+  spaceTooltipState.polygon = polygon;
+};
+
+const updateSpaceTooltipFromEvent = (event) => {
+  const polygon = findSpacePolygonFromEvent(event);
+  if (!polygon) {
+    hideSpaceTooltip();
+    return;
+  }
+  updateSpaceTooltipPosition(polygon);
+};
+
 const bindSpaceInteractions = (svg) => {
   if (!svg || svg.dataset.spaceInteractions === "true") {
     return;
   }
   svg.dataset.spaceInteractions = "true";
+  svg.addEventListener("pointerdown", (event) => {
+    if (!isFloorEditing || lassoState.active) {
+      return;
+    }
+    if (event.button !== 0) {
+      return;
+    }
+    const target = event.target;
+    const handleTarget =
+      target instanceof SVGElement && typeof target.closest === "function"
+        ? target.closest(".space-handle")
+        : null;
+    if (handleTarget || (target instanceof SVGElement && target.classList.contains("space-handle"))) {
+      return;
+    }
+    const polygon = findSpacePolygonFromEvent(event);
+    if (!polygon) {
+      return;
+    }
+    startPolygonDrag(event, polygon);
+  });
   svg.addEventListener("dblclick", (event) => {
     if (!isFloorEditing || lassoState.active) {
       return;
@@ -708,10 +838,15 @@ const bindSpaceInteractions = (svg) => {
       event.preventDefault();
       event.stopPropagation();
       selectSpacePolygon(polygon);
+      spaceEditState.isEditingPolygon = true;
     }
   });
   svg.addEventListener("click", (event) => {
     if (!isFloorEditing || lassoState.active) {
+      return;
+    }
+    if (spaceEditState.skipClick) {
+      spaceEditState.skipClick = false;
       return;
     }
     if (event.detail && event.detail > 1) {
@@ -1536,7 +1671,6 @@ if (spaceForm) {
     } catch (error) {
       if (createdElements) {
         createdElements.polygon.remove();
-        createdElements.label.remove();
       }
       setSpaceStatus(error.message, "error");
     } finally {
@@ -1571,6 +1705,9 @@ if (floorPlanPreview && floorPlanCanvas) {
     floorPlanState.translateX = cursorX - offsetX * nextScale;
     floorPlanState.translateY = cursorY - offsetY * nextScale;
     applyFloorPlanTransform();
+    if (!floorPlanState.isDragging && spaceTooltipState.polygon) {
+      updateSpaceTooltipPosition(spaceTooltipState.polygon);
+    }
   });
 
   floorPlanPreview.addEventListener("pointerdown", (event) => {
@@ -1580,15 +1717,7 @@ if (floorPlanPreview && floorPlanCanvas) {
     if (!floorPlanCanvas.firstElementChild) {
       return;
     }
-    const target = event.target;
-    if (
-      isFloorEditing &&
-      ((target instanceof SVGElement &&
-        (target.classList.contains("space-polygon") || target.classList.contains("space-handle"))) ||
-        findSpacePolygonFromEvent(event))
-    ) {
-      return;
-    }
+    hideSpaceTooltip();
     if (lassoState.active) {
       event.preventDefault();
       const point = getSvgPoint(event);
@@ -1597,6 +1726,23 @@ if (floorPlanPreview && floorPlanCanvas) {
         updateLassoPreview();
       }
       return;
+    }
+    const target = event.target;
+    if (
+      isFloorEditing
+    ) {
+      const handleTarget =
+        target instanceof SVGElement && typeof target.closest === "function"
+          ? target.closest(".space-handle")
+          : null;
+      if (handleTarget || (target instanceof SVGElement && target.classList.contains("space-handle"))) {
+        return;
+      }
+      const polygon = findSpacePolygonFromEvent(event);
+      if (polygon) {
+        startPolygonDrag(event, polygon);
+        return;
+      }
     }
     floorPlanState.isDragging = true;
     floorPlanState.dragStartX = event.clientX;
@@ -1608,6 +1754,28 @@ if (floorPlanPreview && floorPlanCanvas) {
   });
 
   floorPlanPreview.addEventListener("pointermove", (event) => {
+    if (!floorPlanState.isDragging && !spaceEditState.isDragging && !lassoState.active) {
+      updateSpaceTooltipFromEvent(event);
+    } else if (spaceTooltipState.polygon) {
+      hideSpaceTooltip();
+    }
+    if (spaceEditState.polygonDragPointerId !== null && spaceEditState.polygonDragStartPoint) {
+      const point = getSvgPoint(event);
+      if (point) {
+        const dx = point.x - spaceEditState.polygonDragStartPoint.x;
+        const dy = point.y - spaceEditState.polygonDragStartPoint.y;
+        if (!spaceEditState.isPolygonDragging && Math.hypot(dx, dy) < 2) {
+          return;
+        }
+        spaceEditState.isPolygonDragging = true;
+        spaceEditState.points = spaceEditState.polygonDragStartPoints.map((start) => ({
+          x: start.x + dx,
+          y: start.y + dy,
+        }));
+        updateSelectedPolygon();
+      }
+      return;
+    }
     if (spaceEditState.isDragging) {
       const point = getSvgPoint(event);
       if (point && Number.isInteger(spaceEditState.draggingIndex)) {
@@ -1648,6 +1816,7 @@ if (floorPlanPreview && floorPlanCanvas) {
     if (!wasSelected) {
       selectSpacePolygon(polygon);
     }
+    spaceEditState.isEditingPolygon = true;
     const point = getSvgPoint(event);
     if (point) {
       const tolerance = getEdgeSnapTolerance();
@@ -1673,6 +1842,18 @@ if (floorPlanPreview && floorPlanCanvas) {
         }
         spaceEditState.dragPointerId = null;
       }
+      if (spaceEditState.polygonDragPointerId !== null) {
+        if (spaceEditState.isPolygonDragging) {
+          spaceEditState.skipClick = true;
+        }
+        if (floorPlanPreview) {
+          floorPlanPreview.releasePointerCapture(spaceEditState.polygonDragPointerId);
+        }
+        spaceEditState.isPolygonDragging = false;
+        spaceEditState.polygonDragPointerId = null;
+        spaceEditState.polygonDragStartPoint = null;
+        spaceEditState.polygonDragStartPoints = [];
+      }
       return;
     }
     floorPlanState.isDragging = false;
@@ -1685,11 +1866,21 @@ if (floorPlanPreview && floorPlanCanvas) {
       spaceEditState.draggingIndex = null;
       spaceEditState.dragPointerId = null;
     }
+    if (spaceEditState.polygonDragPointerId !== null) {
+      if (spaceEditState.isPolygonDragging) {
+        spaceEditState.skipClick = true;
+      }
+      spaceEditState.isPolygonDragging = false;
+      spaceEditState.polygonDragPointerId = null;
+      spaceEditState.polygonDragStartPoint = null;
+      spaceEditState.polygonDragStartPoints = [];
+    }
   };
 
   floorPlanPreview.addEventListener("pointerup", stopDragging);
   floorPlanPreview.addEventListener("pointercancel", stopDragging);
   floorPlanPreview.addEventListener("pointerleave", stopDragging);
+  floorPlanPreview.addEventListener("pointerleave", hideSpaceTooltip);
 }
 
 const init = async () => {
