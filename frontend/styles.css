@@ -395,11 +395,11 @@ button:disabled {
   gap: 0;
   grid-template-rows: auto 1fr auto;
   min-height: 0;
-  height: auto;
+  height: 100%;
 }
 
 body:not(.floor-editing) .floor-page {
-  grid-template-rows: auto auto auto;
+  grid-template-rows: auto 1fr;
 }
 
 .space-page {
@@ -505,6 +505,20 @@ body:not(.floor-editing) .floor-page {
   pointer-events: none;
 }
 
+.desk-bounds {
+  fill: none;
+  stroke: #2563eb;
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  pointer-events: none;
+}
+
+.desk-rotate-line {
+  stroke: #7c3aed;
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
 .desk-handle {
   fill: #ffffff;
   stroke: #2563eb;
@@ -513,13 +527,37 @@ body:not(.floor-editing) .floor-page {
 }
 
 .desk-handle-resize {
-  fill: #e0f2fe;
+  fill: #ffffff;
   stroke: #0284c7;
 }
 
 .desk-handle-rotate {
-  fill: #ede9fe;
+  fill: #f5f3ff;
   stroke: #7c3aed;
+}
+
+.desk-handle-n,
+.desk-handle-s {
+  cursor: ns-resize;
+}
+
+.desk-handle-e,
+.desk-handle-w {
+  cursor: ew-resize;
+}
+
+.desk-handle-ne,
+.desk-handle-sw {
+  cursor: nesw-resize;
+}
+
+.desk-handle-nw,
+.desk-handle-se {
+  cursor: nwse-resize;
+}
+
+.desk-handle-rotate {
+  cursor: grab;
 }
 
 .space-desk-label {
@@ -560,7 +598,7 @@ body:not(.floor-editing) .floor-page {
   row-gap: 10px;
   margin-top: 12px;
   align-items: start;
-  height: auto;
+  height: 100%;
   min-height: 0;
 }
 
@@ -590,7 +628,7 @@ body:not(.floor-editing) .floor-page {
 }
 
 .floor-plan-layout:not(.is-editing) .floor-plan {
-  height: auto;
+  height: 100%;
 }
 
 .floor-plan-layout.is-editing .floor-plan {
@@ -931,7 +969,7 @@ body:not(.floor-editing) .floor-page {
 }
 
 .floor-plan-layout:not(.is-editing) .floor-plan-preview {
-  height: auto;
+  height: 100%;
 }
 
 .floor-plan-preview.is-dragging {

@@ -110,6 +110,7 @@ const deskEditState = {
   transformStartWidth: 0,
   transformStartHeight: 0,
   transformStartRotation: 0,
+  transformHandle: null,
 };
 let hasFloorPlan = false;
 let removeImage = false;
@@ -179,6 +180,8 @@ const deskMinWidth = 60;
 const deskMinHeight = 40;
 const deskShrinkFactor = 0.9;
 const deskRotateStep = 15;
+const deskSnapDistance = 8;
+const deskRotationSnapTolerance = 6;
 const spaceKindLabels = {
   coworking: "Коворкинг",
   meeting: "Переговорка",
@@ -1771,6 +1774,86 @@ const getDeskMetrics = (svg, desk) => {
   };
 };
 
+const getDeskSnapTolerance = (metrics) => {
+  const scaleX = metrics?.scaleX || 1;
+  const scaleY = metrics?.scaleY || 1;
+  return {
+    x: deskSnapDistance * scaleX,
+    y: deskSnapDistance * scaleY,
+  };
+};
+
+const getDeskSnapLines = (deskId) => {
+  const xLines = [];
+  const yLines = [];
+  currentDesks.forEach((desk) => {
+    if (!desk || String(desk.id) === String(deskId)) {
+      return;
+    }
+    const dimensions = getDeskDimensions(desk);
+    const halfWidth = dimensions.width / 2;
+    const halfHeight = dimensions.height / 2;
+    xLines.push(desk.x, desk.x - halfWidth, desk.x + halfWidth);
+    yLines.push(desk.y, desk.y - halfHeight, desk.y + halfHeight);
+  });
+  return { xLines, yLines };
+};
+
+const snapDeskCenter = (rawX, rawY, desk, metrics) => {
+  const tolerance = getDeskSnapTolerance(metrics);
+  const { xLines, yLines } = getDeskSnapLines(desk.id);
+  if (xLines.length === 0 && yLines.length === 0) {
+    return { x: rawX, y: rawY };
+  }
+  const dimensions = getDeskDimensions(desk);
+  const halfWidth = dimensions.width / 2;
+  const halfHeight = dimensions.height / 2;
+  let nextX = rawX;
+  let nextY = rawY;
+  let bestDx = tolerance.x + 1;
+  let bestDy = tolerance.y + 1;
+  const xCandidates = [0, halfWidth, -halfWidth];
+  const yCandidates = [0, halfHeight, -halfHeight];
+
+  xLines.forEach((line) => {
+    xCandidates.forEach((offset) => {
+      const candidate = line - offset;
+      const delta = Math.abs(candidate - rawX);
+      if (delta <= tolerance.x && delta < bestDx) {
+        bestDx = delta;
+        nextX = candidate;
+      }
+    });
+  });
+
+  yLines.forEach((line) => {
+    yCandidates.forEach((offset) => {
+      const candidate = line - offset;
+      const delta = Math.abs(candidate - rawY);
+      if (delta <= tolerance.y && delta < bestDy) {
+        bestDy = delta;
+        nextY = candidate;
+      }
+    });
+  });
+
+  return { x: nextX, y: nextY };
+};
+
+const snapRotation = (rotationDeg) => {
+  const steps = [0, 90, 180, 270];
+  let closest = rotationDeg;
+  let minDelta = deskRotationSnapTolerance + 1;
+  steps.forEach((step) => {
+    const delta = Math.abs((((rotationDeg - step + 540) % 360) - 180));
+    if (delta <= deskRotationSnapTolerance && delta < minDelta) {
+      minDelta = delta;
+      closest = step;
+    }
+  });
+  return closest;
+};
+
 const ensureDeskLayer = (svg) => {
   if (!svg) {
     return null;
@@ -1833,6 +1916,66 @@ const updateDeskElementPosition = (group, desk, metrics) => {
   if (label) {
     label.setAttribute("x", String(desk.x));
     label.setAttribute("y", String(desk.y - labelOffset));
+  }
+  const handlesGroup = group.querySelector(".desk-handles");
+  if (handlesGroup) {
+    const handleSize = 10 * ((metrics.scaleX + metrics.scaleY) / 2);
+    const handleHalf = handleSize / 2;
+    const handleRadius = Math.max(1, Math.min(3, handleSize * 0.2));
+    const rotateOffset = 26 * ((metrics.scaleX + metrics.scaleY) / 2);
+    const halfWidth = width / 2;
+    const halfHeight = height / 2;
+
+    const bounds = handlesGroup.querySelector(".desk-bounds");
+    if (bounds) {
+      bounds.setAttribute("x", String(desk.x - halfWidth));
+      bounds.setAttribute("y", String(desk.y - halfHeight));
+      bounds.setAttribute("width", String(width));
+      bounds.setAttribute("height", String(height));
+    }
+
+    const rotateLine = handlesGroup.querySelector(".desk-rotate-line");
+    if (rotateLine) {
+      rotateLine.setAttribute("x1", String(desk.x));
+      rotateLine.setAttribute("y1", String(desk.y - halfHeight));
+      rotateLine.setAttribute("x2", String(desk.x));
+      rotateLine.setAttribute("y2", String(desk.y - halfHeight - rotateOffset));
+    }
+
+    const handlePositions = {
+      n: { x: 0, y: -halfHeight },
+      ne: { x: halfWidth, y: -halfHeight },
+      e: { x: halfWidth, y: 0 },
+      se: { x: halfWidth, y: halfHeight },
+      s: { x: 0, y: halfHeight },
+      sw: { x: -halfWidth, y: halfHeight },
+      w: { x: -halfWidth, y: 0 },
+      nw: { x: -halfWidth, y: -halfHeight },
+    };
+
+    handlesGroup.querySelectorAll(".desk-handle-resize").forEach((handle) => {
+      const key = handle.dataset.handle;
+      const position = handlePositions[key];
+      if (!position) {
+        return;
+      }
+      handle.setAttribute("x", String(desk.x + position.x - handleHalf));
+      handle.setAttribute("y", String(desk.y + position.y - handleHalf));
+      handle.setAttribute("width", String(handleSize));
+      handle.setAttribute("height", String(handleSize));
+      handle.setAttribute("rx", String(handleRadius));
+      handle.setAttribute("ry", String(handleRadius));
+    });
+
+    const rotateHandle = handlesGroup.querySelector(".desk-handle-rotate");
+    if (rotateHandle) {
+      rotateHandle.setAttribute("x", String(desk.x - handleHalf));
+      rotateHandle.setAttribute("y", String(desk.y - halfHeight - rotateOffset - handleHalf));
+      rotateHandle.setAttribute("width", String(handleSize));
+      rotateHandle.setAttribute("height", String(handleSize));
+      rotateHandle.setAttribute("rx", String(handleRadius));
+      rotateHandle.setAttribute("ry", String(handleRadius));
+    }
   }
   const rotation = Number.isFinite(desk.rotation) ? desk.rotation : 0;
   group.setAttribute("transform", `rotate(${rotation} ${desk.x} ${desk.y})`);
@@ -1940,42 +2083,89 @@ const renderSpaceDesks = (desks = []) => {
       const handles = document.createElementNS(svgNamespace, "g");
       handles.classList.add("desk-handles");
 
-      const handleRadius = 10 * ((deskMetrics.scaleX + deskMetrics.scaleY) / 2);
+      const handleSize = 10 * ((deskMetrics.scaleX + deskMetrics.scaleY) / 2);
+      const handleHalf = handleSize / 2;
+      const handleRadius = Math.max(1, Math.min(3, handleSize * 0.2));
       const rotateOffset = 26 * ((deskMetrics.scaleX + deskMetrics.scaleY) / 2);
+      const halfWidth = deskMetrics.width / 2;
+      const halfHeight = deskMetrics.height / 2;
 
-      const resizeHandle = document.createElementNS(svgNamespace, "circle");
-      resizeHandle.classList.add("desk-handle", "desk-handle-resize");
-      resizeHandle.setAttribute("cx", String(desk.x + deskMetrics.width / 2));
-      resizeHandle.setAttribute("cy", String(desk.y + deskMetrics.height / 2));
-      resizeHandle.setAttribute("r", String(handleRadius));
+      const bounds = document.createElementNS(svgNamespace, "rect");
+      bounds.classList.add("desk-bounds");
+      bounds.setAttribute("x", String(desk.x - halfWidth));
+      bounds.setAttribute("y", String(desk.y - halfHeight));
+      bounds.setAttribute("width", String(deskMetrics.width));
+      bounds.setAttribute("height", String(deskMetrics.height));
+      handles.appendChild(bounds);
 
-      const rotateHandle = document.createElementNS(svgNamespace, "circle");
-      rotateHandle.classList.add("desk-handle", "desk-handle-rotate");
-      rotateHandle.setAttribute("cx", String(desk.x));
-      rotateHandle.setAttribute("cy", String(desk.y - deskMetrics.height / 2 - rotateOffset));
-      rotateHandle.setAttribute("r", String(handleRadius));
+      const rotateLine = document.createElementNS(svgNamespace, "line");
+      rotateLine.classList.add("desk-rotate-line");
+      rotateLine.setAttribute("x1", String(desk.x));
+      rotateLine.setAttribute("y1", String(desk.y - halfHeight));
+      rotateLine.setAttribute("x2", String(desk.x));
+      rotateLine.setAttribute("y2", String(desk.y - halfHeight - rotateOffset));
+      handles.appendChild(rotateLine);
 
-      resizeHandle.addEventListener("pointerdown", (event) => {
-        if (!isSpaceEditing || isDeskPlacementActive) {
-          return;
-        }
-        event.stopPropagation();
-        const point = getSnapshotPoint(event, svg);
-        if (!point) {
-          return;
-        }
-        setSelectedDesk(desk.id);
-        deskEditState.transformMode = "resize";
-        deskEditState.transformPointerId = event.pointerId;
-        deskEditState.transformStartX = point.x;
-        deskEditState.transformStartY = point.y;
-        deskEditState.transformStartWidth = desk.width || deskPixelWidth;
-        deskEditState.transformStartHeight = desk.height || deskPixelHeight;
-        deskEditState.transformStartRotation = desk.rotation || 0;
-        if (resizeHandle.setPointerCapture) {
-          resizeHandle.setPointerCapture(event.pointerId);
-        }
+      const resizeHandles = {
+        n: { x: 0, y: -halfHeight },
+        ne: { x: halfWidth, y: -halfHeight },
+        e: { x: halfWidth, y: 0 },
+        se: { x: halfWidth, y: halfHeight },
+        s: { x: 0, y: halfHeight },
+        sw: { x: -halfWidth, y: halfHeight },
+        w: { x: -halfWidth, y: 0 },
+        nw: { x: -halfWidth, y: -halfHeight },
+      };
+
+      Object.entries(resizeHandles).forEach(([handleKey, position]) => {
+        const resizeHandle = document.createElementNS(svgNamespace, "rect");
+        resizeHandle.classList.add("desk-handle", "desk-handle-resize", `desk-handle-${handleKey}`);
+        resizeHandle.dataset.handle = handleKey;
+        resizeHandle.setAttribute("x", String(desk.x + position.x - handleHalf));
+        resizeHandle.setAttribute("y", String(desk.y + position.y - handleHalf));
+        resizeHandle.setAttribute("width", String(handleSize));
+        resizeHandle.setAttribute("height", String(handleSize));
+        resizeHandle.setAttribute("rx", String(handleRadius));
+        resizeHandle.setAttribute("ry", String(handleRadius));
+
+        resizeHandle.addEventListener("pointerdown", (event) => {
+          if (!isSpaceEditing || isDeskPlacementActive) {
+            return;
+          }
+          event.stopPropagation();
+          const point = getSnapshotPoint(event, svg);
+          if (!point) {
+            return;
+          }
+          setSelectedDesk(desk.id);
+          deskEditState.draggingDeskId = desk.id;
+          deskEditState.draggingPointerId = event.pointerId;
+          deskEditState.transformMode = "resize";
+          deskEditState.transformHandle = handleKey;
+          deskEditState.transformPointerId = event.pointerId;
+          deskEditState.transformStartX = point.x;
+          deskEditState.transformStartY = point.y;
+          deskEditState.transformStartWidth = desk.width || deskPixelWidth;
+          deskEditState.transformStartHeight = desk.height || deskPixelHeight;
+          deskEditState.transformStartRotation = desk.rotation || 0;
+          deskEditState.startX = desk.x;
+          deskEditState.startY = desk.y;
+          if (resizeHandle.setPointerCapture) {
+            resizeHandle.setPointerCapture(event.pointerId);
+          }
+        });
+
+        handles.appendChild(resizeHandle);
       });
+
+      const rotateHandle = document.createElementNS(svgNamespace, "rect");
+      rotateHandle.classList.add("desk-handle", "desk-handle-rotate");
+      rotateHandle.setAttribute("x", String(desk.x - handleHalf));
+      rotateHandle.setAttribute("y", String(desk.y - halfHeight - rotateOffset - handleHalf));
+      rotateHandle.setAttribute("width", String(handleSize));
+      rotateHandle.setAttribute("height", String(handleSize));
+      rotateHandle.setAttribute("rx", String(handleRadius));
+      rotateHandle.setAttribute("ry", String(handleRadius));
 
       rotateHandle.addEventListener("pointerdown", (event) => {
         if (!isSpaceEditing || isDeskPlacementActive) {
@@ -1987,19 +2177,23 @@ const renderSpaceDesks = (desks = []) => {
           return;
         }
         setSelectedDesk(desk.id);
+        deskEditState.draggingDeskId = desk.id;
+        deskEditState.draggingPointerId = event.pointerId;
         deskEditState.transformMode = "rotate";
+        deskEditState.transformHandle = null;
         deskEditState.transformPointerId = event.pointerId;
         deskEditState.transformStartX = point.x;
         deskEditState.transformStartY = point.y;
         deskEditState.transformStartWidth = desk.width || deskPixelWidth;
         deskEditState.transformStartHeight = desk.height || deskPixelHeight;
         deskEditState.transformStartRotation = desk.rotation || 0;
+        deskEditState.startX = desk.x;
+        deskEditState.startY = desk.y;
         if (rotateHandle.setPointerCapture) {
           rotateHandle.setPointerCapture(event.pointerId);
         }
       });
 
-      handles.appendChild(resizeHandle);
       handles.appendChild(rotateHandle);
       group.appendChild(handles);
     }
@@ -2146,19 +2340,66 @@ const handleDeskPointerMove = (event) => {
     }
     const metrics = getDeskMetrics(svg, desk);
     if (deskEditState.transformMode === "resize") {
+      const handleKey = deskEditState.transformHandle || "se";
+      const affectsX = handleKey.includes("e") || handleKey.includes("w");
+      const affectsY = handleKey.includes("n") || handleKey.includes("s");
+      const dimensions = getDeskDimensions(desk);
+      const baseWidthView = dimensions.width * metrics.scaleX;
+      const baseHeightView = dimensions.height * metrics.scaleY;
+      const baseHalfWidth = baseWidthView / 2;
+      const baseHalfHeight = baseHeightView / 2;
+      const minWidthView = deskMinWidth * metrics.scaleX;
+      const minHeightView = deskMinHeight * metrics.scaleY;
       const dx = point.x - desk.x;
       const dy = point.y - desk.y;
       const rotation = getDeskRotationRadians(desk);
       const localX = dx * Math.cos(rotation) + dy * Math.sin(rotation);
       const localY = -dx * Math.sin(rotation) + dy * Math.cos(rotation);
-      const nextWidth = Math.max(deskMinWidth, Math.abs(localX) * 2 / metrics.scaleX);
-      const nextHeight = Math.max(deskMinHeight, Math.abs(localY) * 2 / metrics.scaleY);
+      let nextWidth = dimensions.width;
+      let nextHeight = dimensions.height;
+      let centerShiftX = 0;
+      let centerShiftY = 0;
+      let nextLocalX = localX;
+      let nextLocalY = localY;
+
+      if (affectsX) {
+        const fixedX = handleKey.includes("e") ? -baseHalfWidth : baseHalfWidth;
+        if (handleKey.includes("e")) {
+          nextLocalX = Math.max(nextLocalX, fixedX + minWidthView);
+        } else {
+          nextLocalX = Math.min(nextLocalX, fixedX - minWidthView);
+        }
+        const nextWidthView = Math.abs(nextLocalX - fixedX);
+        nextWidth = Math.max(deskMinWidth, nextWidthView / metrics.scaleX);
+        centerShiftX = (nextLocalX + fixedX) / 2;
+      }
+
+      if (affectsY) {
+        const fixedY = handleKey.includes("s") ? -baseHalfHeight : baseHalfHeight;
+        if (handleKey.includes("s")) {
+          nextLocalY = Math.max(nextLocalY, fixedY + minHeightView);
+        } else {
+          nextLocalY = Math.min(nextLocalY, fixedY - minHeightView);
+        }
+        const nextHeightView = Math.abs(nextLocalY - fixedY);
+        nextHeight = Math.max(deskMinHeight, nextHeightView / metrics.scaleY);
+        centerShiftY = (nextLocalY + fixedY) / 2;
+      }
+
+      const baseCenterX = desk.x;
+      const baseCenterY = desk.y;
+      const cos = Math.cos(rotation);
+      const sin = Math.sin(rotation);
+      const deltaX = centerShiftX * cos - centerShiftY * sin;
+      const deltaY = centerShiftX * sin + centerShiftY * cos;
+      desk.x = baseCenterX + deltaX;
+      desk.y = baseCenterY + deltaY;
       updateDeskDimensionsLocal(desk.id, nextWidth, nextHeight);
     }
     if (deskEditState.transformMode === "rotate") {
       const angle = Math.atan2(point.y - desk.y, point.x - desk.x);
       const rotationDeg = ((angle * 180) / Math.PI + 90 + 360) % 360;
-      desk.rotation = rotationDeg;
+      desk.rotation = snapRotation(rotationDeg);
       const group = svg.querySelector(`.space-desk[data-desk-id="${String(desk.id)}"]`);
       const deskMetrics = getDeskMetrics(svg, desk);
       updateDeskElementPosition(group, desk, deskMetrics);
@@ -2169,7 +2410,8 @@ const handleDeskPointerMove = (event) => {
   const metrics = getDeskMetrics(svg, desk);
   const rawX = point.x - deskEditState.offsetX;
   const rawY = point.y - deskEditState.offsetY;
-  const clamped = clampDeskPosition(rawX, rawY, metrics);
+  const snapped = snapDeskCenter(rawX, rawY, desk, metrics);
+  const clamped = clampDeskPosition(snapped.x, snapped.y, metrics);
   updateDeskPositionLocal(deskEditState.draggingDeskId, clamped.x, clamped.y);
   const moved =
     Math.abs(clamped.x - deskEditState.startX) > 0.5 || Math.abs(clamped.y - deskEditState.startY) > 0.5;
@@ -2204,16 +2446,21 @@ const finishDeskDrag = async () => {
   if (!desk) {
     return;
   }
+  const pendingPayload = pendingDeskUpdates.get(String(deskId)) || {};
   try {
+    const payload = { ...pendingPayload, x: desk.x, y: desk.y };
     const updated = await apiRequest(`/api/desks/${deskId}`, {
       method: "PUT",
-      body: JSON.stringify({ x: desk.x, y: desk.y }),
+      body: JSON.stringify(payload),
     });
     if (updated) {
       const index = currentDesks.findIndex((item) => String(item.id) === String(deskId));
       if (index >= 0) {
         currentDesks[index] = updated;
         renderSpaceDesks(currentDesks);
+      }
+      if (Object.keys(pendingPayload).length > 0) {
+        pendingDeskUpdates.delete(String(deskId));
       }
     }
   } catch (error) {
@@ -2232,7 +2479,10 @@ const handleDeskPointerEnd = (event) => {
     const startX = deskEditState.startX;
     const startY = deskEditState.startY;
     deskEditState.transformMode = null;
+    deskEditState.transformHandle = null;
     deskEditState.transformPointerId = null;
+    deskEditState.draggingDeskId = null;
+    deskEditState.draggingPointerId = null;
     if (!desk || !deskId) {
       return;
     }
