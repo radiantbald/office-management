@@ -19,6 +19,7 @@
           <button id="openAddModalBtn" class="primary" type="button">Добавить здание</button>
           <button id="editBuildingBtn" class="ghost is-hidden" type="button">Редактировать</button>
           <button id="editFloorBtn" class="ghost is-hidden" type="button">Редактировать</button>
+          <button id="editSpaceBtn" class="ghost is-hidden" type="button">Редактировать</button>
         </div>
       </div>
     </header>
@@ -101,21 +102,53 @@
           <a id="spaceBreadcrumbFloor" class="breadcrumb-link" href="/buildings">Этаж</a>
         </div>
         <div class="space-layout">
-          <div class="card space-info-card">
-            <div class="space-info-header">
-              <h3 id="spaceName">Пространство</h3>
-              <span id="spaceKindTag" class="badge"></span>
-            </div>
-            <div class="space-info-meta">
-              <span id="spaceCapacityTag" class="tag is-hidden"></span>
-              <span id="spaceIdTag" class="tag is-hidden"></span>
-            </div>
-            <div id="spacePageStatus" class="status" role="status" aria-live="polite"></div>
-          </div>
           <div class="card space-map-card">
             <div class="card-header">
               <h3>Схема пространства</h3>
+              <div class="space-card-actions">
+                <button
+                  id="addDeskBtn"
+                  class="icon-button add-desk-btn is-hidden"
+                  type="button"
+                  aria-label="Добавить стол"
+                  title="Добавить стол"
+                  data-label="Добавить стол"
+                  data-active-label="Отменить размещение"
+                  data-icon="+"
+                  data-active-icon="×"
+                >
+                  +
+                </button>
+                <button
+                  id="deleteDeskBtn"
+                  class="icon-button desk-delete-btn is-hidden"
+                  type="button"
+                  aria-label="Удалить стол"
+                  title="Удалить стол"
+                >
+                  🗑
+                </button>
+                <button
+                  id="shrinkDeskBtn"
+                  class="icon-button desk-shrink-btn is-hidden"
+                  type="button"
+                  aria-label="Уменьшить стол"
+                  title="Уменьшить стол"
+                >
+                  −
+                </button>
+                <button
+                  id="rotateDeskBtn"
+                  class="icon-button desk-rotate-btn is-hidden"
+                  type="button"
+                  aria-label="Повернуть стол"
+                  title="Повернуть стол"
+                >
+                  ↻
+                </button>
+              </div>
             </div>
+            <div id="spacePageStatus" class="status" role="status" aria-live="polite"></div>
             <div id="spaceSnapshot" class="space-snapshot"></div>
             <div id="spaceSnapshotPlaceholder" class="placeholder app-empty is-hidden">
               Схема пространства пока недоступна.

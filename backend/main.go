@@ -67,10 +67,15 @@ type point struct {
 }
 
 type desk struct {
-	ID        int64  `json:"id"`
-	SpaceID   int64  `json:"space_id"`
-	Label     string `json:"label"`
-	CreatedAt string `json:"created_at"`
+	ID        int64   `json:"id"`
+	SpaceID   int64   `json:"space_id"`
+	Label     string  `json:"label"`
+	X         float64 `json:"x"`
+	Y         float64 `json:"y"`
+	Width     float64 `json:"width"`
+	Height    float64 `json:"height"`
+	Rotation  float64 `json:"rotation"`
+	CreatedAt string  `json:"created_at"`
 }
 
 type meetingRoom struct {
@@ -122,6 +127,7 @@ func main() {
 	mux.HandleFunc("/api/spaces", app.handleSpaces)
 	mux.HandleFunc("/api/spaces/", app.handleSpaceSubroutes)
 	mux.HandleFunc("/api/desks", app.handleDesks)
+	mux.HandleFunc("/api/desks/", app.handleDeskSubroutes)
 	mux.HandleFunc("/api/meeting-rooms", app.handleMeetingRooms)
 
 	webDir := filepath.Join("..", "frontend")
@@ -181,6 +187,11 @@ func migrate(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			space_id INTEGER NOT NULL,
 			label TEXT NOT NULL,
+			x REAL NOT NULL DEFAULT 0,
+			y REAL NOT NULL DEFAULT 0,
+			width REAL NOT NULL DEFAULT 200,
+			height REAL NOT NULL DEFAULT 100,
+			rotation REAL NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			FOREIGN KEY(space_id) REFERENCES spaces(id) ON DELETE CASCADE
 		);`,
@@ -212,6 +223,21 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "spaces", "capacity", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "desks", "x", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "desks", "y", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "desks", "width", "REAL NOT NULL DEFAULT 200"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "desks", "height", "REAL NOT NULL DEFAULT 100"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "desks", "rotation", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return nil
@@ -778,24 +804,110 @@ func (a *app) handleDesks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		SpaceID int64  `json:"space_id"`
-		Label   string `json:"label"`
+		SpaceID  int64    `json:"space_id"`
+		Label    string   `json:"label"`
+		X        *float64 `json:"x"`
+		Y        *float64 `json:"y"`
+		Width    *float64 `json:"width"`
+		Height   *float64 `json:"height"`
+		Rotation *float64 `json:"rotation"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	payload.Label = strings.TrimSpace(payload.Label)
-	if payload.SpaceID == 0 || payload.Label == "" {
-		respondError(w, http.StatusBadRequest, "space_id and label are required")
+	if payload.SpaceID == 0 || payload.Label == "" || payload.X == nil || payload.Y == nil {
+		respondError(w, http.StatusBadRequest, "space_id, label, x, and y are required")
 		return
 	}
-	result, err := a.createDesk(payload.SpaceID, payload.Label)
+	width := 200.0
+	height := 100.0
+	rotation := 0.0
+	if payload.Width != nil && *payload.Width > 0 {
+		width = *payload.Width
+	}
+	if payload.Height != nil && *payload.Height > 0 {
+		height = *payload.Height
+	}
+	if payload.Rotation != nil {
+		rotation = *payload.Rotation
+	}
+	result, err := a.createDesk(payload.SpaceID, payload.Label, *payload.X, *payload.Y, width, height, rotation)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	respondJSON(w, http.StatusCreated, result)
+}
+
+func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
+	id, suffix, err := parseIDFromPath(r.URL.Path, "/api/desks/")
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if suffix != "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		var payload struct {
+			Label    *string  `json:"label"`
+			X        *float64 `json:"x"`
+			Y        *float64 `json:"y"`
+			Width    *float64 `json:"width"`
+			Height   *float64 `json:"height"`
+			Rotation *float64 `json:"rotation"`
+		}
+		if err := decodeJSON(r, &payload); err != nil {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if payload.Label != nil {
+			trimmed := strings.TrimSpace(*payload.Label)
+			if trimmed == "" {
+				respondError(w, http.StatusBadRequest, "label is required")
+				return
+			}
+			payload.Label = &trimmed
+		}
+		if payload.Label == nil && payload.X == nil && payload.Y == nil {
+			respondError(w, http.StatusBadRequest, "no fields to update")
+			return
+		}
+		result, err := a.updateDesk(id, payload.Label, payload.X, payload.Y, payload.Width, payload.Height, payload.Rotation)
+		if err != nil {
+			if errors.Is(err, errNotFound) {
+				respondError(w, http.StatusNotFound, "desk not found")
+				return
+			}
+			if err.Error() == "label is required" {
+				respondError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if err.Error() == "width and height must be greater than 0" {
+				respondError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		respondJSON(w, http.StatusOK, result)
+	case http.MethodDelete:
+		if err := a.deleteDesk(id); err != nil {
+			if errors.Is(err, errNotFound) {
+				respondError(w, http.StatusNotFound, "desk not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func (a *app) handleMeetingRooms(w http.ResponseWriter, r *http.Request) {
@@ -1301,7 +1413,7 @@ func (a *app) deleteSpace(id int64) error {
 
 func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 	rows, err := a.db.Query(
-		`SELECT id, space_id, label, created_at FROM desks WHERE space_id = ? ORDER BY id DESC`,
+		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM desks WHERE space_id = ? ORDER BY id DESC`,
 		spaceID,
 	)
 	if err != nil {
@@ -1312,7 +1424,7 @@ func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 	var items []desk
 	for rows.Next() {
 		var d desk
-		if err := rows.Scan(&d.ID, &d.SpaceID, &d.Label, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.SpaceID, &d.Label, &d.X, &d.Y, &d.Width, &d.Height, &d.Rotation, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, d)
@@ -1320,11 +1432,16 @@ func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 	return items, rows.Err()
 }
 
-func (a *app) createDesk(spaceID int64, label string) (desk, error) {
+func (a *app) createDesk(spaceID int64, label string, x, y, width, height, rotation float64) (desk, error) {
 	result, err := a.db.Exec(
-		`INSERT INTO desks (space_id, label) VALUES (?, ?)`,
+		`INSERT INTO desks (space_id, label, x, y, width, height, rotation) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		spaceID,
 		label,
+		x,
+		y,
+		width,
+		height,
+		rotation,
 	)
 	if err != nil {
 		return desk{}, err
@@ -1337,8 +1454,95 @@ func (a *app) createDesk(spaceID int64, label string) (desk, error) {
 		ID:        id,
 		SpaceID:   spaceID,
 		Label:     label,
+		X:         x,
+		Y:         y,
+		Width:     width,
+		Height:    height,
+		Rotation:  rotation,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}, nil
+}
+
+func (a *app) getDesk(id int64) (desk, error) {
+	var d desk
+	row := a.db.QueryRow(
+		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM desks WHERE id = ?`,
+		id,
+	)
+	if err := row.Scan(&d.ID, &d.SpaceID, &d.Label, &d.X, &d.Y, &d.Width, &d.Height, &d.Rotation, &d.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return desk{}, errNotFound
+		}
+		return desk{}, err
+	}
+	return d, nil
+}
+
+func (a *app) updateDesk(id int64, label *string, x *float64, y *float64, width *float64, height *float64, rotation *float64) (desk, error) {
+	current, err := a.getDesk(id)
+	if err != nil {
+		return desk{}, err
+	}
+	if label != nil {
+		current.Label = *label
+	}
+	if x != nil {
+		current.X = *x
+	}
+	if y != nil {
+		current.Y = *y
+	}
+	if width != nil {
+		current.Width = *width
+	}
+	if height != nil {
+		current.Height = *height
+	}
+	if rotation != nil {
+		current.Rotation = *rotation
+	}
+	if current.Label == "" {
+		return desk{}, errors.New("label is required")
+	}
+	if current.Width <= 0 || current.Height <= 0 {
+		return desk{}, errors.New("width and height must be greater than 0")
+	}
+	result, err := a.db.Exec(
+		`UPDATE desks SET label = ?, x = ?, y = ?, width = ?, height = ?, rotation = ? WHERE id = ?`,
+		current.Label,
+		current.X,
+		current.Y,
+		current.Width,
+		current.Height,
+		current.Rotation,
+		id,
+	)
+	if err != nil {
+		return desk{}, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return desk{}, err
+	}
+	if rows == 0 {
+		return desk{}, errNotFound
+	}
+	return current, nil
+}
+
+func (a *app) deleteDesk(id int64) error {
+	result, err := a.db.Exec(`DELETE FROM desks WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return errNotFound
+	}
+	return nil
 }
 
 func (a *app) listMeetingRoomsBySpace(spaceID int64) ([]meetingRoom, error) {

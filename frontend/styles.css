@@ -298,6 +298,10 @@ button:disabled {
   color: #1f2937;
 }
 
+.status:empty {
+  display: none;
+}
+
 .status:not(:empty) {
   margin-top: 12px;
   min-height: 20px;
@@ -391,20 +395,27 @@ button:disabled {
   gap: 0;
   grid-template-rows: auto 1fr auto;
   min-height: 0;
-  height: 100%;
+  height: auto;
+}
+
+body:not(.floor-editing) .floor-page {
+  grid-template-rows: auto auto auto;
 }
 
 .space-page {
   display: grid;
-  gap: 16px;
+  gap: 0;
   min-height: 0;
+  height: 100%;
 }
 
 .space-layout {
   display: grid;
-  grid-template-columns: minmax(240px, 320px) 1fr;
-  gap: 16px;
-  align-items: start;
+  grid-template-columns: 1fr;
+  gap: 0;
+  align-items: stretch;
+  min-height: 0;
+  height: 100%;
 }
 
 .space-info-card {
@@ -428,17 +439,32 @@ button:disabled {
 .space-map-card {
   display: grid;
   gap: 12px;
+  grid-template-rows: auto auto 1fr auto;
+  min-height: 0;
+  height: 100%;
+  padding-top: 10px;
+}
+
+.space-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .space-snapshot {
   width: 100%;
-  min-height: 360px;
+  min-height: 0;
+  height: 100%;
   background: #f8fafc;
   border-radius: 12px;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.space-snapshot.is-desk-placing {
+  cursor: crosshair;
 }
 
 .space-snapshot svg {
@@ -448,6 +474,85 @@ button:disabled {
   pointer-events: none;
 }
 
+.space-snapshot.is-editing svg {
+  pointer-events: auto;
+}
+
+.space-desk {
+  pointer-events: none;
+}
+
+.space-snapshot.is-editing .space-desk {
+  pointer-events: all;
+  cursor: grab;
+}
+
+.space-desk.is-dragging {
+  cursor: grabbing;
+}
+
+.space-desk-shape {
+  fill: #111827;
+  stroke: #f9fafb;
+  stroke-width: 1.5;
+}
+
+.space-desk.is-selected .space-desk-shape {
+  fill: #2563eb;
+}
+
+.desk-handles {
+  pointer-events: none;
+}
+
+.desk-handle {
+  fill: #ffffff;
+  stroke: #2563eb;
+  stroke-width: 2;
+  pointer-events: all;
+}
+
+.desk-handle-resize {
+  fill: #e0f2fe;
+  stroke: #0284c7;
+}
+
+.desk-handle-rotate {
+  fill: #ede9fe;
+  stroke: #7c3aed;
+}
+
+.space-desk-label {
+  font-size: 12px;
+  font-weight: 600;
+  fill: #111827;
+}
+
+.add-desk-btn[aria-pressed="true"] {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.desk-delete-btn {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.desk-delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.desk-shrink-btn {
+  background: #e2e8f0;
+  color: #1f2937;
+}
+
+.desk-rotate-btn {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
 .floor-plan-layout {
   display: grid;
   grid-template-columns: 1fr;
@@ -455,7 +560,7 @@ button:disabled {
   row-gap: 10px;
   margin-top: 12px;
   align-items: start;
-  height: 100%;
+  height: auto;
   min-height: 0;
 }
 
@@ -482,6 +587,10 @@ button:disabled {
 
 .floor-plan-layout .floor-plan {
   margin-top: 0;
+}
+
+.floor-plan-layout:not(.is-editing) .floor-plan {
+  height: auto;
 }
 
 .floor-plan-layout.is-editing .floor-plan {
@@ -714,11 +823,14 @@ button:disabled {
 
 .breadcrumb {
   font-size: 13px;
-  margin-bottom: 10px;
+  margin: 0;
+  height: auto;
+  line-height: 15px;
+  padding-bottom: 10px;
 }
 
 .building-page .breadcrumb {
-  margin-bottom: 10px;
+  margin: 0;
 }
 
 .breadcrumb-link {
@@ -816,6 +928,10 @@ button:disabled {
   overflow: hidden;
   cursor: grab;
   touch-action: none;
+}
+
+.floor-plan-layout:not(.is-editing) .floor-plan-preview {
+  height: auto;
 }
 
 .floor-plan-preview.is-dragging {
