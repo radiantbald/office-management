@@ -94,6 +94,8 @@ let isFloorEditing = false;
 let isSpaceEditing = false;
 let isDeskPlacementActive = false;
 let pendingDeskUpdates = new Map();
+let pendingDeskRender = false;
+let currentSpaceBounds = null;
 const deskEditState = {
   selectedDeskId: null,
   draggingDeskId: null,
@@ -1691,6 +1693,17 @@ const setDeskPlacementActive = (active) => {
   }
 };
 
+const scheduleDeskRender = () => {
+  if (pendingDeskRender) {
+    return;
+  }
+  pendingDeskRender = true;
+  requestAnimationFrame(() => {
+    pendingDeskRender = false;
+    renderSpaceDesks(currentDesks);
+  });
+};
+
 const setSpaceEditMode = (editing) => {
   isSpaceEditing = editing;
   document.body.classList.toggle("space-editing", editing);
@@ -1718,9 +1731,13 @@ const setSpaceEditMode = (editing) => {
     editSpaceBtn.classList.toggle("primary", editing);
     editSpaceBtn.classList.toggle("ghost", !editing);
   }
+  if (spaceSnapshot) {
+    scheduleDeskRender();
+  }
   if (!editing) {
     deskEditState.selectedDeskId = null;
     setDeskPlacementActive(false);
+    renderSpaceDesks(currentDesks);
   }
 };
 
@@ -1766,8 +1783,8 @@ const getDeskMetrics = (svg, desk) => {
   const scaleX = viewBox.width / rectWidth;
   const scaleY = viewBox.height / rectHeight;
   return {
-    width: dimensions.width * scaleX,
-    height: dimensions.height * scaleY,
+    width: dimensions.width,
+    height: dimensions.height,
     scaleX,
     scaleY,
     viewBox,
@@ -1905,7 +1922,7 @@ const updateDeskElementPosition = (group, desk, metrics) => {
   const label = group.querySelector(".space-desk-label");
   const width = metrics.width;
   const height = metrics.height;
-  const labelOffset = height / 2 + Math.max(8 * metrics.scaleY, height * 0.2);
+  const rotation = Number.isFinite(desk.rotation) ? desk.rotation : 0;
   if (rect) {
     rect.setAttribute("x", String(desk.x - width / 2));
     rect.setAttribute("y", String(desk.y - height / 2));
@@ -1915,7 +1932,10 @@ const updateDeskElementPosition = (group, desk, metrics) => {
   }
   if (label) {
     label.setAttribute("x", String(desk.x));
-    label.setAttribute("y", String(desk.y - labelOffset));
+    label.setAttribute("y", String(desk.y));
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("dominant-baseline", "middle");
+    label.setAttribute("transform", `rotate(${-rotation} ${desk.x} ${desk.y})`);
   }
   const handlesGroup = group.querySelector(".desk-handles");
   if (handlesGroup) {
@@ -1977,7 +1997,6 @@ const updateDeskElementPosition = (group, desk, metrics) => {
       rotateHandle.setAttribute("ry", String(handleRadius));
     }
   }
-  const rotation = Number.isFinite(desk.rotation) ? desk.rotation : 0;
   group.setAttribute("transform", `rotate(${rotation} ${desk.x} ${desk.y})`);
 };
 
@@ -1985,17 +2004,112 @@ const getDeskRotationRadians = (desk) =>
   ((Number.isFinite(desk?.rotation) ? desk.rotation : 0) * Math.PI) / 180;
 
 const clampDeskPosition = (x, y, metrics) => {
-  if (!metrics?.viewBox) {
+  if (!metrics?.viewBox && !currentSpaceBounds) {
     return { x, y };
   }
-  const minX = metrics.viewBox.minX + metrics.width / 2;
-  const maxX = metrics.viewBox.minX + metrics.viewBox.width - metrics.width / 2;
-  const minY = metrics.viewBox.minY + metrics.height / 2;
-  const maxY = metrics.viewBox.minY + metrics.viewBox.height - metrics.height / 2;
+  const bounds = currentSpaceBounds || metrics.viewBox;
+  if (!bounds) {
+    return { x, y };
+  }
+  const minX = bounds.minX + metrics.width / 2;
+  const maxX = bounds.minX + bounds.width - metrics.width / 2;
+  const minY = bounds.minY + metrics.height / 2;
+  const maxY = bounds.minY + bounds.height - metrics.height / 2;
   return {
     x: Math.min(Math.max(x, minX), maxX),
     y: Math.min(Math.max(y, minY), maxY),
   };
+};
+
+const clampDeskCenterToBounds = (x, y, width, height, bounds) => {
+  if (!bounds) {
+    return { x, y };
+  }
+  const minX = bounds.minX + width / 2;
+  const maxX = bounds.minX + bounds.width - width / 2;
+  const minY = bounds.minY + height / 2;
+  const maxY = bounds.minY + bounds.height - height / 2;
+  return {
+    x: Math.min(Math.max(x, minX), maxX),
+    y: Math.min(Math.max(y, minY), maxY),
+  };
+};
+
+const normalizeDeskForBounds = (desk, bounds) => {
+  const normalized = { ...desk };
+  const rawWidth = Number(desk?.width);
+  const rawHeight = Number(desk?.height);
+  let width = Number.isFinite(rawWidth) && rawWidth > 0 ? rawWidth : deskPixelWidth;
+  let height = Number.isFinite(rawHeight) && rawHeight > 0 ? rawHeight : deskPixelHeight;
+  if (bounds) {
+    const minWidth = Math.min(deskMinWidth, bounds.width);
+    const minHeight = Math.min(deskMinHeight, bounds.height);
+    width = Math.min(width, bounds.width);
+    height = Math.min(height, bounds.height);
+    width = Math.max(width, minWidth);
+    height = Math.max(height, minHeight);
+  } else {
+    width = Math.max(width, deskMinWidth);
+    height = Math.max(height, deskMinHeight);
+  }
+  const rawX = Number(desk?.x);
+  const rawY = Number(desk?.y);
+  const fallbackX = bounds ? bounds.minX + bounds.width / 2 : 0;
+  const fallbackY = bounds ? bounds.minY + bounds.height / 2 : 0;
+  let x = Number.isFinite(rawX) ? rawX : fallbackX;
+  let y = Number.isFinite(rawY) ? rawY : fallbackY;
+  const clamped = clampDeskCenterToBounds(x, y, width, height, bounds);
+  x = clamped.x;
+  y = clamped.y;
+  const changed = width !== desk.width || height !== desk.height || x !== desk.x || y !== desk.y;
+  normalized.width = width;
+  normalized.height = height;
+  normalized.x = x;
+  normalized.y = y;
+  return { normalized, changed };
+};
+
+const normalizeDesksForCurrentSpace = (desks = []) => {
+  if (!currentSpaceBounds) {
+    return { desks, updates: [] };
+  }
+  const updates = [];
+  const normalized = desks.map((desk) => {
+    const result = normalizeDeskForBounds(desk, currentSpaceBounds);
+    if (result.changed && desk?.id) {
+      updates.push({
+        id: desk.id,
+        payload: {
+          x: result.normalized.x,
+          y: result.normalized.y,
+          width: result.normalized.width,
+          height: result.normalized.height,
+        },
+      });
+    }
+    return result.normalized;
+  });
+  return { desks: normalized, updates };
+};
+
+const persistDeskNormalizationUpdates = async (updates = []) => {
+  for (const update of updates) {
+    try {
+      const updated = await apiRequest(`/api/desks/${update.id}`, {
+        method: "PUT",
+        body: JSON.stringify(update.payload),
+      });
+      if (updated) {
+        const index = currentDesks.findIndex((desk) => String(desk.id) === String(update.id));
+        if (index >= 0) {
+          currentDesks[index] = updated;
+        }
+      }
+    } catch (error) {
+      setSpacePageStatus(error.message, "error");
+    }
+  }
+  renderSpaceDesks(currentDesks);
 };
 
 const updateDeskPositionLocal = (deskId, x, y) => {
@@ -2049,8 +2163,7 @@ const renderSpaceDesks = (desks = []) => {
       return;
     }
     const deskMetrics = getDeskMetrics(svg, desk);
-    const labelOffset =
-      deskMetrics.height / 2 + Math.max(8 * deskMetrics.scaleY, deskMetrics.height * 0.2);
+    const rotation = Number.isFinite(desk.rotation) ? desk.rotation : 0;
     const group = document.createElementNS(svgNamespace, "g");
     group.classList.add("space-desk");
     group.setAttribute("data-desk-id", String(desk.id));
@@ -2068,8 +2181,10 @@ const renderSpaceDesks = (desks = []) => {
     label.classList.add("space-desk-label");
     label.textContent = desk.label || "";
     label.setAttribute("x", String(desk.x));
-    label.setAttribute("y", String(desk.y - labelOffset));
+    label.setAttribute("y", String(desk.y));
     label.setAttribute("text-anchor", "middle");
+    label.setAttribute("dominant-baseline", "middle");
+    label.setAttribute("transform", `rotate(${-rotation} ${desk.x} ${desk.y})`);
 
     const title = document.createElementNS(svgNamespace, "title");
     title.textContent = desk.label || "Стол";
@@ -2077,7 +2192,6 @@ const renderSpaceDesks = (desks = []) => {
     group.appendChild(title);
     group.appendChild(shape);
     group.appendChild(label);
-    const rotation = Number.isFinite(desk.rotation) ? desk.rotation : 0;
     group.setAttribute("transform", `rotate(${rotation} ${desk.x} ${desk.y})`);
     if (isSpaceEditing && String(desk.id) === String(deskEditState.selectedDeskId)) {
       const handles = document.createElementNS(svgNamespace, "g");
@@ -2241,10 +2355,15 @@ const loadSpaceDesks = async (spaceId) => {
     return;
   }
   const response = await apiRequest(`/api/spaces/${spaceId}/desks`);
-  currentDesks = Array.isArray(response?.items) ? response.items : [];
+  const rawDesks = Array.isArray(response?.items) ? response.items : [];
+  const normalized = normalizeDesksForCurrentSpace(rawDesks);
+  currentDesks = normalized.desks;
   pendingDeskUpdates = new Map();
   setSelectedDesk(null);
   renderSpaceDesks(currentDesks);
+  if (normalized.updates.length > 0) {
+    await persistDeskNormalizationUpdates(normalized.updates);
+  }
 };
 
 const getNextDeskLabel = (desks = []) => {
@@ -2344,12 +2463,12 @@ const handleDeskPointerMove = (event) => {
       const affectsX = handleKey.includes("e") || handleKey.includes("w");
       const affectsY = handleKey.includes("n") || handleKey.includes("s");
       const dimensions = getDeskDimensions(desk);
-      const baseWidthView = dimensions.width * metrics.scaleX;
-      const baseHeightView = dimensions.height * metrics.scaleY;
+      const baseWidthView = dimensions.width;
+      const baseHeightView = dimensions.height;
       const baseHalfWidth = baseWidthView / 2;
       const baseHalfHeight = baseHeightView / 2;
-      const minWidthView = deskMinWidth * metrics.scaleX;
-      const minHeightView = deskMinHeight * metrics.scaleY;
+      const minWidthView = deskMinWidth;
+      const minHeightView = deskMinHeight;
       const dx = point.x - desk.x;
       const dy = point.y - desk.y;
       const rotation = getDeskRotationRadians(desk);
@@ -2370,7 +2489,7 @@ const handleDeskPointerMove = (event) => {
           nextLocalX = Math.min(nextLocalX, fixedX - minWidthView);
         }
         const nextWidthView = Math.abs(nextLocalX - fixedX);
-        nextWidth = Math.max(deskMinWidth, nextWidthView / metrics.scaleX);
+        nextWidth = Math.max(deskMinWidth, nextWidthView);
         centerShiftX = (nextLocalX + fixedX) / 2;
       }
 
@@ -2382,7 +2501,7 @@ const handleDeskPointerMove = (event) => {
           nextLocalY = Math.min(nextLocalY, fixedY - minHeightView);
         }
         const nextHeightView = Math.abs(nextLocalY - fixedY);
-        nextHeight = Math.max(deskMinHeight, nextHeightView / metrics.scaleY);
+        nextHeight = Math.max(deskMinHeight, nextHeightView);
         centerShiftY = (nextLocalY + fixedY) / 2;
       }
 
@@ -2512,6 +2631,50 @@ const handleDeskPointerEnd = (event) => {
     return;
   }
   void finishDeskDrag();
+};
+
+const finalizeActiveDeskInteraction = async () => {
+  if (deskEditState.transformMode) {
+    const deskId = deskEditState.selectedDeskId;
+    const desk = findDeskById(deskId);
+    const startWidth = deskEditState.transformStartWidth;
+    const startHeight = deskEditState.transformStartHeight;
+    const startRotation = deskEditState.transformStartRotation;
+    const startX = deskEditState.startX;
+    const startY = deskEditState.startY;
+    deskEditState.transformMode = null;
+    deskEditState.transformHandle = null;
+    deskEditState.transformPointerId = null;
+    deskEditState.draggingDeskId = null;
+    deskEditState.draggingPointerId = null;
+    if (!desk || !deskId) {
+      return;
+    }
+    const payload = {};
+    if (desk.width !== startWidth) {
+      payload.width = desk.width;
+    }
+    if (desk.height !== startHeight) {
+      payload.height = desk.height;
+    }
+    if (desk.rotation !== startRotation) {
+      payload.rotation = desk.rotation;
+    }
+    if (desk.x !== startX) {
+      payload.x = desk.x;
+    }
+    if (desk.y !== startY) {
+      payload.y = desk.y;
+    }
+    if (Object.keys(payload).length === 0) {
+      return;
+    }
+    queueDeskUpdate(deskId, payload);
+    return;
+  }
+  if (deskEditState.draggingDeskId) {
+    await finishDeskDrag();
+  }
 };
 
 const persistDeskUpdate = async (deskId, payload, onRollback) => {
@@ -3211,6 +3374,7 @@ const renderSpaceSnapshot = (space, floorPlanMarkup) => {
   }
   spaceSnapshot.innerHTML = "";
   const points = normalizeSpacePoints(space?.points);
+  currentSpaceBounds = points.length >= 3 ? getSpaceBounds(points) : null;
   const snapshotSvg = buildSpaceSnapshotSvg(
     floorPlanMarkup || "",
     points,
@@ -3223,7 +3387,7 @@ const renderSpaceSnapshot = (space, floorPlanMarkup) => {
   }
   spaceSnapshotPlaceholder.classList.add("is-hidden");
   spaceSnapshot.appendChild(snapshotSvg);
-  renderSpaceDesks(currentDesks);
+  scheduleDeskRender();
 };
 
 const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
@@ -3236,6 +3400,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     spaceSnapshotPlaceholder.classList.add("is-hidden");
   }
   currentSpace = null;
+  currentSpaceBounds = null;
   currentDesks = [];
   pendingDeskUpdates = new Map();
   setSpaceEditMode(false);
@@ -3517,6 +3682,7 @@ if (editSpaceBtn) {
         editSpaceBtn.disabled = true;
       }
       try {
+        await finalizeActiveDeskInteraction();
         if (pendingDeskUpdates.size > 0) {
           await flushPendingDeskUpdates();
           setSpacePageStatus("Изменения столов сохранены.", "success");

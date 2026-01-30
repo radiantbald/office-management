@@ -17,7 +17,18 @@ body.floor-editing {
   overflow: hidden;
 }
 
+body.space-editing {
+  height: 100vh;
+  overflow: hidden;
+}
+
 body.floor-editing .app {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body.space-editing .app {
   min-height: 0;
   height: 100%;
   overflow: hidden;
@@ -25,6 +36,18 @@ body.floor-editing .app {
 
 body.floor-editing .floor-page,
 body.floor-editing .floor-plan-layout {
+  min-height: 0;
+  height: 100%;
+}
+
+body.space-editing .space-page {
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  height: 100%;
+}
+
+body.space-editing .space-layout,
+body.space-editing .space-map-card {
   min-height: 0;
   height: 100%;
 }
@@ -492,13 +515,14 @@ body:not(.floor-editing) .floor-page {
 }
 
 .space-desk-shape {
-  fill: #111827;
-  stroke: #f9fafb;
-  stroke-width: 1.5;
+  fill: #e5e7eb;
+  stroke: #cbd5e1;
+  stroke-width: 1;
 }
 
 .space-desk.is-selected .space-desk-shape {
-  fill: #2563eb;
+  fill: #e5e7eb;
+  stroke: #2563eb;
 }
 
 .desk-handles {
@@ -508,21 +532,21 @@ body:not(.floor-editing) .floor-page {
 .desk-bounds {
   fill: none;
   stroke: #2563eb;
-  stroke-width: 1.5;
+  stroke-width: 1;
   stroke-dasharray: 6 4;
   pointer-events: none;
 }
 
 .desk-rotate-line {
   stroke: #7c3aed;
-  stroke-width: 1.5;
+  stroke-width: 1;
   pointer-events: none;
 }
 
 .desk-handle {
   fill: #ffffff;
   stroke: #2563eb;
-  stroke-width: 2;
+  stroke-width: 1.5;
   pointer-events: all;
 }
 
@@ -563,7 +587,7 @@ body:not(.floor-editing) .floor-page {
 .space-desk-label {
   font-size: 12px;
   font-weight: 600;
-  fill: #111827;
+  fill: #000000;
 }
 
 .add-desk-btn[aria-pressed="true"] {
