@@ -1467,26 +1467,75 @@ const getFloorParamsFromPath = () => {
   return { buildingID, floorNumber };
 };
 
-const traceImageToSvg = (file) =>
+const readFileAsText = (file) =>
   new Promise((resolve, reject) => {
-    if (!file) {
-      reject(new Error("Файл не выбран."));
-      return;
-    }
-    if (!window.ImageTracer || typeof window.ImageTracer.imageToSVG !== "function") {
-      reject(new Error("Не удалось загрузить модуль преобразования изображения."));
-      return;
-    }
-    const objectUrl = URL.createObjectURL(file);
-    window.ImageTracer.imageToSVG(
-      objectUrl,
-      (svg) => {
-        URL.revokeObjectURL(objectUrl);
-        resolve(svg);
-      },
-      { scale: 1 }
-    );
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Не удалось прочитать файл."));
+    reader.readAsText(file);
   });
+
+const readFileAsDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Не удалось прочитать файл."));
+    reader.readAsDataURL(file);
+  });
+
+const getImageSize = (dataUrl) =>
+  new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth || img.width, height: img.naturalHeight || img.height });
+    img.onerror = () => reject(new Error("Не удалось загрузить изображение."));
+    img.src = dataUrl;
+  });
+
+const buildSvgWithImage = (dataUrl, width, height) => {
+  const safeDataUrl = dataUrl.replace(/"/g, "&quot;");
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 1;
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : 1;
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" ` +
+    `xmlns:xlink="http://www.w3.org/1999/xlink" ` +
+    `width="${safeWidth}" height="${safeHeight}" viewBox="0 0 ${safeWidth} ${safeHeight}" ` +
+    `preserveAspectRatio="xMidYMid meet">` +
+    `<image x="0" y="0" width="${safeWidth}" height="${safeHeight}" href="${safeDataUrl}" xlink:href="${safeDataUrl}" />` +
+    `</svg>`
+  );
+};
+
+const normalizeSvgMarkup = (markup) => {
+  if (!markup) {
+    return "";
+  }
+  if (!markup.includes("<svg")) {
+    return "";
+  }
+  if (!markup.includes('xmlns="http://www.w3.org/2000/svg"')) {
+    return markup.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+  return markup;
+};
+
+const fileToSvgMarkup = async (file) => {
+  if (!file) {
+    throw new Error("Файл не выбран.");
+  }
+  const isSvgFile =
+    file.type === "image/svg+xml" || (file.name && file.name.toLowerCase().endsWith(".svg"));
+  if (isSvgFile) {
+    const raw = await readFileAsText(file);
+    const normalized = normalizeSvgMarkup(raw.trim());
+    if (!normalized) {
+      throw new Error("Не удалось прочитать SVG.");
+    }
+    return normalized;
+  }
+  const dataUrl = await readFileAsDataUrl(file);
+  const { width, height } = await getImageSize(dataUrl);
+  return buildSvgWithImage(dataUrl, width, height);
+};
 
 const loadBuildingPage = async (buildingID) => {
   setPageMode("building");
@@ -1836,7 +1885,7 @@ if (uploadFloorPlanBtn) {
     clearFloorStatus();
     uploadFloorPlanBtn.disabled = true;
     try {
-      const svgMarkup = await traceImageToSvg(floorPlanFile.files[0]);
+      const svgMarkup = await fileToSvgMarkup(floorPlanFile.files[0]);
       const updated = await apiRequest(`/api/floors/${currentFloor.id}`, {
         method: "PUT",
         body: JSON.stringify({ plan_svg: svgMarkup }),
