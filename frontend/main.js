@@ -39,6 +39,7 @@ const floorTitle = document.getElementById("floorTitle");
 const floorSubtitle = document.getElementById("floorSubtitle");
 const floorLevelTag = document.getElementById("floorLevelTag");
 const floorStatus = document.getElementById("floorStatus");
+const spacePage = document.getElementById("spacePage");
 const floorPlanPreview = document.getElementById("floorPlanPreview");
 const floorPlanPlaceholder = document.getElementById("floorPlanPlaceholder");
 const floorPlanCanvas = document.getElementById("floorPlanCanvas");
@@ -66,11 +67,22 @@ const spaceDeleteBtn = document.getElementById("spaceDeleteBtn");
 const spaceStatus = document.getElementById("spaceStatus");
 const breadcrumbBuildings = document.getElementById("breadcrumbBuildings");
 const breadcrumbBuilding = document.getElementById("breadcrumbBuilding");
+const spaceBreadcrumbBuildings = document.getElementById("spaceBreadcrumbBuildings");
+const spaceBreadcrumbBuilding = document.getElementById("spaceBreadcrumbBuilding");
+const spaceBreadcrumbFloor = document.getElementById("spaceBreadcrumbFloor");
+const spaceName = document.getElementById("spaceName");
+const spaceKindTag = document.getElementById("spaceKindTag");
+const spaceCapacityTag = document.getElementById("spaceCapacityTag");
+const spaceIdTag = document.getElementById("spaceIdTag");
+const spaceSnapshot = document.getElementById("spaceSnapshot");
+const spaceSnapshotPlaceholder = document.getElementById("spaceSnapshotPlaceholder");
+const spacePageStatus = document.getElementById("spacePageStatus");
 
 let buildings = [];
 let editingId = null;
 let currentBuilding = null;
 let currentFloor = null;
+let currentSpace = null;
 let currentSpaces = [];
 let isFloorEditing = false;
 let hasFloorPlan = false;
@@ -225,6 +237,22 @@ const clearSpaceStatus = () => {
   }
   spaceStatus.textContent = "";
   spaceStatus.dataset.tone = "";
+};
+
+const setSpacePageStatus = (message, tone = "info") => {
+  if (!spacePageStatus) {
+    return;
+  }
+  spacePageStatus.textContent = message;
+  spacePageStatus.dataset.tone = tone;
+};
+
+const clearSpacePageStatus = () => {
+  if (!spacePageStatus) {
+    return;
+  }
+  spacePageStatus.textContent = "";
+  spacePageStatus.dataset.tone = "";
 };
 
 const updateSpaceColorPreview = (color) => {
@@ -543,7 +571,7 @@ const finishLassoMode = () => {
   openSpaceModal();
 };
 
-const createSpacePolygon = (points, name, color, spaceId = null) => {
+const createSpacePolygon = (points, name, color, spaceId = null, spaceKind = "") => {
   if (!lassoState.svg || !lassoState.spacesLayer || points.length < 3) {
     return null;
   }
@@ -558,6 +586,9 @@ const createSpacePolygon = (points, name, color, spaceId = null) => {
   polygon.setAttribute("data-space-color", color);
   if (spaceId) {
     polygon.setAttribute("data-space-id", String(spaceId));
+  }
+  if (spaceKind) {
+    polygon.setAttribute("data-space-kind", spaceKind);
   }
 
   lassoState.spacesLayer.appendChild(polygon);
@@ -644,6 +675,92 @@ const getCleanFloorPlanMarkup = () => {
   stripEditorArtifacts(clone);
   stripSpaceOverlays(clone);
   return new XMLSerializer().serializeToString(clone);
+};
+
+const getSpaceBounds = (points) => {
+  if (!Array.isArray(points) || points.length === 0) {
+    return null;
+  }
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  points.forEach((point) => {
+    if (!point) {
+      return;
+    }
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  });
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return null;
+  }
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: Math.max(maxX - minX, 1),
+    height: Math.max(maxY - minY, 1),
+  };
+};
+
+const buildSpaceSnapshotSvg = (planSvgMarkup, points, color = "#60a5fa", spaceId = null) => {
+  if (!planSvgMarkup || !points || points.length < 3) {
+    return null;
+  }
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(planSvgMarkup, "image/svg+xml");
+  const sourceSvg = doc.querySelector("svg");
+  if (!sourceSvg) {
+    return null;
+  }
+  stripEditorArtifacts(sourceSvg);
+  stripSpaceOverlays(sourceSvg);
+  if (!sourceSvg.hasAttribute("viewBox")) {
+    const width = parseFloat(sourceSvg.getAttribute("width"));
+    const height = parseFloat(sourceSvg.getAttribute("height"));
+    if (Number.isFinite(width) && Number.isFinite(height)) {
+      sourceSvg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    }
+  }
+  const bounds = getSpaceBounds(points);
+  if (!bounds) {
+    return null;
+  }
+  const padding = Math.max(Math.min(bounds.width, bounds.height) * 0.12, 12);
+  const viewBox = [
+    bounds.minX - padding,
+    bounds.minY - padding,
+    bounds.width + padding * 2,
+    bounds.height + padding * 2,
+  ];
+  const snapshotSvg = document.createElementNS(svgNamespace, "svg");
+  snapshotSvg.setAttribute("viewBox", viewBox.join(" "));
+  snapshotSvg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  snapshotSvg.setAttribute("width", "100%");
+  snapshotSvg.setAttribute("height", "100%");
+
+  const defs = document.createElementNS(svgNamespace, "defs");
+  const clipPath = document.createElementNS(svgNamespace, "clipPath");
+  const clipId = `space-clip-${spaceId || "snapshot"}`;
+  clipPath.setAttribute("id", clipId);
+  const clipPolygon = document.createElementNS(svgNamespace, "polygon");
+  clipPolygon.setAttribute("points", stringifyPoints(points));
+  clipPath.appendChild(clipPolygon);
+  defs.appendChild(clipPath);
+  snapshotSvg.appendChild(defs);
+
+  const planGroup = document.createElementNS(svgNamespace, "g");
+  planGroup.setAttribute("clip-path", `url(#${clipId})`);
+  Array.from(sourceSvg.childNodes).forEach((node) => {
+    planGroup.appendChild(document.importNode(node, true));
+  });
+  snapshotSvg.appendChild(planGroup);
+
+  return snapshotSvg;
 };
 
 const getPolygonLabel = (polygon) => {
@@ -760,6 +877,20 @@ const updateSpaceListColors = () => {
 
 const selectSpaceFromList = (space) => {
   if (!space || !space.name) {
+    return;
+  }
+  if (!isFloorEditing && space.kind === "coworking" && space.id) {
+    const buildingId = currentBuilding?.id;
+    const floorLevel = currentFloor?.level;
+    if (buildingId && Number.isFinite(floorLevel)) {
+      window.location.assign(
+        `/buildings/${encodeURIComponent(buildingId)}/floors/${encodeURIComponent(
+          floorLevel
+        )}/spaces/${encodeURIComponent(space.id)}`
+      );
+      return;
+    }
+    window.location.assign(`/buildings/${encodeURIComponent(buildingId || "")}`);
     return;
   }
   if (!lassoState.spacesLayer) {
@@ -963,7 +1094,7 @@ const syncSpacePolygons = async (spaces, { persistMissing = false } = {}) => {
     if (points.length < 3 || !space.name) {
       return;
     }
-    createSpacePolygon(points, space.name, space.color || "#60a5fa", space.id);
+    createSpacePolygon(points, space.name, space.color || "#60a5fa", space.id, space.kind || "");
   });
 
   updateSpaceListColors();
@@ -1102,6 +1233,22 @@ const updateSelectedPolygon = () => {
 };
 
 const selectSpacePolygon = (polygon, { showHandles = true } = {}) => {
+  const spaceId = polygon?.getAttribute("data-space-id") || "";
+  const spaceKind = polygon?.getAttribute("data-space-kind") || "";
+  if (!isFloorEditing && spaceKind === "coworking" && spaceId) {
+    const buildingId = currentBuilding?.id;
+    const floorLevel = currentFloor?.level;
+    if (buildingId && Number.isFinite(floorLevel)) {
+      window.location.assign(
+        `/buildings/${encodeURIComponent(buildingId)}/floors/${encodeURIComponent(
+          floorLevel
+        )}/spaces/${encodeURIComponent(spaceId)}`
+      );
+      return;
+    }
+    window.location.assign(`/buildings/${encodeURIComponent(buildingId || "")}`);
+    return;
+  }
   clearSpaceSelection();
   spaceEditState.selectedPolygon = polygon;
   spaceEditState.selectedLabel = getPolygonLabel(polygon);
@@ -1619,6 +1766,9 @@ const setPageMode = (mode) => {
     if (floorPage) {
       floorPage.classList.add("is-hidden");
     }
+    if (spacePage) {
+      spacePage.classList.add("is-hidden");
+    }
     openAddModalBtn.classList.add("is-hidden");
     if (editBuildingBtn) {
       editBuildingBtn.classList.remove("is-hidden");
@@ -1641,6 +1791,9 @@ const setPageMode = (mode) => {
     if (floorPage) {
       floorPage.classList.remove("is-hidden");
     }
+    if (spacePage) {
+      spacePage.classList.add("is-hidden");
+    }
     openAddModalBtn.classList.add("is-hidden");
     if (editBuildingBtn) {
       editBuildingBtn.classList.add("is-hidden");
@@ -1656,11 +1809,39 @@ const setPageMode = (mode) => {
     }
     return;
   }
+  if (mode === "space") {
+    setFloorEditMode(false);
+    buildingsPage.classList.add("is-hidden");
+    buildingPage.classList.add("is-hidden");
+    if (floorPage) {
+      floorPage.classList.add("is-hidden");
+    }
+    if (spacePage) {
+      spacePage.classList.remove("is-hidden");
+    }
+    openAddModalBtn.classList.add("is-hidden");
+    if (editBuildingBtn) {
+      editBuildingBtn.classList.add("is-hidden");
+    }
+    if (editFloorBtn) {
+      editFloorBtn.classList.add("is-hidden");
+    }
+    if (pageTitle) {
+      pageTitle.textContent = "Пространство";
+    }
+    if (pageSubtitle) {
+      pageSubtitle.textContent = "Просмотр коворкинга.";
+    }
+    return;
+  }
   setFloorEditMode(false);
   buildingsPage.classList.remove("is-hidden");
   buildingPage.classList.add("is-hidden");
   if (floorPage) {
     floorPage.classList.add("is-hidden");
+  }
+  if (spacePage) {
+    spacePage.classList.add("is-hidden");
   }
   openAddModalBtn.classList.remove("is-hidden");
   if (editBuildingBtn) {
@@ -1822,6 +2003,22 @@ const getFloorParamsFromPath = () => {
     return null;
   }
   return { buildingID, floorNumber };
+};
+
+const getSpaceParamsFromPath = () => {
+  const match = window.location.pathname.match(
+    /^\/buildings\/(\d+)\/floors\/(-?\d+)\/spaces\/(\d+)(?:\/)?$/
+  );
+  if (!match) {
+    return null;
+  }
+  const buildingID = Number(match[1]);
+  const floorNumber = Number(match[2]);
+  const spaceId = Number(match[3]);
+  if (Number.isNaN(buildingID) || Number.isNaN(floorNumber) || Number.isNaN(spaceId)) {
+    return null;
+  }
+  return { buildingID, floorNumber, spaceId };
 };
 
 const readFileAsText = (file) =>
@@ -2021,6 +2218,116 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     await loadFloorSpaces(floor.id);
   } catch (error) {
     setFloorStatus(error.message, "error");
+  }
+};
+
+const renderSpaceSnapshot = (space, floorPlanMarkup) => {
+  if (!spaceSnapshot || !spaceSnapshotPlaceholder) {
+    return;
+  }
+  spaceSnapshot.innerHTML = "";
+  const points = normalizeSpacePoints(space?.points);
+  const snapshotSvg = buildSpaceSnapshotSvg(
+    floorPlanMarkup || "",
+    points,
+    space?.color || "#60a5fa",
+    space?.id || null
+  );
+  if (!snapshotSvg) {
+    spaceSnapshotPlaceholder.classList.remove("is-hidden");
+    return;
+  }
+  spaceSnapshotPlaceholder.classList.add("is-hidden");
+  spaceSnapshot.appendChild(snapshotSvg);
+};
+
+const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
+  setPageMode("space");
+  clearSpacePageStatus();
+  if (spaceSnapshot) {
+    spaceSnapshot.innerHTML = "";
+  }
+  if (spaceSnapshotPlaceholder) {
+    spaceSnapshotPlaceholder.classList.add("is-hidden");
+  }
+  currentSpace = null;
+  try {
+    const space = await apiRequest(`/api/spaces/${spaceId}`);
+    if (!space || !space.id) {
+      throw new Error("Пространство не найдено.");
+    }
+    currentSpace = space;
+    const floorsResponse = await apiRequest(`/api/buildings/${buildingID}/floors`);
+    const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
+    const floor = floors.find((item) => item.level === floorNumber) || null;
+    if (!floor) {
+      throw new Error("Этаж не найден.");
+    }
+    const floorDetails = await apiRequest(`/api/floors/${floor.id}`);
+    const building = await apiRequest(`/api/buildings/${buildingID}`);
+
+    if (spaceBreadcrumbBuilding) {
+      const buildingId = building?.id || buildingID || "";
+      spaceBreadcrumbBuilding.href = `/buildings/${encodeURIComponent(buildingId)}`;
+      spaceBreadcrumbBuilding.textContent = building?.name || "Здание";
+    }
+    if (spaceBreadcrumbFloor) {
+      const buildingId = building?.id || buildingID || "";
+      const level = Number.isFinite(floor?.level) ? floor.level : floorNumber;
+      spaceBreadcrumbFloor.href = `/buildings/${encodeURIComponent(buildingId)}/floors/${encodeURIComponent(
+        level
+      )}`;
+      spaceBreadcrumbFloor.textContent = Number.isFinite(floor?.level)
+        ? `Этаж ${floor.level}`
+        : `Этаж ${floorNumber}`;
+    }
+
+    const kindLabel = getSpaceKindLabel(space.kind);
+    if (spaceName) {
+      spaceName.textContent = space.name || "Пространство";
+    }
+    if (spaceKindTag) {
+      spaceKindTag.textContent = kindLabel || "Без типа";
+      spaceKindTag.classList.toggle("is-hidden", !kindLabel);
+    }
+    if (spaceCapacityTag) {
+      const capacityValue = Number(space.capacity);
+      if (space.kind === "meeting" && Number.isFinite(capacityValue) && capacityValue > 0) {
+        spaceCapacityTag.textContent = `Вместимость: ${capacityValue}`;
+        spaceCapacityTag.classList.remove("is-hidden");
+      } else {
+        spaceCapacityTag.classList.add("is-hidden");
+        spaceCapacityTag.textContent = "";
+      }
+    }
+    if (spaceIdTag) {
+      spaceIdTag.textContent = space.id ? `ID: ${space.id}` : "";
+      spaceIdTag.classList.toggle("is-hidden", !space.id);
+    }
+    if (pageTitle) {
+      pageTitle.textContent = space.name || "Пространство";
+    }
+    if (pageSubtitle) {
+      const buildingName = building?.name || "";
+      const floorLabel = Number.isFinite(floor?.level) ? `Этаж ${floor.level}` : "";
+      const parts = [buildingName, floorLabel].filter(Boolean);
+      pageSubtitle.textContent = parts.length > 0 ? parts.join(" · ") : "Просмотр пространства.";
+    }
+
+    if (space.kind !== "coworking") {
+      setSpacePageStatus("Страница доступна только для коворкингов.", "info");
+      if (spaceSnapshotPlaceholder) {
+        spaceSnapshotPlaceholder.classList.remove("is-hidden");
+      }
+      return;
+    }
+
+    renderSpaceSnapshot(space, floorDetails?.plan_svg || "");
+  } catch (error) {
+    setSpacePageStatus(error.message, "error");
+    if (spaceSnapshotPlaceholder) {
+      spaceSnapshotPlaceholder.classList.remove("is-hidden");
+    }
   }
 };
 
@@ -2383,7 +2690,7 @@ if (spaceForm) {
     }
     let createdElements = null;
     try {
-      createdElements = createSpacePolygon(points, name, color);
+      createdElements = createSpacePolygon(points, name, color, null, kind);
       if (!createdElements || !lassoState.svg) {
         throw new Error("Не удалось создать пространство на плане.");
       }
@@ -2695,6 +3002,11 @@ if (floorPlanPreview && floorPlanCanvas) {
 }
 
 const init = async () => {
+  const spaceParams = getSpaceParamsFromPath();
+  if (spaceParams) {
+    await loadSpacePage(spaceParams);
+    return;
+  }
   const floorParams = getFloorParamsFromPath();
   if (floorParams) {
     await loadFloorPage(floorParams.buildingID, floorParams.floorNumber);

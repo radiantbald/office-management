@@ -130,6 +130,8 @@ func main() {
 	}
 	mux.HandleFunc("/buildings", serveFrontendPage)
 	mux.HandleFunc("/buildings/", serveFrontendPage)
+	mux.HandleFunc("/spaces", serveFrontendPage)
+	mux.HandleFunc("/spaces/", serveFrontendPage)
 	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(app.uploadDir))))
 	mux.Handle("/", http.FileServer(http.Dir(webDir)))
 
@@ -383,6 +385,17 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 	}
 	if suffix == "" {
 		switch r.Method {
+		case http.MethodGet:
+			item, err := a.getBuilding(id)
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					respondError(w, http.StatusNotFound, "building not found")
+					return
+				}
+				respondError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			respondJSON(w, http.StatusOK, item)
 		case http.MethodPut:
 			var payload struct {
 				Name    string `json:"name"`
@@ -655,6 +668,17 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 	switch suffix {
 	case "":
 		switch r.Method {
+		case http.MethodGet:
+			item, err := a.getSpace(id)
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					respondError(w, http.StatusNotFound, "space not found")
+					return
+				}
+				respondError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			respondJSON(w, http.StatusOK, item)
 		case http.MethodPut:
 			var payload struct {
 				Name     string  `json:"name"`
@@ -1113,6 +1137,24 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 		items = append(items, s)
 	}
 	return items, rows.Err()
+}
+
+func (a *app) getSpace(id int64) (space, error) {
+	row := a.db.QueryRow(
+		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
+		FROM spaces WHERE id = ?`,
+		id,
+	)
+	var s space
+	var pointsStored string
+	if err := row.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &s.Capacity, &pointsStored, &s.Color, &s.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return space{}, errNotFound
+		}
+		return space{}, err
+	}
+	s.Points = decodePoints(pointsStored)
+	return s, nil
 }
 
 func (a *app) createSpace(floorID int64, name, kind string, capacity int, points []point, color string) (space, error) {
