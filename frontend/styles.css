@@ -644,7 +644,8 @@ button:disabled {
   fill-opacity: 0.35;
 }
 
-.space-polygon:hover {
+.space-polygon:hover,
+.space-polygon.is-hover {
   stroke: #2563eb;
   stroke-width: 2;
   fill-opacity: 0.5;
