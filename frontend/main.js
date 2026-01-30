@@ -424,7 +424,7 @@ const finishLassoMode = () => {
   openSpaceModal();
 };
 
-const createSpacePolygon = (points, name, color) => {
+const createSpacePolygon = (points, name, color, spaceId = null) => {
   if (!lassoState.svg || !lassoState.spacesLayer || points.length < 3) {
     return null;
   }
@@ -437,6 +437,9 @@ const createSpacePolygon = (points, name, color) => {
   polygon.setAttribute("fill", color);
   polygon.setAttribute("data-space-name", name);
   polygon.setAttribute("data-space-color", color);
+  if (spaceId) {
+    polygon.setAttribute("data-space-id", String(spaceId));
+  }
 
   lassoState.spacesLayer.appendChild(polygon);
   return { polygon };
@@ -470,6 +473,22 @@ const parsePolygonPoints = (polygon) => {
 const stringifyPoints = (points) =>
   points.map((point) => `${point.x},${point.y}`).join(" ");
 
+const normalizeSpacePoints = (points) => {
+  if (!Array.isArray(points)) {
+    return [];
+  }
+  return points
+    .map((point) => {
+      const x = Number(point?.x);
+      const y = Number(point?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return null;
+      }
+      return { x, y };
+    })
+    .filter(Boolean);
+};
+
 const stripEditorArtifacts = (svg) => {
   if (!svg) {
     return;
@@ -486,12 +505,25 @@ const stripEditorArtifacts = (svg) => {
   svg.querySelectorAll(".space-polygon title").forEach((title) => title.remove());
 };
 
+const stripSpaceOverlays = (svg) => {
+  if (!svg) {
+    return;
+  }
+  const spacesLayer = svg.querySelector("#spacesLayer");
+  if (spacesLayer) {
+    spacesLayer.remove();
+  }
+  svg.querySelectorAll(".space-polygon").forEach((polygon) => polygon.remove());
+  svg.querySelectorAll(".space-label").forEach((label) => label.remove());
+};
+
 const getCleanFloorPlanMarkup = () => {
   if (!lassoState.svg) {
     return "";
   }
   const clone = lassoState.svg.cloneNode(true);
   stripEditorArtifacts(clone);
+  stripSpaceOverlays(clone);
   return new XMLSerializer().serializeToString(clone);
 };
 
@@ -544,8 +576,34 @@ const findSpacePolygonByName = (name) => {
   );
 };
 
-const getSpaceColorByName = (name) => {
-  const polygon = findSpacePolygonByName(name);
+const findSpacePolygonById = (id) => {
+  if (!lassoState.spacesLayer || !id) {
+    return null;
+  }
+  const escapedId = escapeSelectorValue(String(id));
+  return lassoState.spacesLayer.querySelector(
+    `.space-polygon[data-space-id="${escapedId}"]`
+  );
+};
+
+const findSpacePolygon = (space) => {
+  if (!space) {
+    return null;
+  }
+  if (space.id) {
+    const byId = findSpacePolygonById(space.id);
+    if (byId) {
+      return byId;
+    }
+  }
+  return findSpacePolygonByName(space.name);
+};
+
+const getSpaceColor = (space) => {
+  if (space?.color) {
+    return space.color;
+  }
+  const polygon = findSpacePolygon(space);
   if (!polygon) {
     return null;
   }
@@ -568,8 +626,9 @@ const updateSpaceListColors = () => {
     return;
   }
   floorSpacesList.querySelectorAll(".space-list-item").forEach((item) => {
+    const id = item.dataset.spaceId ? Number(item.dataset.spaceId) : null;
     const name = item.dataset.spaceName || "";
-    const color = getSpaceColorByName(name) || "#e2e8f0";
+    const color = getSpaceColor({ id, name }) || "#e2e8f0";
     const dot = item.querySelector(".space-color-dot");
     if (dot) {
       dot.style.background = color;
@@ -589,7 +648,7 @@ const selectSpaceFromList = (space) => {
     setFloorStatus("Сначала загрузите план этажа.", "error");
     return;
   }
-  const polygon = findSpacePolygonByName(space.name);
+  const polygon = findSpacePolygon(space);
   if (!polygon) {
     setFloorStatus("Пространство не найдено на плане.", "error");
     return;
@@ -618,7 +677,7 @@ const renderFloorSpaces = (spaces) => {
 
     const colorDot = document.createElement("span");
     colorDot.className = "space-color-dot";
-    colorDot.style.background = getSpaceColorByName(space.name) || "#e2e8f0";
+    colorDot.style.background = getSpaceColor(space) || "#e2e8f0";
     button.appendChild(colorDot);
 
     const label = document.createElement("span");
@@ -631,6 +690,114 @@ const renderFloorSpaces = (spaces) => {
   if (spaceEditState.selectedPolygon) {
     highlightSpaceListItem(spaceEditState.selectedPolygon.getAttribute("data-space-name") || "");
   }
+};
+
+const collectSpacePolygons = () => {
+  if (!lassoState.spacesLayer) {
+    return [];
+  }
+  return Array.from(lassoState.spacesLayer.querySelectorAll(".space-polygon")).map((polygon) => ({
+    id: polygon.dataset.spaceId ? Number(polygon.dataset.spaceId) : null,
+    name: polygon.getAttribute("data-space-name") || "",
+    color: polygon.getAttribute("data-space-color") || polygon.getAttribute("fill") || "",
+    points: parsePolygonPoints(polygon),
+  }));
+};
+
+const persistSpaceGeometry = async (space) => {
+  if (!space?.id) {
+    return;
+  }
+  const points = normalizeSpacePoints(space.points);
+  if (points.length < 3) {
+    return;
+  }
+  await apiRequest(`/api/spaces/${space.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      points,
+      color: space.color || "",
+    }),
+  });
+};
+
+const syncSpacePolygons = async (spaces, { persistMissing = false } = {}) => {
+  if (!lassoState.svg || !lassoState.spacesLayer) {
+    return;
+  }
+  const existing = collectSpacePolygons();
+  const byId = new Map(existing.filter((item) => item.id).map((item) => [String(item.id), item]));
+  const byName = new Map(existing.filter((item) => item.name).map((item) => [item.name, item]));
+  const updated = [];
+
+  spaces.forEach((space) => {
+    const normalized = normalizeSpacePoints(space.points);
+    if (normalized.length >= 3) {
+      space.points = normalized;
+      return;
+    }
+    const fallback =
+      (space.id && byId.get(String(space.id))) ||
+      (space.name && byName.get(space.name)) ||
+      null;
+    if (fallback && fallback.points.length >= 3) {
+      space.points = fallback.points;
+      if (!space.color && fallback.color) {
+        space.color = fallback.color;
+      }
+      if (space.id) {
+        updated.push(space);
+      }
+    }
+  });
+
+  clearSpaceSelection();
+  lassoState.spacesLayer.querySelectorAll(".space-polygon").forEach((polygon) => polygon.remove());
+  lassoState.spacesLayer.querySelectorAll(".space-label").forEach((label) => label.remove());
+
+  spaces.forEach((space) => {
+    const points = normalizeSpacePoints(space.points);
+    if (points.length < 3 || !space.name) {
+      return;
+    }
+    createSpacePolygon(points, space.name, space.color || "#60a5fa", space.id);
+  });
+
+  updateSpaceListColors();
+
+  if (persistMissing && updated.length > 0) {
+    await Promise.all(updated.map((space) => persistSpaceGeometry(space)));
+  }
+};
+
+const saveSpacePositions = async () => {
+  const polygons = collectSpacePolygons();
+  const updates = polygons.filter((polygon) => polygon.id && polygon.points.length >= 3);
+  if (updates.length === 0) {
+    return;
+  }
+  await Promise.all(
+    updates.map((polygon) =>
+      apiRequest(`/api/spaces/${polygon.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          points: polygon.points,
+          color: polygon.color || "",
+        }),
+      })
+    )
+  );
+  currentSpaces = currentSpaces.map((space) => {
+    const updated = updates.find((polygon) => polygon.id === space.id);
+    if (!updated) {
+      return space;
+    }
+    return {
+      ...space,
+      points: updated.points,
+      color: updated.color || space.color,
+    };
+  });
 };
 
 const clearSpaceSelection = () => {
@@ -1167,6 +1334,9 @@ const renderFloorPlan = (svgMarkup) => {
   }
   resetFloorPlanTransform();
   updateSpaceListColors();
+  if (currentSpaces.length > 0) {
+    void syncSpacePolygons(currentSpaces, { persistMissing: true });
+  }
 };
 
 const setFormMode = (mode) => {
@@ -1590,6 +1760,7 @@ const loadFloorSpaces = async (floorID) => {
     const spacesResponse = await apiRequest(`/api/floors/${floorID}/spaces`);
     const spaces = Array.isArray(spacesResponse.items) ? spacesResponse.items : [];
     renderFloorSpaces(spaces);
+    await syncSpacePolygons(spaces, { persistMissing: true });
   } catch (error) {
     renderFloorSpaces([]);
     setFloorStatus(error.message, "error");
@@ -1824,14 +1995,9 @@ if (editFloorBtn) {
       if (floorPlanDirty && lassoState.svg) {
         editFloorBtn.disabled = true;
         try {
-          const svgMarkup = getCleanFloorPlanMarkup();
-          const updated = await apiRequest(`/api/floors/${currentFloor.id}`, {
-            method: "PUT",
-            body: JSON.stringify({ plan_svg: svgMarkup }),
-          });
-          currentFloor = { ...currentFloor, plan_svg: updated.plan_svg || svgMarkup };
+          await saveSpacePositions();
           floorPlanDirty = false;
-          setFloorStatus("Изменения плана сохранены.", "success");
+          setFloorStatus("Изменения пространств сохранены.", "success");
         } catch (error) {
           setFloorStatus(error.message, "error");
           return;
@@ -1979,15 +2145,20 @@ if (spaceForm) {
       if (!createdElements || !lassoState.svg) {
         throw new Error("Не удалось создать пространство на плане.");
       }
-      const svgMarkup = new XMLSerializer().serializeToString(lassoState.svg);
-      await apiRequest("/api/spaces", {
+      const createdSpace = await apiRequest("/api/spaces", {
         method: "POST",
         body: JSON.stringify({
           floor_id: currentFloor.id,
           name,
           kind: lassoDefaults.kind,
+          color,
+          points,
         }),
       });
+      if (createdElements.polygon && createdSpace?.id) {
+        createdElements.polygon.setAttribute("data-space-id", String(createdSpace.id));
+      }
+      const svgMarkup = getCleanFloorPlanMarkup();
       const updated = await apiRequest(`/api/floors/${currentFloor.id}`, {
         method: "PUT",
         body: JSON.stringify({ plan_svg: svgMarkup }),

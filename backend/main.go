@@ -51,11 +51,18 @@ type floor struct {
 }
 
 type space struct {
-	ID        int64  `json:"id"`
-	FloorID   int64  `json:"floor_id"`
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	CreatedAt string `json:"created_at"`
+	ID        int64   `json:"id"`
+	FloorID   int64   `json:"floor_id"`
+	Name      string  `json:"name"`
+	Kind      string  `json:"kind"`
+	Color     string  `json:"color,omitempty"`
+	Points    []point `json:"points"`
+	CreatedAt string  `json:"created_at"`
+}
+
+type point struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 type desk struct {
@@ -154,6 +161,8 @@ func migrate(db *sql.DB) error {
 			floor_id INTEGER NOT NULL,
 			name TEXT NOT NULL,
 			kind TEXT NOT NULL,
+			points_json TEXT NOT NULL DEFAULT '[]',
+			color TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			FOREIGN KEY(floor_id) REFERENCES floors(id) ON DELETE CASCADE
 		);`,
@@ -183,6 +192,12 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "office_buildings", "floors", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "spaces", "points_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "spaces", "color", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	return nil
@@ -221,6 +236,28 @@ func ensureColumn(db *sql.DB, table, column, definition string) error {
 	}
 	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
 	return err
+}
+
+func encodePoints(points []point) (string, error) {
+	if len(points) == 0 {
+		return "[]", nil
+	}
+	raw, err := json.Marshal(points)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func decodePoints(raw string) []point {
+	if raw == "" {
+		return nil
+	}
+	var points []point
+	if err := json.Unmarshal([]byte(raw), &points); err != nil {
+		return nil
+	}
+	return points
 }
 
 func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
@@ -550,9 +587,11 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		FloorID int64  `json:"floor_id"`
-		Name    string `json:"name"`
-		Kind    string `json:"kind"`
+		FloorID int64   `json:"floor_id"`
+		Name    string  `json:"name"`
+		Kind    string  `json:"kind"`
+		Color   string  `json:"color"`
+		Points  []point `json:"points"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
@@ -564,7 +603,11 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "floor_id, name, and kind are required")
 		return
 	}
-	result, err := a.createSpace(payload.FloorID, payload.Name, payload.Kind)
+	if len(payload.Points) < 3 {
+		respondError(w, http.StatusBadRequest, "points are required")
+		return
+	}
+	result, err := a.createSpace(payload.FloorID, payload.Name, payload.Kind, payload.Points, strings.TrimSpace(payload.Color))
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -579,6 +622,33 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch suffix {
+	case "":
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var payload struct {
+			Color  string  `json:"color"`
+			Points []point `json:"points"`
+		}
+		if err := decodeJSON(r, &payload); err != nil {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(payload.Points) < 3 {
+			respondError(w, http.StatusBadRequest, "points are required")
+			return
+		}
+		result, err := a.updateSpaceGeometry(id, payload.Points, strings.TrimSpace(payload.Color))
+		if err != nil {
+			if errors.Is(err, errNotFound) {
+				respondError(w, http.StatusNotFound, "space not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		respondJSON(w, http.StatusOK, result)
 	case "/desks":
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -951,7 +1021,8 @@ func (a *app) createFloorInTx(tx *sql.Tx, buildingID int64, name string, level i
 
 func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 	rows, err := a.db.Query(
-		`SELECT id, floor_id, name, kind, created_at FROM spaces WHERE floor_id = ? ORDER BY id DESC`,
+		`SELECT id, floor_id, name, kind, COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
+		FROM spaces WHERE floor_id = ? ORDER BY id DESC`,
 		floorID,
 	)
 	if err != nil {
@@ -962,20 +1033,28 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 	var items []space
 	for rows.Next() {
 		var s space
-		if err := rows.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &s.CreatedAt); err != nil {
+		var pointsJSON string
+		if err := rows.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &pointsJSON, &s.Color, &s.CreatedAt); err != nil {
 			return nil, err
 		}
+		s.Points = decodePoints(pointsJSON)
 		items = append(items, s)
 	}
 	return items, rows.Err()
 }
 
-func (a *app) createSpace(floorID int64, name, kind string) (space, error) {
+func (a *app) createSpace(floorID int64, name, kind string, points []point, color string) (space, error) {
+	pointsJSON, err := encodePoints(points)
+	if err != nil {
+		return space{}, err
+	}
 	result, err := a.db.Exec(
-		`INSERT INTO spaces (floor_id, name, kind) VALUES (?, ?, ?)`,
+		`INSERT INTO spaces (floor_id, name, kind, points_json, color) VALUES (?, ?, ?, ?, ?)`,
 		floorID,
 		name,
 		kind,
+		pointsJSON,
+		color,
 	)
 	if err != nil {
 		return space{}, err
@@ -989,8 +1068,48 @@ func (a *app) createSpace(floorID int64, name, kind string) (space, error) {
 		FloorID:   floorID,
 		Name:      name,
 		Kind:      kind,
+		Color:     color,
+		Points:    points,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}, nil
+}
+
+func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space, error) {
+	pointsJSON, err := encodePoints(points)
+	if err != nil {
+		return space{}, err
+	}
+	result, err := a.db.Exec(
+		`UPDATE spaces SET points_json = ?, color = ? WHERE id = ?`,
+		pointsJSON,
+		color,
+		id,
+	)
+	if err != nil {
+		return space{}, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return space{}, err
+	}
+	if rows == 0 {
+		return space{}, errNotFound
+	}
+	row := a.db.QueryRow(
+		`SELECT id, floor_id, name, kind, COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
+		FROM spaces WHERE id = ?`,
+		id,
+	)
+	var s space
+	var pointsStored string
+	if err := row.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &pointsStored, &s.Color, &s.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return space{}, errNotFound
+		}
+		return space{}, err
+	}
+	s.Points = decodePoints(pointsStored)
+	return s, nil
 }
 
 func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
