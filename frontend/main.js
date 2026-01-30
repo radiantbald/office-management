@@ -55,6 +55,8 @@ const spaceModalTitle = document.getElementById("spaceModalTitle");
 const spaceForm = document.getElementById("spaceForm");
 const spaceNameField = document.getElementById("spaceNameField");
 const spaceKindField = document.getElementById("spaceKindField");
+const spaceCapacityFieldRow = document.getElementById("spaceCapacityFieldRow");
+const spaceCapacityField = document.getElementById("spaceCapacityField");
 const spaceColorInput = document.getElementById("spaceColorInput");
 const spaceColorPreview = document.getElementById("spaceColorPreview");
 const spaceSaveBtn = document.getElementById("spaceSaveBtn");
@@ -236,6 +238,20 @@ const normalizeSpaceKind = (kind) => (kind && spaceKindLabels[kind] ? kind : def
 
 const getSpaceKindLabel = (kind) => (kind && spaceKindLabels[kind] ? spaceKindLabels[kind] : "");
 
+const updateSpaceCapacityVisibility = (kind) => {
+  const isMeeting = kind === "meeting";
+  if (spaceCapacityFieldRow) {
+    spaceCapacityFieldRow.classList.toggle("is-hidden", !isMeeting);
+  }
+  if (spaceCapacityField) {
+    spaceCapacityField.disabled = !isMeeting;
+    spaceCapacityField.required = isMeeting;
+    if (!isMeeting) {
+      spaceCapacityField.value = "";
+    }
+  }
+};
+
 const openSpaceModal = (space = null) => {
   if (!spaceModal) {
     return;
@@ -258,6 +274,14 @@ const openSpaceModal = (space = null) => {
   if (spaceKindField) {
     spaceKindField.value = normalizeSpaceKind(space?.kind);
   }
+  if (spaceCapacityField) {
+    const capacityValue =
+      space && Number.isFinite(Number(space.capacity)) && Number(space.capacity) > 0
+        ? String(space.capacity)
+        : "";
+    spaceCapacityField.value = capacityValue;
+  }
+  updateSpaceCapacityVisibility(spaceKindField ? spaceKindField.value : defaultSpaceKind);
   if (spaceColorInput) {
     const initialColor = space?.color || getSpaceColor(space) || "#60a5fa";
     spaceColorInput.value = initialColor;
@@ -277,6 +301,7 @@ const closeSpaceModal = () => {
   if (spaceForm) {
     spaceForm.reset();
   }
+  updateSpaceCapacityVisibility(defaultSpaceKind);
   if (spaceDeleteBtn) {
     spaceDeleteBtn.classList.add("is-hidden");
     spaceDeleteBtn.disabled = false;
@@ -304,6 +329,15 @@ if (spaceColorPreview && spaceColorInput) {
       event.preventDefault();
       spaceColorInput.click();
     }
+  });
+}
+
+if (spaceKindField) {
+  spaceKindField.addEventListener("change", (event) => {
+    if (!(event.target instanceof HTMLSelectElement)) {
+      return;
+    }
+    updateSpaceCapacityVisibility(event.target.value);
   });
 }
 
@@ -748,7 +782,8 @@ const renderFloorSpaces = (spaces) => {
   currentSpaces = Array.isArray(spaces) ? spaces : [];
   floorSpacesList.innerHTML = "";
   if (currentSpaces.length === 0) {
-    floorSpacesEmpty.classList.remove("is-hidden");
+    floorSpacesEmpty.classList.toggle("is-hidden", !isFloorEditing);
+    updateFloorPlanSpacesVisibility();
     return;
   }
   floorSpacesEmpty.classList.add("is-hidden");
@@ -807,6 +842,15 @@ const renderFloorSpaces = (spaces) => {
       kindTag.textContent = kindLabel;
       selectButton.appendChild(kindTag);
     }
+    if (space.kind === "meeting") {
+      const capacityValue = Number(space.capacity);
+      if (Number.isFinite(capacityValue) && capacityValue > 0) {
+        const capacityTag = document.createElement("span");
+        capacityTag.className = "space-capacity-tag";
+        capacityTag.textContent = String(capacityValue);
+        selectButton.appendChild(capacityTag);
+      }
+    }
 
     const editButton = document.createElement("button");
     editButton.type = "button";
@@ -848,6 +892,7 @@ const renderFloorSpaces = (spaces) => {
     spaceEditState.selectedPolygon.getAttribute("data-space-id") || null
   );
   }
+  updateFloorPlanSpacesVisibility();
 };
 
 const collectSpacePolygons = () => {
@@ -1363,10 +1408,13 @@ const closeFloorPlanModal = () => {
 };
 
 const updateFloorPlanSpacesVisibility = () => {
+  const hasSpaces = currentSpaces.length > 0;
   if (floorPlanLayout) {
     floorPlanLayout.classList.toggle("has-floor-plan", hasFloorPlan);
+    floorPlanLayout.classList.toggle("has-space-list", hasSpaces);
+    floorPlanLayout.classList.toggle("is-viewing-spaces", hasSpaces && !isFloorEditing);
   }
-  const shouldShowSpaces = isFloorEditing && hasFloorPlan;
+  const shouldShowSpaces = (isFloorEditing && hasFloorPlan) || (!isFloorEditing && hasSpaces);
   const shouldShowModal = isFloorEditing && (!hasFloorPlan || floorPlanModalRequested);
 
   if (shouldShowModal) {
@@ -2266,6 +2314,8 @@ if (spaceForm) {
     if (editingSpace && editingSpace.id) {
       const name = spaceNameField ? spaceNameField.value.trim() : "";
       const kind = spaceKindField ? spaceKindField.value : "";
+      const capacityRaw = spaceCapacityField ? spaceCapacityField.value.trim() : "";
+      const capacity = capacityRaw === "" ? 0 : Number(capacityRaw);
       const color = spaceColorInput && spaceColorInput.value ? spaceColorInput.value : "#60a5fa";
       if (!name) {
         setSpaceStatus("Укажите название пространства.", "error");
@@ -2273,6 +2323,10 @@ if (spaceForm) {
       }
       if (!kind) {
         setSpaceStatus("Выберите тип пространства.", "error");
+        return;
+      }
+      if (kind === "meeting" && (!Number.isFinite(capacity) || capacity <= 0)) {
+        setSpaceStatus("Укажите количество человек для переговорки.", "error");
         return;
       }
       clearSpaceStatus();
@@ -2285,6 +2339,7 @@ if (spaceForm) {
           body: JSON.stringify({
             name,
             kind,
+            capacity: kind === "meeting" ? capacity : 0,
             color,
           }),
         });
@@ -2307,6 +2362,8 @@ if (spaceForm) {
     }
     const name = spaceNameField ? spaceNameField.value.trim() : "";
     const kind = spaceKindField ? spaceKindField.value : "";
+    const capacityRaw = spaceCapacityField ? spaceCapacityField.value.trim() : "";
+    const capacity = capacityRaw === "" ? 0 : Number(capacityRaw);
     const color = spaceColorInput && spaceColorInput.value ? spaceColorInput.value : "#60a5fa";
     if (!name) {
       setSpaceStatus("Укажите название пространства.", "error");
@@ -2314,6 +2371,10 @@ if (spaceForm) {
     }
     if (!kind) {
       setSpaceStatus("Выберите тип пространства.", "error");
+      return;
+    }
+    if (kind === "meeting" && (!Number.isFinite(capacity) || capacity <= 0)) {
+      setSpaceStatus("Укажите количество человек для переговорки.", "error");
       return;
     }
     clearSpaceStatus();
@@ -2332,6 +2393,7 @@ if (spaceForm) {
           floor_id: currentFloor.id,
           name,
           kind,
+          capacity: kind === "meeting" ? capacity : 0,
           color,
           points,
         }),

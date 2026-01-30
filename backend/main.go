@@ -55,6 +55,7 @@ type space struct {
 	FloorID   int64   `json:"floor_id"`
 	Name      string  `json:"name"`
 	Kind      string  `json:"kind"`
+	Capacity  int     `json:"capacity"`
 	Color     string  `json:"color,omitempty"`
 	Points    []point `json:"points"`
 	CreatedAt string  `json:"created_at"`
@@ -168,6 +169,7 @@ func migrate(db *sql.DB) error {
 			floor_id INTEGER NOT NULL,
 			name TEXT NOT NULL,
 			kind TEXT NOT NULL,
+			capacity INTEGER NOT NULL DEFAULT 0,
 			points_json TEXT NOT NULL DEFAULT '[]',
 			color TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -205,6 +207,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "spaces", "color", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "spaces", "capacity", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return nil
@@ -594,11 +599,12 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		FloorID int64   `json:"floor_id"`
-		Name    string  `json:"name"`
-		Kind    string  `json:"kind"`
-		Color   string  `json:"color"`
-		Points  []point `json:"points"`
+		FloorID  int64   `json:"floor_id"`
+		Name     string  `json:"name"`
+		Kind     string  `json:"kind"`
+		Capacity *int    `json:"capacity"`
+		Color    string  `json:"color"`
+		Points   []point `json:"points"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
@@ -614,7 +620,25 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "points are required")
 		return
 	}
-	result, err := a.createSpace(payload.FloorID, payload.Name, payload.Kind, payload.Points, strings.TrimSpace(payload.Color))
+	capacity := 0
+	if payload.Capacity != nil {
+		capacity = *payload.Capacity
+	}
+	if payload.Kind == "meeting" && capacity <= 0 {
+		respondError(w, http.StatusBadRequest, "capacity is required for meeting rooms")
+		return
+	}
+	if payload.Kind != "meeting" {
+		capacity = 0
+	}
+	result, err := a.createSpace(
+		payload.FloorID,
+		payload.Name,
+		payload.Kind,
+		capacity,
+		payload.Points,
+		strings.TrimSpace(payload.Color),
+	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -633,10 +657,11 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPut:
 			var payload struct {
-				Name   string  `json:"name"`
-				Kind   string  `json:"kind"`
-				Color  string  `json:"color"`
-				Points []point `json:"points"`
+				Name     string  `json:"name"`
+				Kind     string  `json:"kind"`
+				Capacity *int    `json:"capacity"`
+				Color    string  `json:"color"`
+				Points   []point `json:"points"`
 			}
 			if err := decodeJSON(r, &payload); err != nil {
 				respondError(w, http.StatusBadRequest, err.Error())
@@ -660,7 +685,19 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusBadRequest, "name is required")
 					return
 				}
-				result, err = a.updateSpaceDetails(id, payload.Name, payload.Kind, payload.Color)
+				capacity := 0
+				if payload.Capacity != nil {
+					capacity = *payload.Capacity
+				}
+				if payload.Capacity != nil && capacity <= 0 {
+					respondError(w, http.StatusBadRequest, "capacity must be greater than 0")
+					return
+				}
+				if payload.Kind == "meeting" && payload.Capacity == nil {
+					respondError(w, http.StatusBadRequest, "capacity is required for meeting rooms")
+					return
+				}
+				result, err = a.updateSpaceDetails(id, payload.Name, payload.Kind, capacity, payload.Capacity != nil, payload.Color)
 			}
 			if err != nil {
 				if errors.Is(err, errNotFound) {
@@ -1056,7 +1093,7 @@ func (a *app) createFloorInTx(tx *sql.Tx, buildingID int64, name string, level i
 
 func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 	rows, err := a.db.Query(
-		`SELECT id, floor_id, name, kind, COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
+		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
 		FROM spaces WHERE floor_id = ? ORDER BY id DESC`,
 		floorID,
 	)
@@ -1069,7 +1106,7 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 	for rows.Next() {
 		var s space
 		var pointsJSON string
-		if err := rows.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &pointsJSON, &s.Color, &s.CreatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &s.Capacity, &pointsJSON, &s.Color, &s.CreatedAt); err != nil {
 			return nil, err
 		}
 		s.Points = decodePoints(pointsJSON)
@@ -1078,16 +1115,17 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 	return items, rows.Err()
 }
 
-func (a *app) createSpace(floorID int64, name, kind string, points []point, color string) (space, error) {
+func (a *app) createSpace(floorID int64, name, kind string, capacity int, points []point, color string) (space, error) {
 	pointsJSON, err := encodePoints(points)
 	if err != nil {
 		return space{}, err
 	}
 	result, err := a.db.Exec(
-		`INSERT INTO spaces (floor_id, name, kind, points_json, color) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO spaces (floor_id, name, kind, capacity, points_json, color) VALUES (?, ?, ?, ?, ?, ?)`,
 		floorID,
 		name,
 		kind,
+		capacity,
 		pointsJSON,
 		color,
 	)
@@ -1103,6 +1141,7 @@ func (a *app) createSpace(floorID int64, name, kind string, points []point, colo
 		FloorID:   floorID,
 		Name:      name,
 		Kind:      kind,
+		Capacity:  capacity,
 		Color:     color,
 		Points:    points,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -1131,13 +1170,13 @@ func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space
 		return space{}, errNotFound
 	}
 	row := a.db.QueryRow(
-		`SELECT id, floor_id, name, kind, COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
+		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
 		FROM spaces WHERE id = ?`,
 		id,
 	)
 	var s space
 	var pointsStored string
-	if err := row.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &pointsStored, &s.Color, &s.CreatedAt); err != nil {
+	if err := row.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &s.Capacity, &pointsStored, &s.Color, &s.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return space{}, errNotFound
 		}
@@ -1147,20 +1186,32 @@ func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space
 	return s, nil
 }
 
-func (a *app) updateSpaceDetails(id int64, name, kind, color string) (space, error) {
-	if kind == "" {
-		row := a.db.QueryRow(`SELECT kind FROM spaces WHERE id = ?`, id)
-		if err := row.Scan(&kind); err != nil {
+func (a *app) updateSpaceDetails(id int64, name, kind string, capacity int, capacityProvided bool, color string) (space, error) {
+	var storedKind string
+	var storedCapacity int
+	if kind == "" || !capacityProvided {
+		row := a.db.QueryRow(`SELECT kind, COALESCE(capacity, 0) FROM spaces WHERE id = ?`, id)
+		if err := row.Scan(&storedKind, &storedCapacity); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return space{}, errNotFound
 			}
 			return space{}, err
 		}
 	}
+	if kind == "" {
+		kind = storedKind
+	}
+	if !capacityProvided {
+		capacity = storedCapacity
+	}
+	if kind != "meeting" {
+		capacity = 0
+	}
 	result, err := a.db.Exec(
-		`UPDATE spaces SET name = ?, kind = ?, color = ? WHERE id = ?`,
+		`UPDATE spaces SET name = ?, kind = ?, capacity = ?, color = ? WHERE id = ?`,
 		name,
 		kind,
+		capacity,
 		color,
 		id,
 	)
@@ -1175,13 +1226,13 @@ func (a *app) updateSpaceDetails(id int64, name, kind, color string) (space, err
 		return space{}, errNotFound
 	}
 	row := a.db.QueryRow(
-		`SELECT id, floor_id, name, kind, COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
+		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
 		FROM spaces WHERE id = ?`,
 		id,
 	)
 	var s space
 	var pointsStored string
-	if err := row.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &pointsStored, &s.Color, &s.CreatedAt); err != nil {
+	if err := row.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &s.Capacity, &pointsStored, &s.Color, &s.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return space{}, errNotFound
 		}
