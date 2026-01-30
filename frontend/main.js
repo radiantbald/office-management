@@ -51,12 +51,16 @@ const floorSpacesList = document.getElementById("floorSpacesList");
 const floorSpacesEmpty = document.getElementById("floorSpacesEmpty");
 const addSpaceBtn = document.getElementById("addSpaceBtn");
 const spaceModal = document.getElementById("spaceModal");
+const spaceModalTitle = document.getElementById("spaceModalTitle");
 const spaceForm = document.getElementById("spaceForm");
 const spaceNameField = document.getElementById("spaceNameField");
+const spaceKindField = document.getElementById("spaceKindField");
 const spaceColorInput = document.getElementById("spaceColorInput");
+const spaceColorPreview = document.getElementById("spaceColorPreview");
 const spaceSaveBtn = document.getElementById("spaceSaveBtn");
 const spaceModalCloseBtn = document.getElementById("spaceModalCloseBtn");
 const spaceCancelBtn = document.getElementById("spaceCancelBtn");
+const spaceDeleteBtn = document.getElementById("spaceDeleteBtn");
 const spaceStatus = document.getElementById("spaceStatus");
 const breadcrumbBuildings = document.getElementById("breadcrumbBuildings");
 const breadcrumbBuilding = document.getElementById("breadcrumbBuilding");
@@ -70,6 +74,7 @@ let isFloorEditing = false;
 let hasFloorPlan = false;
 let removeImage = false;
 let previewObjectUrl = null;
+let editingSpace = null;
 const svgNamespace = "http://www.w3.org/2000/svg";
 const lassoDefaults = {
   kind: "polygon",
@@ -120,6 +125,15 @@ const addSpaceBtnActiveLabel = addSpaceBtn
   : "Отменить выделение";
 const addSpaceBtnIcon = addSpaceBtn ? addSpaceBtn.dataset.icon || "+" : "+";
 const addSpaceBtnActiveIcon = addSpaceBtn ? addSpaceBtn.dataset.activeIcon || "×" : "×";
+const spaceKindLabels = {
+  coworking: "Коворкинг",
+  meeting: "Переговорка",
+};
+const spaceKindPluralLabels = {
+  coworking: "Коворкинги",
+  meeting: "Переговорки",
+};
+const defaultSpaceKind = "coworking";
 const fallbackBuildingImages = [
   "/assets/buildings/1.png",
   "/assets/buildings/2.png",
@@ -143,7 +157,14 @@ const apiRequest = async (path, options = {}) => {
     const message = error.error || "Ошибка запроса";
     throw new Error(message);
   }
-  return response.json();
+  if (response.status === 204) {
+    return null;
+  }
+  const text = await response.text();
+  if (!text) {
+    return null;
+  }
+  return JSON.parse(text);
 };
 
 const setStatus = (message, tone = "info") => {
@@ -204,20 +225,43 @@ const clearSpaceStatus = () => {
   spaceStatus.dataset.tone = "";
 };
 
-const openSpaceModal = () => {
+const updateSpaceColorPreview = (color) => {
+  if (!spaceColorPreview) {
+    return;
+  }
+  spaceColorPreview.style.background = color || "#60a5fa";
+};
+
+const normalizeSpaceKind = (kind) => (kind && spaceKindLabels[kind] ? kind : defaultSpaceKind);
+
+const getSpaceKindLabel = (kind) => (kind && spaceKindLabels[kind] ? spaceKindLabels[kind] : "");
+
+const openSpaceModal = (space = null) => {
   if (!spaceModal) {
     return;
   }
+  editingSpace = space;
   spaceModal.classList.add("is-open");
   spaceModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("modal-open");
   clearSpaceStatus();
+  if (spaceModalTitle) {
+    spaceModalTitle.textContent = space ? "Редактировать пространство" : "Новое пространство";
+  }
+  if (spaceDeleteBtn) {
+    spaceDeleteBtn.classList.toggle("is-hidden", !space);
+  }
   if (spaceNameField) {
-    spaceNameField.value = "";
+    spaceNameField.value = space?.name || "";
     spaceNameField.focus();
   }
-  if (spaceColorInput && !spaceColorInput.value) {
-    spaceColorInput.value = "#60a5fa";
+  if (spaceKindField) {
+    spaceKindField.value = normalizeSpaceKind(space?.kind);
+  }
+  if (spaceColorInput) {
+    const initialColor = space?.color || getSpaceColor(space) || "#60a5fa";
+    spaceColorInput.value = initialColor;
+    updateSpaceColorPreview(initialColor);
   }
 };
 
@@ -225,6 +269,7 @@ const closeSpaceModal = () => {
   if (!spaceModal) {
     return;
   }
+  editingSpace = null;
   spaceModal.classList.remove("is-open");
   spaceModal.setAttribute("aria-hidden", "true");
   document.body.classList.remove("modal-open");
@@ -232,9 +277,35 @@ const closeSpaceModal = () => {
   if (spaceForm) {
     spaceForm.reset();
   }
+  if (spaceDeleteBtn) {
+    spaceDeleteBtn.classList.add("is-hidden");
+    spaceDeleteBtn.disabled = false;
+  }
   lassoState.pendingPoints = null;
   lassoState.points = [];
 };
+
+if (spaceColorInput) {
+  updateSpaceColorPreview(spaceColorInput.value);
+  spaceColorInput.addEventListener("input", (event) => {
+    if (!(event.target instanceof HTMLInputElement)) {
+      return;
+    }
+    updateSpaceColorPreview(event.target.value);
+  });
+}
+
+if (spaceColorPreview && spaceColorInput) {
+  spaceColorPreview.addEventListener("click", () => {
+    spaceColorInput.click();
+  });
+  spaceColorPreview.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      spaceColorInput.click();
+    }
+  });
+}
 
 const showImagePreview = (src) => {
   if (!imagePreview || !imagePreviewImg) {
@@ -681,24 +752,74 @@ const renderFloorSpaces = (spaces) => {
     return;
   }
   floorSpacesEmpty.classList.add("is-hidden");
-  currentSpaces.forEach((space) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "space-list-item";
-    button.dataset.spaceId = space.id ? String(space.id) : "";
-    button.dataset.spaceName = space.name || "";
+  const kindOrder = Object.keys(spaceKindLabels);
+  const kindRank = new Map(kindOrder.map((kind, index) => [kind, index]));
+  const getSpaceKindGroup = (space) =>
+    space?.kind && spaceKindLabels[space.kind] ? space.kind : "";
+  const sortedSpaces = [...currentSpaces].sort((left, right) => {
+    const leftKind = getSpaceKindGroup(left);
+    const rightKind = getSpaceKindGroup(right);
+    const leftRank = kindRank.has(leftKind) ? kindRank.get(leftKind) : kindOrder.length;
+    const rightRank = kindRank.has(rightKind) ? kindRank.get(rightKind) : kindOrder.length;
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    const leftLabel = getSpaceKindLabel(leftKind);
+    const rightLabel = getSpaceKindLabel(rightKind);
+    if (leftLabel !== rightLabel) {
+      return leftLabel.localeCompare(rightLabel, "ru");
+    }
+    return (left?.name || "").localeCompare(right?.name || "", "ru", { sensitivity: "base" });
+  });
+  let lastKind = null;
+  sortedSpaces.forEach((space) => {
+    const kindGroup = getSpaceKindGroup(space);
+    if (kindGroup !== lastKind) {
+      const heading = document.createElement("div");
+      heading.className = "space-kind-heading";
+      heading.textContent = spaceKindPluralLabels[kindGroup] || "Без типов";
+      floorSpacesList.appendChild(heading);
+      lastKind = kindGroup;
+    }
+    const item = document.createElement("div");
+    item.className = "space-list-item";
+    item.dataset.spaceId = space.id ? String(space.id) : "";
+    item.dataset.spaceName = space.name || "";
+
+    const selectButton = document.createElement("button");
+    selectButton.type = "button";
+    selectButton.className = "space-select-button";
 
     const colorDot = document.createElement("span");
     colorDot.className = "space-color-dot";
     colorDot.style.background = getSpaceColor(space) || "#e2e8f0";
-    button.appendChild(colorDot);
+    selectButton.appendChild(colorDot);
 
     const label = document.createElement("span");
+    label.className = "space-name";
     label.textContent = space.name || "Без названия";
-    button.appendChild(label);
+    selectButton.appendChild(label);
 
-    button.addEventListener("click", () => selectSpaceFromList(space));
-    button.addEventListener("mouseenter", () => {
+    const kindLabel = getSpaceKindLabel(space.kind);
+    if (kindLabel) {
+      const kindTag = document.createElement("span");
+      kindTag.className = "space-kind-tag";
+      kindTag.textContent = kindLabel;
+      selectButton.appendChild(kindTag);
+    }
+
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "space-edit-button";
+    editButton.setAttribute("aria-label", "Редактировать пространство");
+    editButton.textContent = "✏";
+
+    selectButton.addEventListener("click", () => selectSpaceFromList(space));
+    editButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openSpaceModal(space);
+    });
+    item.addEventListener("mouseenter", () => {
       const polygon = findSpacePolygon(space);
       if (!polygon) {
         return;
@@ -706,7 +827,7 @@ const renderFloorSpaces = (spaces) => {
       polygon.classList.add("is-hover");
       updateSpaceTooltipPosition(polygon);
     });
-    button.addEventListener("mouseleave", () => {
+    item.addEventListener("mouseleave", () => {
       const polygon = findSpacePolygon(space);
       if (!polygon) {
         return;
@@ -716,7 +837,10 @@ const renderFloorSpaces = (spaces) => {
         hideSpaceTooltip();
       }
     });
-    floorSpacesList.appendChild(button);
+
+    item.appendChild(selectButton);
+    item.appendChild(editButton);
+    floorSpacesList.appendChild(item);
   });
   if (spaceEditState.selectedPolygon) {
   highlightSpaceListItem(
@@ -2139,15 +2263,57 @@ if (spaceForm) {
       setSpaceStatus("Сначала выберите этаж.", "error");
       return;
     }
+    if (editingSpace && editingSpace.id) {
+      const name = spaceNameField ? spaceNameField.value.trim() : "";
+      const kind = spaceKindField ? spaceKindField.value : "";
+      const color = spaceColorInput && spaceColorInput.value ? spaceColorInput.value : "#60a5fa";
+      if (!name) {
+        setSpaceStatus("Укажите название пространства.", "error");
+        return;
+      }
+      if (!kind) {
+        setSpaceStatus("Выберите тип пространства.", "error");
+        return;
+      }
+      clearSpaceStatus();
+      if (spaceSaveBtn) {
+        spaceSaveBtn.disabled = true;
+      }
+      try {
+        await apiRequest(`/api/spaces/${editingSpace.id}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            name,
+            kind,
+            color,
+          }),
+        });
+        await loadFloorSpaces(currentFloor.id);
+        setFloorStatus("Пространство обновлено.", "success");
+        closeSpaceModal();
+      } catch (error) {
+        setSpaceStatus(error.message, "error");
+      } finally {
+        if (spaceSaveBtn) {
+          spaceSaveBtn.disabled = false;
+        }
+      }
+      return;
+    }
     const points = lassoState.pendingPoints;
     if (!points || points.length < 3) {
       setSpaceStatus("Сначала выделите область на плане.", "error");
       return;
     }
     const name = spaceNameField ? spaceNameField.value.trim() : "";
+    const kind = spaceKindField ? spaceKindField.value : "";
     const color = spaceColorInput && spaceColorInput.value ? spaceColorInput.value : "#60a5fa";
     if (!name) {
       setSpaceStatus("Укажите название пространства.", "error");
+      return;
+    }
+    if (!kind) {
+      setSpaceStatus("Выберите тип пространства.", "error");
       return;
     }
     clearSpaceStatus();
@@ -2165,7 +2331,7 @@ if (spaceForm) {
         body: JSON.stringify({
           floor_id: currentFloor.id,
           name,
-          kind: lassoDefaults.kind,
+          kind,
           color,
           points,
         }),
@@ -2188,6 +2354,36 @@ if (spaceForm) {
       }
       setSpaceStatus(error.message, "error");
     } finally {
+      if (spaceSaveBtn) {
+        spaceSaveBtn.disabled = false;
+      }
+    }
+  });
+}
+
+if (spaceDeleteBtn) {
+  spaceDeleteBtn.addEventListener("click", async () => {
+    if (!editingSpace || !editingSpace.id) {
+      setSpaceStatus("Пространство не выбрано.", "error");
+      return;
+    }
+    if (!window.confirm("Удалить пространство?")) {
+      return;
+    }
+    clearSpaceStatus();
+    spaceDeleteBtn.disabled = true;
+    if (spaceSaveBtn) {
+      spaceSaveBtn.disabled = true;
+    }
+    try {
+      await apiRequest(`/api/spaces/${editingSpace.id}`, { method: "DELETE" });
+      await loadFloorSpaces(currentFloor?.id);
+      setFloorStatus("Пространство удалено.", "success");
+      closeSpaceModal();
+    } catch (error) {
+      setSpaceStatus(error.message, "error");
+    } finally {
+      spaceDeleteBtn.disabled = false;
       if (spaceSaveBtn) {
         spaceSaveBtn.disabled = false;
       }

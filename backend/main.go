@@ -87,6 +87,13 @@ func main() {
 	}
 	defer db.Close()
 
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		log.Fatalf("set busy_timeout: %v", err)
+	}
+	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		log.Fatalf("set journal_mode: %v", err)
+	}
+
 	if err := migrate(db); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
@@ -623,32 +630,60 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 	}
 	switch suffix {
 	case "":
-		if r.Method != http.MethodPut {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		var payload struct {
-			Color  string  `json:"color"`
-			Points []point `json:"points"`
-		}
-		if err := decodeJSON(r, &payload); err != nil {
-			respondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if len(payload.Points) < 3 {
-			respondError(w, http.StatusBadRequest, "points are required")
-			return
-		}
-		result, err := a.updateSpaceGeometry(id, payload.Points, strings.TrimSpace(payload.Color))
-		if err != nil {
-			if errors.Is(err, errNotFound) {
-				respondError(w, http.StatusNotFound, "space not found")
+		switch r.Method {
+		case http.MethodPut:
+			var payload struct {
+				Name   string  `json:"name"`
+				Kind   string  `json:"kind"`
+				Color  string  `json:"color"`
+				Points []point `json:"points"`
+			}
+			if err := decodeJSON(r, &payload); err != nil {
+				respondError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			respondError(w, http.StatusInternalServerError, err.Error())
-			return
+			payload.Name = strings.TrimSpace(payload.Name)
+			payload.Kind = strings.TrimSpace(payload.Kind)
+			payload.Color = strings.TrimSpace(payload.Color)
+			var (
+				result space
+				err    error
+			)
+			if len(payload.Points) > 0 {
+				if len(payload.Points) < 3 {
+					respondError(w, http.StatusBadRequest, "points are required")
+					return
+				}
+				result, err = a.updateSpaceGeometry(id, payload.Points, payload.Color)
+			} else {
+				if payload.Name == "" {
+					respondError(w, http.StatusBadRequest, "name is required")
+					return
+				}
+				result, err = a.updateSpaceDetails(id, payload.Name, payload.Kind, payload.Color)
+			}
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					respondError(w, http.StatusNotFound, "space not found")
+					return
+				}
+				respondError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			respondJSON(w, http.StatusOK, result)
+		case http.MethodDelete:
+			if err := a.deleteSpace(id); err != nil {
+				if errors.Is(err, errNotFound) {
+					respondError(w, http.StatusNotFound, "space not found")
+					return
+				}
+				respondError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
-		respondJSON(w, http.StatusOK, result)
 	case "/desks":
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1110,6 +1145,65 @@ func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space
 	}
 	s.Points = decodePoints(pointsStored)
 	return s, nil
+}
+
+func (a *app) updateSpaceDetails(id int64, name, kind, color string) (space, error) {
+	if kind == "" {
+		row := a.db.QueryRow(`SELECT kind FROM spaces WHERE id = ?`, id)
+		if err := row.Scan(&kind); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return space{}, errNotFound
+			}
+			return space{}, err
+		}
+	}
+	result, err := a.db.Exec(
+		`UPDATE spaces SET name = ?, kind = ?, color = ? WHERE id = ?`,
+		name,
+		kind,
+		color,
+		id,
+	)
+	if err != nil {
+		return space{}, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return space{}, err
+	}
+	if rows == 0 {
+		return space{}, errNotFound
+	}
+	row := a.db.QueryRow(
+		`SELECT id, floor_id, name, kind, COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
+		FROM spaces WHERE id = ?`,
+		id,
+	)
+	var s space
+	var pointsStored string
+	if err := row.Scan(&s.ID, &s.FloorID, &s.Name, &s.Kind, &pointsStored, &s.Color, &s.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return space{}, errNotFound
+		}
+		return space{}, err
+	}
+	s.Points = decodePoints(pointsStored)
+	return s, nil
+}
+
+func (a *app) deleteSpace(id int64) error {
+	result, err := a.db.Exec(`DELETE FROM spaces WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return errNotFound
+	}
+	return nil
 }
 
 func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {

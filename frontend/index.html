@@ -201,13 +201,26 @@
             <input id="spaceNameField" type="text" placeholder="Например, Open Space" required />
           </label>
           <label class="field">
-            <span>Цвет заливки</span>
-            <input id="spaceColorInput" type="color" value="#60a5fa" />
+            <span>Тип пространства</span>
+            <select id="spaceKindField" required>
+              <option value="coworking">Коворкинг</option>
+              <option value="meeting">Переговорка</option>
+            </select>
           </label>
+          <div class="field">
+            <span>Цвет заливки</span>
+            <div class="color-input">
+              <button id="spaceColorPreview" class="color-swatch" type="button" aria-label="Выбрать цвет"></button>
+              <input id="spaceColorInput" type="color" value="#60a5fa" aria-label="Цвет заливки" />
+            </div>
+          </div>
           <div class="form-actions">
             <button id="spaceSaveBtn" class="primary" type="submit">Сохранить</button>
             <button id="spaceCancelBtn" class="ghost" type="button" data-modal-close="true">
               Отменить
+            </button>
+            <button id="spaceDeleteBtn" class="danger is-hidden" type="button">
+              Удалить
             </button>
           </div>
         </form>

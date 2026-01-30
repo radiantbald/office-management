@@ -144,6 +144,11 @@ button {
   color: #1f2937;
 }
 
+.danger {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
@@ -211,6 +216,42 @@ button:disabled {
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
+}
+
+.field select {
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: #ffffff;
+}
+
+.color-input {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.color-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid #d1d5db;
+  background: #60a5fa;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+  flex: 0 0 auto;
+  padding: 0;
+  cursor: pointer;
+}
+
+.color-input input[type="color"] {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  pointer-events: none;
 }
 
 .field input[type="file"] {
@@ -459,19 +500,91 @@ button:disabled {
   min-height: 0;
 }
 
+.space-kind-heading {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #64748b;
+  padding: 6px 6px 2px;
+  margin-top: 10px;
+  grid-column: 1 / -1;
+}
+
+.space-kind-heading:first-child {
+  margin-top: 0;
+}
+
 .space-list-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   width: 100%;
   text-align: left;
   border-radius: 6px;
   border: 1px solid #e5e7eb;
   background: #ffffff;
-  padding: 0 12px;
+  padding: 0 8px;
   height: 30px;
   font-size: 14px;
   color: #111827;
+}
+
+.space-select-button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  border: none;
+  background: transparent;
+  padding: 0;
+  height: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.space-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.space-kind-tag {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  color: #374151;
+  flex-shrink: 0;
+}
+
+.space-select-button:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.space-edit-button {
+  border: none;
+  background: #f3f4f6;
+  color: #1f2937;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.space-edit-button:hover {
+  background: #e5e7eb;
 }
 
 .space-list-item.is-selected {
