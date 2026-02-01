@@ -76,6 +76,7 @@ const spaceKindTag = document.getElementById("spaceKindTag");
 const spaceCapacityTag = document.getElementById("spaceCapacityTag");
 const spaceIdTag = document.getElementById("spaceIdTag");
 const spaceSnapshot = document.getElementById("spaceSnapshot");
+const spaceSnapshotCanvas = document.getElementById("spaceSnapshotCanvas");
 const spaceSnapshotPlaceholder = document.getElementById("spaceSnapshotPlaceholder");
 const spacePageStatus = document.getElementById("spacePageStatus");
 const addDeskBtn = document.getElementById("addDeskBtn");
@@ -456,6 +457,21 @@ const floorPlanState = {
   pendingSelectTimerId: null,
 };
 
+const spaceSnapshotState = {
+  scale: 1,
+  translateX: 0,
+  translateY: 0,
+  isDragging: false,
+  dragStartX: 0,
+  dragStartY: 0,
+  dragOriginX: 0,
+  dragOriginY: 0,
+  dragPointerId: null,
+  pendingPointerId: null,
+  pendingStartX: 0,
+  pendingStartY: 0,
+};
+
 const clearPendingSelect = () => {
   floorPlanState.pendingSelectPolygon = null;
   floorPlanState.pendingSelectPointerId = null;
@@ -477,6 +493,26 @@ const resetFloorPlanTransform = () => {
   floorPlanState.translateX = 0;
   floorPlanState.translateY = 0;
   applyFloorPlanTransform();
+};
+
+const applySpaceSnapshotTransform = () => {
+  if (!spaceSnapshotCanvas) {
+    return;
+  }
+  spaceSnapshotCanvas.style.transform = `translate(${spaceSnapshotState.translateX}px, ${spaceSnapshotState.translateY}px) scale(${spaceSnapshotState.scale})`;
+};
+
+const resetSpaceSnapshotTransform = () => {
+  spaceSnapshotState.scale = 1;
+  spaceSnapshotState.translateX = 0;
+  spaceSnapshotState.translateY = 0;
+  spaceSnapshotState.isDragging = false;
+  spaceSnapshotState.dragPointerId = null;
+  spaceSnapshotState.pendingPointerId = null;
+  if (spaceSnapshot) {
+    spaceSnapshot.classList.remove("is-dragging");
+  }
+  applySpaceSnapshotTransform();
 };
 
 const ensureSpaceLayers = (svg) => {
@@ -1741,7 +1777,7 @@ const setSpaceEditMode = (editing) => {
   }
 };
 
-const getSnapshotSvg = () => (spaceSnapshot ? spaceSnapshot.querySelector("svg") : null);
+const getSnapshotSvg = () => (spaceSnapshotCanvas ? spaceSnapshotCanvas.querySelector("svg") : null);
 
 const parseViewBox = (svg) => {
   if (!svg) {
@@ -3369,10 +3405,10 @@ const loadFloorPage = async (buildingID, floorNumber) => {
 };
 
 const renderSpaceSnapshot = (space, floorPlanMarkup) => {
-  if (!spaceSnapshot || !spaceSnapshotPlaceholder) {
+  if (!spaceSnapshot || !spaceSnapshotCanvas || !spaceSnapshotPlaceholder) {
     return;
   }
-  spaceSnapshot.innerHTML = "";
+  spaceSnapshotCanvas.innerHTML = "";
   const points = normalizeSpacePoints(space?.points);
   currentSpaceBounds = points.length >= 3 ? getSpaceBounds(points) : null;
   const snapshotSvg = buildSpaceSnapshotSvg(
@@ -3383,18 +3419,20 @@ const renderSpaceSnapshot = (space, floorPlanMarkup) => {
   );
   if (!snapshotSvg) {
     spaceSnapshotPlaceholder.classList.remove("is-hidden");
+    resetSpaceSnapshotTransform();
     return;
   }
   spaceSnapshotPlaceholder.classList.add("is-hidden");
-  spaceSnapshot.appendChild(snapshotSvg);
+  spaceSnapshotCanvas.appendChild(snapshotSvg);
+  resetSpaceSnapshotTransform();
   scheduleDeskRender();
 };
 
 const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   setPageMode("space");
   clearSpacePageStatus();
-  if (spaceSnapshot) {
-    spaceSnapshot.innerHTML = "";
+  if (spaceSnapshotCanvas) {
+    spaceSnapshotCanvas.innerHTML = "";
   }
   if (spaceSnapshotPlaceholder) {
     spaceSnapshotPlaceholder.classList.add("is-hidden");
@@ -4054,6 +4092,109 @@ if (spaceDeleteBtn) {
 }
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+if (spaceSnapshot && spaceSnapshotCanvas) {
+  const minScale = 0.5;
+  const maxScale = 4;
+  spaceSnapshot.addEventListener("wheel", (event) => {
+    if (!spaceSnapshotCanvas.firstElementChild) {
+      return;
+    }
+    event.preventDefault();
+    const rect = spaceSnapshot.getBoundingClientRect();
+    const cursorX = event.clientX - rect.left;
+    const cursorY = event.clientY - rect.top;
+    const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9;
+    const nextScale = clamp(spaceSnapshotState.scale * zoomFactor, minScale, maxScale);
+    if (nextScale === spaceSnapshotState.scale) {
+      return;
+    }
+    const offsetX = (cursorX - spaceSnapshotState.translateX) / spaceSnapshotState.scale;
+    const offsetY = (cursorY - spaceSnapshotState.translateY) / spaceSnapshotState.scale;
+    spaceSnapshotState.scale = nextScale;
+    spaceSnapshotState.translateX = cursorX - offsetX * nextScale;
+    spaceSnapshotState.translateY = cursorY - offsetY * nextScale;
+    applySpaceSnapshotTransform();
+  });
+
+  spaceSnapshot.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    if (!spaceSnapshotCanvas.firstElementChild) {
+      return;
+    }
+    if (isDeskPlacementActive || deskEditState.draggingDeskId || deskEditState.transformMode) {
+      return;
+    }
+    if (event.target && event.target.closest && event.target.closest(".space-desk, .desk-handle")) {
+      return;
+    }
+    spaceSnapshotState.pendingPointerId = event.pointerId;
+    spaceSnapshotState.pendingStartX = event.clientX;
+    spaceSnapshotState.pendingStartY = event.clientY;
+    if (spaceSnapshot.setPointerCapture) {
+      spaceSnapshot.setPointerCapture(event.pointerId);
+    }
+  });
+
+  spaceSnapshot.addEventListener("pointermove", (event) => {
+    if (
+      spaceSnapshotState.pendingPointerId !== event.pointerId &&
+      !spaceSnapshotState.isDragging
+    ) {
+      return;
+    }
+    if (spaceSnapshotState.pendingPointerId !== null && !spaceSnapshotState.isDragging) {
+      const dx = event.clientX - spaceSnapshotState.pendingStartX;
+      const dy = event.clientY - spaceSnapshotState.pendingStartY;
+      if (Math.hypot(dx, dy) < 3) {
+        return;
+      }
+      spaceSnapshotState.isDragging = true;
+      spaceSnapshotState.dragStartX = spaceSnapshotState.pendingStartX;
+      spaceSnapshotState.dragStartY = spaceSnapshotState.pendingStartY;
+      spaceSnapshotState.dragOriginX = spaceSnapshotState.translateX;
+      spaceSnapshotState.dragOriginY = spaceSnapshotState.translateY;
+      spaceSnapshotState.dragPointerId = event.pointerId;
+      spaceSnapshotState.pendingPointerId = null;
+      spaceSnapshot.classList.add("is-dragging");
+    }
+    if (!spaceSnapshotState.isDragging) {
+      return;
+    }
+    event.preventDefault();
+    spaceSnapshotState.translateX =
+      spaceSnapshotState.dragOriginX + (event.clientX - spaceSnapshotState.dragStartX);
+    spaceSnapshotState.translateY =
+      spaceSnapshotState.dragOriginY + (event.clientY - spaceSnapshotState.dragStartY);
+    applySpaceSnapshotTransform();
+  });
+
+  const endSnapshotDrag = (event) => {
+    if (!spaceSnapshotState.isDragging && spaceSnapshotState.pendingPointerId === null) {
+      return;
+    }
+    if (spaceSnapshotState.isDragging) {
+      spaceSnapshot.classList.remove("is-dragging");
+    }
+    const pointerId =
+      spaceSnapshotState.dragPointerId ?? spaceSnapshotState.pendingPointerId ?? event?.pointerId ?? null;
+    if (pointerId !== null && spaceSnapshot.releasePointerCapture) {
+      try {
+        spaceSnapshot.releasePointerCapture(pointerId);
+      } catch {
+        // Ignore release errors for stale pointers.
+      }
+    }
+    spaceSnapshotState.isDragging = false;
+    spaceSnapshotState.dragPointerId = null;
+    spaceSnapshotState.pendingPointerId = null;
+  };
+
+  spaceSnapshot.addEventListener("pointerup", endSnapshotDrag);
+  spaceSnapshot.addEventListener("pointercancel", endSnapshotDrag);
+}
 
 if (floorPlanPreview && floorPlanCanvas) {
   const minScale = 0.5;
