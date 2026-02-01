@@ -2283,6 +2283,7 @@ const renderSpaceDesks = (desks = []) => {
             return;
           }
           event.stopPropagation();
+          event.preventDefault();
           const point = getSnapshotPoint(event, svg);
           if (!point) {
             return;
@@ -2322,6 +2323,7 @@ const renderSpaceDesks = (desks = []) => {
           return;
         }
         event.stopPropagation();
+        event.preventDefault();
         const point = getSnapshotPoint(event, svg);
         if (!point) {
           return;
@@ -2352,6 +2354,7 @@ const renderSpaceDesks = (desks = []) => {
         return;
       }
       event.stopPropagation();
+      event.preventDefault();
       setSelectedDesk(desk.id);
       if (isDeskPlacementActive) {
         return;
@@ -2408,6 +2411,21 @@ const getNextDeskLabel = (desks = []) => {
 };
 
 const getSnapshotPoint = (event, svg) => {
+  if (!svg) {
+    return null;
+  }
+  if (svg.createSVGPoint && svg.getScreenCTM) {
+    const matrix = svg.getScreenCTM();
+    if (matrix) {
+      const point = svg.createSVGPoint();
+      point.x = event.clientX;
+      point.y = event.clientY;
+      const transformed = point.matrixTransform(matrix.inverse());
+      if (Number.isFinite(transformed.x) && Number.isFinite(transformed.y)) {
+        return { x: transformed.x, y: transformed.y };
+      }
+    }
+  }
   const viewBox = parseViewBox(svg);
   if (!viewBox) {
     return null;
@@ -2480,6 +2498,7 @@ const handleDeskPointerMove = (event) => {
   if (!deskEditState.draggingDeskId || deskEditState.draggingPointerId !== event.pointerId) {
     return;
   }
+  event.preventDefault();
   const svg = getSnapshotSvg();
   if (!svg) {
     return;
