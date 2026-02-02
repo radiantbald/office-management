@@ -1745,11 +1745,11 @@ const updateDeskClipboardButtons = () => {
   const selectedCount = deskEditState.selectedDeskIds ? deskEditState.selectedDeskIds.size : 0;
   if (copyDeskBtn) {
     copyDeskBtn.classList.toggle("is-hidden", !isSpaceEditing || !canEdit);
-    copyDeskBtn.disabled = selectedCount !== 1;
+    copyDeskBtn.disabled = selectedCount === 0;
   }
   if (pasteDeskBtn) {
     pasteDeskBtn.classList.toggle("is-hidden", !isSpaceEditing || !canEdit);
-    pasteDeskBtn.disabled = !copiedDesk;
+    pasteDeskBtn.disabled = !copiedDesk || !copiedDesk.desks || copiedDesk.desks.length === 0;
   }
 };
 
@@ -2820,6 +2820,197 @@ const findFreeDeskPosition = (bounds, width, height, preferredPoint = null, excl
   return null;
 };
 
+const getRelativeGroupBounds = (desks = []) => {
+  if (!Array.isArray(desks) || desks.length === 0) {
+    return null;
+  }
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  desks.forEach((desk) => {
+    if (!desk) {
+      return;
+    }
+    const width = Number.isFinite(desk.width) ? desk.width : deskPixelWidth;
+    const height = Number.isFinite(desk.height) ? desk.height : deskPixelHeight;
+    const dx = Number.isFinite(desk.dx) ? desk.dx : 0;
+    const dy = Number.isFinite(desk.dy) ? desk.dy : 0;
+    const left = dx - width / 2;
+    const right = dx + width / 2;
+    const top = dy - height / 2;
+    const bottom = dy + height / 2;
+    minX = Math.min(minX, left);
+    minY = Math.min(minY, top);
+    maxX = Math.max(maxX, right);
+    maxY = Math.max(maxY, bottom);
+  });
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return null;
+  }
+  const width = Math.max(maxX - minX, 1);
+  const height = Math.max(maxY - minY, 1);
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width,
+    height,
+  };
+};
+
+const buildCopiedDeskGroup = (desks = []) => {
+  const normalized = desks
+    .map((desk) => ({
+      width: Number.isFinite(desk?.width) ? desk.width : deskPixelWidth,
+      height: Number.isFinite(desk?.height) ? desk.height : deskPixelHeight,
+      rotation: Number.isFinite(desk?.rotation) ? desk.rotation : 0,
+      x: Number.isFinite(desk?.x) ? desk.x : 0,
+      y: Number.isFinite(desk?.y) ? desk.y : 0,
+    }))
+    .filter((desk) => Number.isFinite(desk.x) && Number.isFinite(desk.y));
+  if (normalized.length === 0) {
+    return null;
+  }
+  const absBounds = getGroupBounds(normalized);
+  if (!absBounds) {
+    return null;
+  }
+  const desksWithOffsets = normalized.map((desk) => ({
+    ...desk,
+    dx: desk.x - absBounds.centerX,
+    dy: desk.y - absBounds.centerY,
+  }));
+  const relativeBounds = getRelativeGroupBounds(desksWithOffsets);
+  if (!relativeBounds) {
+    return null;
+  }
+  return {
+    desks: desksWithOffsets,
+    bounds: relativeBounds,
+    origin: { x: absBounds.centerX, y: absBounds.centerY },
+  };
+};
+
+const normalizeCopiedGroupForBounds = (group, bounds) => {
+  if (!group || !Array.isArray(group.desks) || group.desks.length === 0) {
+    return null;
+  }
+  const desks = group.desks.map((desk) => {
+    const size = normalizeDeskSizeForBounds(desk.width, desk.height, bounds);
+    return {
+      ...desk,
+      width: size.width,
+      height: size.height,
+    };
+  });
+  const relativeBounds = getRelativeGroupBounds(desks);
+  if (!relativeBounds) {
+    return null;
+  }
+  return {
+    ...group,
+    desks,
+    bounds: relativeBounds,
+  };
+};
+
+const canPlaceCopiedGroup = (bounds, group, centerX, centerY) => {
+  if (!bounds || !group || !Array.isArray(group.desks)) {
+    return false;
+  }
+  for (const desk of group.desks) {
+    const width = Number.isFinite(desk.width) ? desk.width : deskPixelWidth;
+    const height = Number.isFinite(desk.height) ? desk.height : deskPixelHeight;
+    const x = centerX + (Number.isFinite(desk.dx) ? desk.dx : 0);
+    const y = centerY + (Number.isFinite(desk.dy) ? desk.dy : 0);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return false;
+    }
+    const minX = bounds.minX + width / 2;
+    const maxX = bounds.minX + bounds.width - width / 2;
+    const minY = bounds.minY + height / 2;
+    const maxY = bounds.minY + bounds.height - height / 2;
+    if (x < minX || x > maxX || y < minY || y > maxY) {
+      return false;
+    }
+    if (!isDeskAreaFree(x, y, width, height)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const findFreeCopiedGroupPosition = (bounds, group, preferredPoint = null) => {
+  if (!bounds || !group || !group.bounds) {
+    return null;
+  }
+  const groupBounds = group.bounds;
+  if (!Number.isFinite(groupBounds.minX) || !Number.isFinite(groupBounds.maxX)) {
+    return null;
+  }
+  const minX = bounds.minX - groupBounds.minX;
+  const maxX = bounds.minX + bounds.width - groupBounds.maxX;
+  const minY = bounds.minY - groupBounds.minY;
+  const maxY = bounds.minY + bounds.height - groupBounds.maxY;
+  if (minX > maxX || minY > maxY) {
+    return null;
+  }
+  const stepBase = Math.min(groupBounds.width || 0, groupBounds.height || 0);
+  const step = Math.max(deskSnapDistance * 2, stepBase > 0 ? stepBase / 2 : deskSnapDistance * 2);
+  const clampPoint = (point) => ({
+    x: Math.min(Math.max(point.x, minX), maxX),
+    y: Math.min(Math.max(point.y, minY), maxY),
+  });
+  if (preferredPoint) {
+    const preferred = clampPoint(preferredPoint);
+    if (canPlaceCopiedGroup(bounds, group, preferred.x, preferred.y)) {
+      return preferred;
+    }
+  }
+  if (preferredPoint) {
+    const preferred = clampPoint(preferredPoint);
+    let bestPoint = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    const maxOffsetX = Math.max(maxX - preferred.x, preferred.x - minX);
+    const maxOffsetY = Math.max(maxY - preferred.y, preferred.y - minY);
+    const maxStepsX = Math.ceil(maxOffsetX / step);
+    const maxStepsY = Math.ceil(maxOffsetY / step);
+    for (let dyStep = -maxStepsY; dyStep <= maxStepsY; dyStep += 1) {
+      const y = preferred.y + dyStep * step;
+      if (y < minY || y > maxY) {
+        continue;
+      }
+      for (let dxStep = -maxStepsX; dxStep <= maxStepsX; dxStep += 1) {
+        const x = preferred.x + dxStep * step;
+        if (x < minX || x > maxX) {
+          continue;
+        }
+        if (!canPlaceCopiedGroup(bounds, group, x, y)) {
+          continue;
+        }
+        const distance = Math.hypot(x - preferred.x, y - preferred.y);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestPoint = { x, y };
+        }
+      }
+    }
+    if (bestPoint) {
+      return bestPoint;
+    }
+  }
+  for (let y = minY; y <= maxY; y += step) {
+    for (let x = minX; x <= maxX; x += step) {
+      if (canPlaceCopiedGroup(bounds, group, x, y)) {
+        return { x, y };
+      }
+    }
+  }
+  return null;
+};
+
 const findFreeGroupPosition = (bounds, desks = [], preferredPoint = null, excludeDeskIds = null) => {
   if (!bounds || desks.length === 0) {
     return null;
@@ -2942,22 +3133,20 @@ const copySelectedDesk = () => {
     setSpacePageStatus("Сначала включите режим редактирования.", "error");
     return;
   }
-  const deskId = deskEditState.selectedDeskId;
-  if (!deskId) {
+  const selectedIds = getSelectedDeskIds();
+  if (selectedIds.length === 0) {
     setSpacePageStatus("Выберите стол для копирования.", "error");
     return;
   }
-  const desk = findDeskById(deskId);
-  if (!desk) {
+  const desks = selectedIds.map(findDeskById).filter(Boolean);
+  if (desks.length === 0) {
     return;
   }
-  copiedDesk = {
-    width: Number.isFinite(desk.width) ? desk.width : deskPixelWidth,
-    height: Number.isFinite(desk.height) ? desk.height : deskPixelHeight,
-    rotation: Number.isFinite(desk.rotation) ? desk.rotation : 0,
-    x: Number.isFinite(desk.x) ? desk.x : 0,
-    y: Number.isFinite(desk.y) ? desk.y : 0,
-  };
+  const group = buildCopiedDeskGroup(desks);
+  if (!group) {
+    return;
+  }
+  copiedDesk = group;
   updateDeskClipboardButtons();
 };
 
@@ -2977,43 +3166,52 @@ const pasteCopiedDesk = async () => {
   const svg = getSnapshotSvg();
   const viewBox = parseViewBox(svg);
   const bounds = currentSpaceBounds || viewBox;
-  const baseWidth = Number.isFinite(copiedDesk.width) ? copiedDesk.width : deskPixelWidth;
-  const baseHeight = Number.isFinite(copiedDesk.height) ? copiedDesk.height : deskPixelHeight;
-  const normalizedSize = normalizeDeskSizeForBounds(baseWidth, baseHeight, bounds);
-  const width = normalizedSize.width;
-  const height = normalizedSize.height;
-  const rotation = Number.isFinite(copiedDesk.rotation) ? copiedDesk.rotation : 0;
+  const group = normalizeCopiedGroupForBounds(copiedDesk, bounds);
+  if (!group) {
+    setSpacePageStatus("Нет скопированного стола.", "error");
+    return;
+  }
   const offset = deskSnapDistance * 2;
-  const baseX = Number.isFinite(copiedDesk.x) ? copiedDesk.x + offset : 0;
-  const baseY = Number.isFinite(copiedDesk.y) ? copiedDesk.y + offset : 0;
-  const position = findFreeDeskPosition(bounds, width, height, { x: baseX, y: baseY });
+  const baseX = Number.isFinite(copiedDesk.origin?.x) ? copiedDesk.origin.x + offset : 0;
+  const baseY = Number.isFinite(copiedDesk.origin?.y) ? copiedDesk.origin.y + offset : 0;
+  const position = findFreeCopiedGroupPosition(bounds, group, { x: baseX, y: baseY });
   if (!position) {
     setSpacePageStatus("Нет свободного места для вставки стола.", "error");
     return;
   }
-  const clamped = clampDeskCenterToBounds(position.x, position.y, width, height, bounds);
 
   try {
     if (pasteDeskBtn) {
       pasteDeskBtn.disabled = true;
     }
-    const label = getNextDeskLabel(currentDesks);
-    const result = await apiRequest("/api/desks", {
-      method: "POST",
-      body: JSON.stringify({
+    let workingDesks = currentDesks.slice();
+    const payloads = group.desks.map((desk) => {
+      const label = getNextDeskLabel(workingDesks);
+      workingDesks = [{ label }, ...workingDesks];
+      const x = position.x + desk.dx;
+      const y = position.y + desk.dy;
+      return {
         space_id: currentSpace.id,
         label,
-        x: clamped.x,
-        y: clamped.y,
-        width,
-        height,
-        rotation,
-      }),
+        x,
+        y,
+        width: desk.width,
+        height: desk.height,
+        rotation: desk.rotation,
+      };
     });
-    if (result) {
-      currentDesks = [result, ...currentDesks];
+    const result = await apiRequest("/api/desks/bulk", {
+      method: "POST",
+      body: JSON.stringify({ items: payloads }),
+    });
+    const created = Array.isArray(result?.items) ? result.items : [];
+    if (created.length > 0) {
+      currentDesks = [...created, ...currentDesks];
       renderSpaceDesks(currentDesks);
-      setSelectedDesk(result.id);
+      setSelectedDesk(created[0].id);
+      for (let i = 1; i < created.length; i += 1) {
+        setSelectedDesk(created[i].id, { additive: true });
+      }
     }
   } catch (error) {
     setSpacePageStatus(error.message, "error");
@@ -4679,11 +4877,18 @@ if (deleteDeskBtn) {
     }
     deleteDeskBtn.disabled = true;
     try {
-      for (const deskId of selectedIds) {
-      await apiRequest(`/api/desks/${deskId}`, { method: "DELETE" });
-      currentDesks = currentDesks.filter((desk) => String(desk.id) !== String(deskId));
-      pendingDeskUpdates.delete(String(deskId));
+      const numericIds = selectedIds.map((deskId) => Number(deskId)).filter(Number.isFinite);
+      if (numericIds.length === 0) {
+        setSpacePageStatus("Выберите стол для удаления.", "error");
+        return;
       }
+      await apiRequest("/api/desks/bulk", {
+        method: "DELETE",
+        body: JSON.stringify({ ids: numericIds }),
+      });
+      const idSet = new Set(numericIds.map((id) => String(id)));
+      currentDesks = currentDesks.filter((desk) => !idSet.has(String(desk.id)));
+      numericIds.forEach((id) => pendingDeskUpdates.delete(String(id)));
       renderSpaceDesks(currentDesks);
       setSelectedDesk(null);
       setSpacePageStatus(

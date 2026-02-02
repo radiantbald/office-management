@@ -78,6 +78,16 @@ type desk struct {
 	CreatedAt string  `json:"created_at"`
 }
 
+type deskCreateInput struct {
+	SpaceID  int64
+	Label    string
+	X        float64
+	Y        float64
+	Width    float64
+	Height   float64
+	Rotation float64
+}
+
 type meetingRoom struct {
 	ID        int64  `json:"id"`
 	SpaceID   int64  `json:"space_id"`
@@ -127,6 +137,7 @@ func main() {
 	mux.HandleFunc("/api/spaces", app.handleSpaces)
 	mux.HandleFunc("/api/spaces/", app.handleSpaceSubroutes)
 	mux.HandleFunc("/api/desks", app.handleDesks)
+	mux.HandleFunc("/api/desks/bulk", app.handleDeskBulk)
 	mux.HandleFunc("/api/desks/", app.handleDeskSubroutes)
 	mux.HandleFunc("/api/meeting-rooms", app.handleMeetingRooms)
 
@@ -841,6 +852,105 @@ func (a *app) handleDesks(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusCreated, result)
 }
 
+func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		var payload struct {
+			Items []struct {
+				SpaceID  int64    `json:"space_id"`
+				Label    string   `json:"label"`
+				X        *float64 `json:"x"`
+				Y        *float64 `json:"y"`
+				Width    *float64 `json:"width"`
+				Height   *float64 `json:"height"`
+				Rotation *float64 `json:"rotation"`
+			} `json:"items"`
+		}
+		if err := decodeJSON(r, &payload); err != nil {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(payload.Items) == 0 {
+			respondError(w, http.StatusBadRequest, "items are required")
+			return
+		}
+		inputs := make([]deskCreateInput, 0, len(payload.Items))
+		for _, item := range payload.Items {
+			label := strings.TrimSpace(item.Label)
+			if item.SpaceID == 0 || label == "" || item.X == nil || item.Y == nil {
+				respondError(w, http.StatusBadRequest, "space_id, label, x, and y are required")
+				return
+			}
+			width := 200.0
+			height := 100.0
+			rotation := 0.0
+			if item.Width != nil && *item.Width > 0 {
+				width = *item.Width
+			}
+			if item.Height != nil && *item.Height > 0 {
+				height = *item.Height
+			}
+			if item.Rotation != nil {
+				rotation = *item.Rotation
+			}
+			inputs = append(inputs, deskCreateInput{
+				SpaceID:  item.SpaceID,
+				Label:    label,
+				X:        *item.X,
+				Y:        *item.Y,
+				Width:    width,
+				Height:   height,
+				Rotation: rotation,
+			})
+		}
+		created, err := a.createDesksBulk(inputs)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		respondJSON(w, http.StatusCreated, map[string]any{"items": created})
+	case http.MethodDelete:
+		var payload struct {
+			IDs []int64 `json:"ids"`
+		}
+		if err := decodeJSON(r, &payload); err != nil {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(payload.IDs) == 0 {
+			respondError(w, http.StatusBadRequest, "ids are required")
+			return
+		}
+		seen := make(map[int64]struct{}, len(payload.IDs))
+		unique := make([]int64, 0, len(payload.IDs))
+		for _, id := range payload.IDs {
+			if id == 0 {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			unique = append(unique, id)
+		}
+		if len(unique) == 0 {
+			respondError(w, http.StatusBadRequest, "ids are required")
+			return
+		}
+		if err := a.deleteDesksBulk(unique); err != nil {
+			if errors.Is(err, errNotFound) {
+				respondError(w, http.StatusNotFound, "desk not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 	id, suffix, err := parseIDFromPath(r.URL.Path, "/api/desks/")
 	if err != nil {
@@ -1463,6 +1573,67 @@ func (a *app) createDesk(spaceID int64, label string, x, y, width, height, rotat
 	}, nil
 }
 
+func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	stmt, err := tx.Prepare(
+		`INSERT INTO desks (space_id, label, x, y, width, height, rotation) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	created := make([]desk, 0, len(items))
+	for _, item := range items {
+		result, execErr := stmt.Exec(
+			item.SpaceID,
+			item.Label,
+			item.X,
+			item.Y,
+			item.Width,
+			item.Height,
+			item.Rotation,
+		)
+		if execErr != nil {
+			err = execErr
+			return nil, execErr
+		}
+		id, idErr := result.LastInsertId()
+		if idErr != nil {
+			err = idErr
+			return nil, idErr
+		}
+		created = append(created, desk{
+			ID:        id,
+			SpaceID:   item.SpaceID,
+			Label:     item.Label,
+			X:         item.X,
+			Y:         item.Y,
+			Width:     item.Width,
+			Height:    item.Height,
+			Rotation:  item.Rotation,
+			CreatedAt: now,
+		})
+	}
+	if commitErr := tx.Commit(); commitErr != nil {
+		err = commitErr
+		return nil, commitErr
+	}
+	return created, nil
+}
+
 func (a *app) getDesk(id int64) (desk, error) {
 	var d desk
 	row := a.db.QueryRow(
@@ -1541,6 +1712,47 @@ func (a *app) deleteDesk(id int64) error {
 	}
 	if rows == 0 {
 		return errNotFound
+	}
+	return nil
+}
+
+func (a *app) deleteDesksBulk(ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	stmt, err := tx.Prepare(`DELETE FROM desks WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, id := range ids {
+		result, execErr := stmt.Exec(id)
+		if execErr != nil {
+			err = execErr
+			return execErr
+		}
+		rows, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			err = rowsErr
+			return rowsErr
+		}
+		if rows == 0 {
+			err = errNotFound
+			return errNotFound
+		}
+	}
+	if commitErr := tx.Commit(); commitErr != nil {
+		err = commitErr
+		return commitErr
 	}
 	return nil
 }
