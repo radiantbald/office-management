@@ -2418,6 +2418,8 @@ const renderGroupSelectionOverlay = () => {
         resizeHandle.setPointerCapture(event.pointerId);
       }
     });
+    resizeHandle.addEventListener("pointerup", handleDeskPointerEnd);
+    resizeHandle.addEventListener("pointercancel", handleDeskPointerEnd);
 
     handles.appendChild(resizeHandle);
   });
@@ -2438,6 +2440,7 @@ const renderSpaceDesks = (desks = []) => {
   const metrics = getDeskMetrics(svg, null);
   const selectedIds = getSelectedDeskIds();
   const hasSingleSelection = selectedIds.length === 1;
+  const hasMultipleSelection = selectedIds.length > 1;
   desks.forEach((desk) => {
     if (!Number.isFinite(desk?.x) || !Number.isFinite(desk?.y)) {
       return;
@@ -2549,6 +2552,8 @@ const renderSpaceDesks = (desks = []) => {
             resizeHandle.setPointerCapture(event.pointerId);
           }
         });
+      resizeHandle.addEventListener("pointerup", handleDeskPointerEnd);
+      resizeHandle.addEventListener("pointercancel", handleDeskPointerEnd);
 
         handles.appendChild(resizeHandle);
       });
@@ -2589,6 +2594,8 @@ const renderSpaceDesks = (desks = []) => {
           rotateHandle.setPointerCapture(event.pointerId);
         }
       });
+      rotateHandle.addEventListener("pointerup", handleDeskPointerEnd);
+      rotateHandle.addEventListener("pointercancel", handleDeskPointerEnd);
 
       handles.appendChild(rotateHandle);
       group.appendChild(handles);
@@ -2606,7 +2613,7 @@ const renderSpaceDesks = (desks = []) => {
       }
       const isSelected = isDeskSelected(desk.id);
       if (!isSelected) {
-      setSelectedDesk(desk.id);
+        setSelectedDesk(desk.id);
       }
       if (isDeskPlacementActive) {
         return;
@@ -2651,6 +2658,8 @@ const renderSpaceDesks = (desks = []) => {
         group.setPointerCapture(event.pointerId);
       }
     });
+    group.addEventListener("pointerup", handleDeskPointerEnd);
+    group.addEventListener("pointercancel", handleDeskPointerEnd);
     layer.appendChild(group);
   });
   renderGroupSelectionOverlay();
@@ -3524,7 +3533,10 @@ const handleDeskPointerEnd = (event) => {
     queueDeskUpdate(deskId, payload);
     return;
   }
-  if (!deskEditState.draggingDeskId || deskEditState.draggingPointerId !== event.pointerId) {
+  if (deskEditState.draggingPointerId !== event.pointerId) {
+    return;
+  }
+  if (!deskEditState.draggingDeskId && (!deskEditState.draggingDeskIds || deskEditState.draggingDeskIds.length === 0)) {
     return;
   }
   void finishDeskDrag();
