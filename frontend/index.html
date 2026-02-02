@@ -27,6 +27,48 @@
       </div>
     </header>
 
+    <div id="authGate" class="auth-gate is-hidden" aria-hidden="true">
+      <div class="auth-card">
+        <div class="auth-header">
+          <h2>Авторизация</h2>
+          <p id="authSubtitle">Введите номер телефона для входа в систему.</p>
+        </div>
+        <form id="authPhoneForm" class="auth-form">
+          <label class="field">
+            <span>Номер телефона</span>
+            <input
+              id="authPhoneInput"
+              type="tel"
+              placeholder="7 (000) 000-00-00"
+              autocomplete="tel"
+              inputmode="tel"
+              required
+            />
+          </label>
+          <button id="requestCodeBtn" class="primary" type="submit">Получить код</button>
+        </form>
+        <form id="authCodeForm" class="auth-form is-hidden">
+          <label class="field">
+            <span>Код подтверждения</span>
+            <input
+              id="authCodeInput"
+              type="text"
+              inputmode="numeric"
+              maxlength="6"
+              placeholder="000000"
+              required
+            />
+            <span id="authCodeHint" class="hint is-hidden"></span>
+          </label>
+          <div class="form-actions">
+            <button id="confirmCodeBtn" class="primary" type="submit">Войти</button>
+            <button id="backToPhoneBtn" class="ghost" type="button">Назад</button>
+          </div>
+        </form>
+        <div id="authStatus" class="status" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+
     <main class="app">
       <section id="buildingsPage" class="buildings-page">
         <div id="emptyState" class="placeholder app-empty">Добавьте первое здание.</div>
@@ -35,7 +77,24 @@
 
       <section id="buildingPage" class="building-page is-hidden">
         <div class="breadcrumb">
-          <a class="breadcrumb-link" href="/buildings">← К списку зданий</a>
+          <div class="breadcrumb-links">
+            <a class="breadcrumb-link" href="/buildings">← К списку зданий</a>
+          </div>
+          <div class="breadcrumb-profile is-hidden" data-role="breadcrumb-profile">
+            <button
+              class="breadcrumb-trigger"
+              type="button"
+              data-role="breadcrumb-trigger"
+              aria-haspopup="true"
+              aria-expanded="false"
+            >
+              <span class="breadcrumb-name"></span>
+              <img class="breadcrumb-avatar" alt="Аватар пользователя" />
+            </button>
+            <div class="breadcrumb-menu is-hidden" data-role="breadcrumb-menu" role="menu">
+              <button class="breadcrumb-menu-item" type="button" data-role="breadcrumb-logout">Выйти</button>
+            </div>
+          </div>
         </div>
         <div class="card">
           <div class="card-header">
@@ -50,9 +109,26 @@
 
       <section id="floorPage" class="floor-page is-hidden">
         <div class="breadcrumb">
-          <a id="breadcrumbBuildings" class="breadcrumb-link" href="/buildings">← К списку зданий</a>
-          <span class="breadcrumb-separator">/</span>
-          <a id="breadcrumbBuilding" class="breadcrumb-link" href="/buildings">Здание</a>
+          <div class="breadcrumb-links">
+            <a id="breadcrumbBuildings" class="breadcrumb-link" href="/buildings">← К списку зданий</a>
+            <span class="breadcrumb-separator">/</span>
+            <a id="breadcrumbBuilding" class="breadcrumb-link" href="/buildings">Здание</a>
+          </div>
+          <div class="breadcrumb-profile is-hidden" data-role="breadcrumb-profile">
+            <button
+              class="breadcrumb-trigger"
+              type="button"
+              data-role="breadcrumb-trigger"
+              aria-haspopup="true"
+              aria-expanded="false"
+            >
+              <span class="breadcrumb-name"></span>
+              <img class="breadcrumb-avatar" alt="Аватар пользователя" />
+            </button>
+            <div class="breadcrumb-menu is-hidden" data-role="breadcrumb-menu" role="menu">
+              <button class="breadcrumb-menu-item" type="button" data-role="breadcrumb-logout">Выйти</button>
+            </div>
+          </div>
         </div>
         <div id="floorPlanLayout" class="floor-plan-layout">
           <aside id="floorPlanActions" class="floor-plan-actions is-hidden" aria-hidden="true">
@@ -98,11 +174,28 @@
 
       <section id="spacePage" class="space-page is-hidden">
         <div class="breadcrumb">
-          <a id="spaceBreadcrumbBuildings" class="breadcrumb-link" href="/buildings">← К списку зданий</a>
-          <span class="breadcrumb-separator">/</span>
-          <a id="spaceBreadcrumbBuilding" class="breadcrumb-link" href="/buildings">Здание</a>
-          <span class="breadcrumb-separator">/</span>
-          <a id="spaceBreadcrumbFloor" class="breadcrumb-link" href="/buildings">Этаж</a>
+          <div class="breadcrumb-links">
+            <a id="spaceBreadcrumbBuildings" class="breadcrumb-link" href="/buildings">← К списку зданий</a>
+            <span class="breadcrumb-separator">/</span>
+            <a id="spaceBreadcrumbBuilding" class="breadcrumb-link" href="/buildings">Здание</a>
+            <span class="breadcrumb-separator">/</span>
+            <a id="spaceBreadcrumbFloor" class="breadcrumb-link" href="/buildings">Этаж</a>
+          </div>
+          <div class="breadcrumb-profile is-hidden" data-role="breadcrumb-profile">
+            <button
+              class="breadcrumb-trigger"
+              type="button"
+              data-role="breadcrumb-trigger"
+              aria-haspopup="true"
+              aria-expanded="false"
+            >
+              <span class="breadcrumb-name"></span>
+              <img class="breadcrumb-avatar" alt="Аватар пользователя" />
+            </button>
+            <div class="breadcrumb-menu is-hidden" data-role="breadcrumb-menu" role="menu">
+              <button class="breadcrumb-menu-item" type="button" data-role="breadcrumb-logout">Выйти</button>
+            </div>
+          </div>
         </div>
         <div id="spaceLayout" class="space-layout">
           <aside id="spaceDesksPanel" class="space-desks-panel" aria-hidden="true">

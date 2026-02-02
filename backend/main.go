@@ -46,6 +46,7 @@ type floor struct {
 	BuildingID int64  `json:"building_id"`
 	Name       string `json:"name"`
 	Level      int    `json:"level"`
+	SpacesCount int   `json:"spaces_count"`
 	PlanSVG    string `json:"plan_svg,omitempty"`
 	CreatedAt  string `json:"created_at"`
 }
@@ -140,6 +141,9 @@ func main() {
 	mux.HandleFunc("/api/desks/bulk", app.handleDeskBulk)
 	mux.HandleFunc("/api/desks/", app.handleDeskSubroutes)
 	mux.HandleFunc("/api/meeting-rooms", app.handleMeetingRooms)
+	mux.HandleFunc("/api/auth/user/info", app.handleAuthUserInfo)
+	mux.HandleFunc("/api/auth/v2/code/wb-captcha", app.handleAuthRequestCode)
+	mux.HandleFunc("/api/auth/v2/auth", app.handleAuthConfirmCode)
 
 	webDir := filepath.Join("..", "frontend")
 	serveFrontendPage := func(w http.ResponseWriter, r *http.Request) {
@@ -152,9 +156,15 @@ func main() {
 	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(app.uploadDir))))
 	mux.Handle("/", http.FileServer(http.Dir(webDir)))
 
+	handler := http.Handler(mux)
+	handler = authMiddleware(handler)
+	handler = corsMiddleware(handler)
+	handler = securityHeadersMiddleware(handler)
+	handler = loggingMiddleware(handler)
+
 	server := &http.Server{
 		Addr:              ":8080",
-		Handler:           loggingMiddleware(mux),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -1232,7 +1242,12 @@ func (a *app) updateBuildingImage(id int64, imageURL string) (building, error) {
 
 func (a *app) listFloorsByBuilding(buildingID int64) ([]floor, error) {
 	rows, err := a.db.Query(
-		`SELECT id, building_id, name, level, created_at FROM floors WHERE building_id = ? ORDER BY id DESC`,
+		`SELECT f.id, f.building_id, f.name, f.level, f.created_at, COUNT(s.id) AS spaces_count
+		FROM floors f
+		LEFT JOIN spaces s ON s.floor_id = f.id
+		WHERE f.building_id = ?
+		GROUP BY f.id
+		ORDER BY f.id DESC`,
 		buildingID,
 	)
 	if err != nil {
@@ -1243,7 +1258,7 @@ func (a *app) listFloorsByBuilding(buildingID int64) ([]floor, error) {
 	var items []floor
 	for rows.Next() {
 		var f floor
-		if err := rows.Scan(&f.ID, &f.BuildingID, &f.Name, &f.Level, &f.CreatedAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.BuildingID, &f.Name, &f.Level, &f.CreatedAt, &f.SpacesCount); err != nil {
 			return nil, err
 		}
 		items = append(items, f)
