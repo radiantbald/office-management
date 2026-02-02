@@ -613,9 +613,21 @@ body:not(.floor-editing) .floor-page {
   color: #b91c1c;
 }
 
-.desk-delete-btn:disabled {
+.desk-delete-btn:disabled,
+.desk-copy-btn:disabled,
+.desk-paste-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.desk-copy-btn {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.desk-paste-btn {
+  background: #dcfce7;
+  color: #166534;
 }
 
 .desk-shrink-btn {

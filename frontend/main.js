@@ -81,6 +81,8 @@ const spaceSnapshotPlaceholder = document.getElementById("spaceSnapshotPlacehold
 const spacePageStatus = document.getElementById("spacePageStatus");
 const addDeskBtn = document.getElementById("addDeskBtn");
 const deleteDeskBtn = document.getElementById("deleteDeskBtn");
+const copyDeskBtn = document.getElementById("copyDeskBtn");
+const pasteDeskBtn = document.getElementById("pasteDeskBtn");
 const shrinkDeskBtn = document.getElementById("shrinkDeskBtn");
 const rotateDeskBtn = document.getElementById("rotateDeskBtn");
 
@@ -97,17 +99,26 @@ let isDeskPlacementActive = false;
 let pendingDeskUpdates = new Map();
 let pendingDeskRender = false;
 let currentSpaceBounds = null;
+let copiedDesk = null;
 const deskEditState = {
   selectedDeskId: null,
+  selectedDeskIds: new Set(),
   draggingDeskId: null,
+  draggingDeskIds: null,
   draggingPointerId: null,
+  groupDragStartPoint: null,
+  groupDragStartPositions: null,
+  groupDragBounds: null,
   offsetX: 0,
   offsetY: 0,
   startX: 0,
   startY: 0,
   hasMoved: false,
+  skipSelectionClear: false,
   transformMode: null,
   transformPointerId: null,
+  groupTransformStartBounds: null,
+  groupTransformStartDesks: null,
   transformStartX: 0,
   transformStartY: 0,
   transformStartWidth: 0,
@@ -1729,6 +1740,19 @@ const setDeskPlacementActive = (active) => {
   }
 };
 
+const updateDeskClipboardButtons = () => {
+  const canEdit = Boolean(currentSpace && currentSpace.kind === "coworking");
+  const selectedCount = deskEditState.selectedDeskIds ? deskEditState.selectedDeskIds.size : 0;
+  if (copyDeskBtn) {
+    copyDeskBtn.classList.toggle("is-hidden", !isSpaceEditing || !canEdit);
+    copyDeskBtn.disabled = selectedCount !== 1;
+  }
+  if (pasteDeskBtn) {
+    pasteDeskBtn.classList.toggle("is-hidden", !isSpaceEditing || !canEdit);
+    pasteDeskBtn.disabled = !copiedDesk;
+  }
+};
+
 const scheduleDeskRender = () => {
   if (pendingDeskRender) {
     return;
@@ -1752,15 +1776,19 @@ const setSpaceEditMode = (editing) => {
   }
   if (deleteDeskBtn) {
     deleteDeskBtn.classList.toggle("is-hidden", !editing);
-    deleteDeskBtn.disabled = !deskEditState.selectedDeskId;
+    const selectedCount = deskEditState.selectedDeskIds ? deskEditState.selectedDeskIds.size : 0;
+    deleteDeskBtn.disabled = selectedCount === 0;
   }
+  updateDeskClipboardButtons();
   if (shrinkDeskBtn) {
     shrinkDeskBtn.classList.toggle("is-hidden", !editing);
-    shrinkDeskBtn.disabled = !deskEditState.selectedDeskId;
+    const selectedCount = deskEditState.selectedDeskIds ? deskEditState.selectedDeskIds.size : 0;
+    shrinkDeskBtn.disabled = selectedCount !== 1;
   }
   if (rotateDeskBtn) {
     rotateDeskBtn.classList.toggle("is-hidden", !editing);
-    rotateDeskBtn.disabled = !deskEditState.selectedDeskId;
+    const selectedCount = deskEditState.selectedDeskIds ? deskEditState.selectedDeskIds.size : 0;
+    rotateDeskBtn.disabled = selectedCount !== 1;
   }
   if (editSpaceBtn) {
     editSpaceBtn.textContent = editing ? "Сохранить" : "Редактировать";
@@ -1771,7 +1799,7 @@ const setSpaceEditMode = (editing) => {
     scheduleDeskRender();
   }
   if (!editing) {
-    deskEditState.selectedDeskId = null;
+    setSelectedDesk(null);
     setDeskPlacementActive(false);
     renderSpaceDesks(currentDesks);
   }
@@ -1924,27 +1952,140 @@ const ensureDeskLayer = (svg) => {
   return layer;
 };
 
+const ensureDeskOverlayLayer = (svg) => {
+  if (!svg) {
+    return null;
+  }
+  let layer = svg.querySelector("#spaceDesksOverlay");
+  if (!layer) {
+    layer = document.createElementNS(svgNamespace, "g");
+    layer.setAttribute("id", "spaceDesksOverlay");
+    svg.appendChild(layer);
+  }
+  return layer;
+};
+
 const findDeskById = (deskId) =>
   currentDesks.find((desk) => String(desk.id) === String(deskId)) || null;
 
-const setSelectedDesk = (deskId) => {
-  deskEditState.selectedDeskId = deskId ? String(deskId) : null;
+const getSelectedDeskIds = () => Array.from(deskEditState.selectedDeskIds || []);
+
+const isDeskSelected = (deskId) =>
+  deskEditState.selectedDeskIds ? deskEditState.selectedDeskIds.has(String(deskId)) : false;
+
+const getSelectedDesks = () => getSelectedDeskIds().map(findDeskById).filter(Boolean);
+
+const getDeskRect = (desk) => {
+  const dimensions = getDeskDimensions(desk);
+  const halfWidth = dimensions.width / 2;
+  const halfHeight = dimensions.height / 2;
+  return {
+    left: desk.x - halfWidth,
+    right: desk.x + halfWidth,
+    top: desk.y - halfHeight,
+    bottom: desk.y + halfHeight,
+    width: dimensions.width,
+    height: dimensions.height,
+  };
+};
+
+const getGroupBounds = (desks = []) => {
+  if (desks.length === 0) {
+    return null;
+  }
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  desks.forEach((desk) => {
+    if (!desk) {
+      return;
+    }
+    const rect = getDeskRect(desk);
+    minX = Math.min(minX, rect.left);
+    minY = Math.min(minY, rect.top);
+    maxX = Math.max(maxX, rect.right);
+    maxY = Math.max(maxY, rect.bottom);
+  });
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return null;
+  }
+  const width = Math.max(maxX - minX, 1);
+  const height = Math.max(maxY - minY, 1);
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width,
+    height,
+    centerX: minX + width / 2,
+    centerY: minY + height / 2,
+  };
+};
+
+const clampGroupDragDelta = (bounds, groupBounds, deltaX, deltaY) => {
+  if (!bounds || !groupBounds) {
+    return { deltaX, deltaY };
+  }
+  const minDeltaX = bounds.minX - groupBounds.minX;
+  const maxDeltaX = bounds.minX + bounds.width - groupBounds.maxX;
+  const minDeltaY = bounds.minY - groupBounds.minY;
+  const maxDeltaY = bounds.minY + bounds.height - groupBounds.maxY;
+  return {
+    deltaX: Math.min(Math.max(deltaX, minDeltaX), maxDeltaX),
+    deltaY: Math.min(Math.max(deltaY, minDeltaY), maxDeltaY),
+  };
+};
+
+const setSelectedDesk = (deskId, options = {}) => {
+  const { toggle = false, additive = false } = options;
+  if (!deskEditState.selectedDeskIds) {
+    deskEditState.selectedDeskIds = new Set();
+  }
+  const selectedIds = deskEditState.selectedDeskIds;
+  if (!deskId) {
+    selectedIds.clear();
+    deskEditState.selectedDeskId = null;
+  } else {
+    const id = String(deskId);
+    if (toggle) {
+      if (selectedIds.has(id)) {
+        selectedIds.delete(id);
+        if (deskEditState.selectedDeskId === id) {
+          deskEditState.selectedDeskId = selectedIds.values().next().value || null;
+        }
+      } else {
+        selectedIds.add(id);
+        deskEditState.selectedDeskId = id;
+      }
+    } else if (additive) {
+      selectedIds.add(id);
+      deskEditState.selectedDeskId = id;
+    } else {
+      selectedIds.clear();
+      selectedIds.add(id);
+      deskEditState.selectedDeskId = id;
+    }
+  }
   const svg = getSnapshotSvg();
   if (svg) {
     svg.querySelectorAll(".space-desk").forEach((group) => {
       const id = group.getAttribute("data-desk-id");
-      group.classList.toggle("is-selected", Boolean(deskId && id === String(deskId)));
+      group.classList.toggle("is-selected", Boolean(id && selectedIds.has(String(id))));
     });
   }
+  const selectedCount = selectedIds.size;
   if (deleteDeskBtn) {
-    deleteDeskBtn.disabled = !deskEditState.selectedDeskId;
+    deleteDeskBtn.disabled = selectedCount === 0;
   }
   if (shrinkDeskBtn) {
-    shrinkDeskBtn.disabled = !deskEditState.selectedDeskId;
+    shrinkDeskBtn.disabled = selectedCount !== 1;
   }
   if (rotateDeskBtn) {
-    rotateDeskBtn.disabled = !deskEditState.selectedDeskId;
+    rotateDeskBtn.disabled = selectedCount !== 1;
   }
+  updateDeskClipboardButtons();
   if (isSpaceEditing) {
     renderSpaceDesks(currentDesks);
   }
@@ -2183,6 +2324,107 @@ const updateDeskDimensionsLocal = (deskId, width, height) => {
   updateDeskElementPosition(group, desk, metrics);
 };
 
+const renderGroupSelectionOverlay = () => {
+  const svg = getSnapshotSvg();
+  if (!svg) {
+    return;
+  }
+  const overlay = ensureDeskOverlayLayer(svg);
+  if (!overlay) {
+    return;
+  }
+  overlay.innerHTML = "";
+  if (!isSpaceEditing) {
+    return;
+  }
+  const selectedIds = getSelectedDeskIds();
+  if (selectedIds.length <= 1) {
+    return;
+  }
+  const selectedDesks = getSelectedDesks();
+  const groupBounds = getGroupBounds(selectedDesks);
+  if (!groupBounds) {
+    return;
+  }
+  const metrics = getDeskMetrics(svg, null);
+  const handles = document.createElementNS(svgNamespace, "g");
+  handles.classList.add("desk-handles", "desk-group-handles");
+
+  const bounds = document.createElementNS(svgNamespace, "rect");
+  bounds.classList.add("desk-bounds");
+  bounds.setAttribute("x", String(groupBounds.minX));
+  bounds.setAttribute("y", String(groupBounds.minY));
+  bounds.setAttribute("width", String(groupBounds.width));
+  bounds.setAttribute("height", String(groupBounds.height));
+  handles.appendChild(bounds);
+
+  const handleSize = 10 * ((metrics.scaleX + metrics.scaleY) / 2);
+  const handleHalf = handleSize / 2;
+  const handleRadius = Math.max(1, Math.min(3, handleSize * 0.2));
+  const halfWidth = groupBounds.width / 2;
+  const halfHeight = groupBounds.height / 2;
+  const handlePositions = {
+    n: { x: 0, y: -halfHeight },
+    ne: { x: halfWidth, y: -halfHeight },
+    e: { x: halfWidth, y: 0 },
+    se: { x: halfWidth, y: halfHeight },
+    s: { x: 0, y: halfHeight },
+    sw: { x: -halfWidth, y: halfHeight },
+    w: { x: -halfWidth, y: 0 },
+    nw: { x: -halfWidth, y: -halfHeight },
+  };
+
+  Object.entries(handlePositions).forEach(([handleKey, position]) => {
+    const resizeHandle = document.createElementNS(svgNamespace, "rect");
+    resizeHandle.classList.add("desk-handle", "desk-handle-resize", `desk-handle-${handleKey}`);
+    resizeHandle.dataset.handle = handleKey;
+    resizeHandle.setAttribute("x", String(groupBounds.centerX + position.x - handleHalf));
+    resizeHandle.setAttribute("y", String(groupBounds.centerY + position.y - handleHalf));
+    resizeHandle.setAttribute("width", String(handleSize));
+    resizeHandle.setAttribute("height", String(handleSize));
+    resizeHandle.setAttribute("rx", String(handleRadius));
+    resizeHandle.setAttribute("ry", String(handleRadius));
+
+    resizeHandle.addEventListener("pointerdown", (event) => {
+      if (!isSpaceEditing || isDeskPlacementActive) {
+        return;
+      }
+      event.stopPropagation();
+      event.preventDefault();
+      const point = getSnapshotPoint(event, svg);
+      if (!point) {
+        return;
+      }
+      deskEditState.draggingDeskId = null;
+      deskEditState.draggingDeskIds = null;
+      deskEditState.transformMode = "group-resize";
+      deskEditState.transformHandle = handleKey;
+      deskEditState.transformPointerId = event.pointerId;
+      deskEditState.groupTransformStartBounds = groupBounds;
+      deskEditState.groupTransformStartDesks = new Map(
+        selectedDesks.map((item) => [
+          String(item.id),
+          {
+            x: item.x,
+            y: item.y,
+            width: item.width || deskPixelWidth,
+            height: item.height || deskPixelHeight,
+          },
+        ])
+      );
+      deskEditState.transformStartX = point.x;
+      deskEditState.transformStartY = point.y;
+      if (resizeHandle.setPointerCapture) {
+        resizeHandle.setPointerCapture(event.pointerId);
+      }
+    });
+
+    handles.appendChild(resizeHandle);
+  });
+
+  overlay.appendChild(handles);
+};
+
 const renderSpaceDesks = (desks = []) => {
   const svg = getSnapshotSvg();
   if (!svg) {
@@ -2194,6 +2436,8 @@ const renderSpaceDesks = (desks = []) => {
   }
   layer.innerHTML = "";
   const metrics = getDeskMetrics(svg, null);
+  const selectedIds = getSelectedDeskIds();
+  const hasSingleSelection = selectedIds.length === 1;
   desks.forEach((desk) => {
     if (!Number.isFinite(desk?.x) || !Number.isFinite(desk?.y)) {
       return;
@@ -2203,7 +2447,7 @@ const renderSpaceDesks = (desks = []) => {
     const group = document.createElementNS(svgNamespace, "g");
     group.classList.add("space-desk");
     group.setAttribute("data-desk-id", String(desk.id));
-    group.classList.toggle("is-selected", String(desk.id) === String(deskEditState.selectedDeskId));
+    group.classList.toggle("is-selected", isDeskSelected(desk.id));
 
     const shape = document.createElementNS(svgNamespace, "rect");
     shape.classList.add("space-desk-shape");
@@ -2229,7 +2473,7 @@ const renderSpaceDesks = (desks = []) => {
     group.appendChild(shape);
     group.appendChild(label);
     group.setAttribute("transform", `rotate(${rotation} ${desk.x} ${desk.y})`);
-    if (isSpaceEditing && String(desk.id) === String(deskEditState.selectedDeskId)) {
+    if (isSpaceEditing && hasSingleSelection && isDeskSelected(desk.id)) {
       const handles = document.createElementNS(svgNamespace, "g");
       handles.classList.add("desk-handles");
 
@@ -2355,7 +2599,15 @@ const renderSpaceDesks = (desks = []) => {
       }
       event.stopPropagation();
       event.preventDefault();
+      const hasModifier = event.shiftKey || event.metaKey || event.ctrlKey;
+      if (hasModifier) {
+        setSelectedDesk(desk.id, { toggle: true });
+        return;
+      }
+      const isSelected = isDeskSelected(desk.id);
+      if (!isSelected) {
       setSelectedDesk(desk.id);
+      }
       if (isDeskPlacementActive) {
         return;
       }
@@ -2366,6 +2618,23 @@ const renderSpaceDesks = (desks = []) => {
       if (!point) {
         return;
       }
+      if (hasMultipleSelection && isSelected) {
+        const selectedDesks = getSelectedDesks();
+        const groupBounds = getGroupBounds(selectedDesks);
+        deskEditState.draggingDeskIds = selectedIds;
+        deskEditState.draggingDeskId = null;
+        deskEditState.draggingPointerId = event.pointerId;
+        deskEditState.groupDragStartPoint = point;
+        deskEditState.groupDragBounds = groupBounds;
+        deskEditState.groupDragStartPositions = new Map(
+          selectedDesks.map((item) => [String(item.id), { x: item.x, y: item.y }])
+        );
+        deskEditState.hasMoved = false;
+      } else {
+        deskEditState.draggingDeskIds = null;
+        deskEditState.groupDragStartPoint = null;
+        deskEditState.groupDragBounds = null;
+        deskEditState.groupDragStartPositions = null;
       deskEditState.draggingDeskId = desk.id;
       deskEditState.draggingPointerId = event.pointerId;
       deskEditState.offsetX = point.x - desk.x;
@@ -2377,12 +2646,14 @@ const renderSpaceDesks = (desks = []) => {
       deskEditState.transformStartHeight = desk.height || deskPixelHeight;
       deskEditState.transformStartRotation = desk.rotation || 0;
       group.classList.add("is-dragging");
+      }
       if (group.setPointerCapture) {
         group.setPointerCapture(event.pointerId);
       }
     });
     layer.appendChild(group);
   });
+  renderGroupSelectionOverlay();
 };
 
 const loadSpaceDesks = async (spaceId) => {
@@ -2406,8 +2677,343 @@ const loadSpaceDesks = async (spaceId) => {
 };
 
 const getNextDeskLabel = (desks = []) => {
-  const fallback = desks.length + 1;
-  return `Стол ${fallback}`;
+  const used = new Set();
+  desks.forEach((desk) => {
+    const raw = typeof desk?.label === "string" ? desk.label.trim() : "";
+    const match = raw.match(/^Стол\s+(\d+)$/i);
+    if (match) {
+      const value = Number.parseInt(match[1], 10);
+      if (Number.isFinite(value) && value > 0) {
+        used.add(value);
+      }
+    }
+  });
+  let candidate = 1;
+  while (used.has(candidate)) {
+    candidate += 1;
+  }
+  return `Стол ${candidate}`;
+};
+
+const normalizeDeskSizeForBounds = (width, height, bounds) => {
+  let nextWidth = width;
+  let nextHeight = height;
+  if (bounds) {
+    const minWidth = Math.min(deskMinWidth, bounds.width);
+    const minHeight = Math.min(deskMinHeight, bounds.height);
+    nextWidth = Math.min(nextWidth, bounds.width);
+    nextHeight = Math.min(nextHeight, bounds.height);
+    nextWidth = Math.max(nextWidth, minWidth);
+    nextHeight = Math.max(nextHeight, minHeight);
+  } else {
+    nextWidth = Math.max(nextWidth, deskMinWidth);
+    nextHeight = Math.max(nextHeight, deskMinHeight);
+  }
+  return { width: nextWidth, height: nextHeight };
+};
+
+const isDeskAreaFree = (x, y, width, height, excludeDeskId = null) => {
+  const halfWidth = width / 2;
+  const halfHeight = height / 2;
+  const left = x - halfWidth;
+  const right = x + halfWidth;
+  const top = y - halfHeight;
+  const bottom = y + halfHeight;
+  const shouldExclude = (deskId) => {
+    if (!excludeDeskId) {
+      return false;
+    }
+    if (excludeDeskId instanceof Set) {
+      return excludeDeskId.has(String(deskId));
+    }
+    return String(deskId) === String(excludeDeskId);
+  };
+  return !currentDesks.some((desk) => {
+    if (shouldExclude(desk?.id)) {
+      return false;
+    }
+    if (!Number.isFinite(desk?.x) || !Number.isFinite(desk?.y)) {
+      return false;
+    }
+    const dimensions = getDeskDimensions(desk);
+    const deskWidth = dimensions.width;
+    const deskHeight = dimensions.height;
+    const deskLeft = desk.x - deskWidth / 2;
+    const deskRight = desk.x + deskWidth / 2;
+    const deskTop = desk.y - deskHeight / 2;
+    const deskBottom = desk.y + deskHeight / 2;
+    const overlaps = left < deskRight && right > deskLeft && top < deskBottom && bottom > deskTop;
+    return overlaps;
+  });
+};
+
+const findFreeDeskPosition = (bounds, width, height, preferredPoint = null, excludeDeskId = null) => {
+  if (!bounds) {
+    return null;
+  }
+  const minX = bounds.minX + width / 2;
+  const maxX = bounds.minX + bounds.width - width / 2;
+  const minY = bounds.minY + height / 2;
+  const maxY = bounds.minY + bounds.height - height / 2;
+  if (minX > maxX || minY > maxY) {
+    return null;
+  }
+  const step = Math.max(deskSnapDistance * 2, Math.min(width, height) / 2);
+  if (preferredPoint) {
+    const preferredX = Math.min(Math.max(preferredPoint.x, minX), maxX);
+    const preferredY = Math.min(Math.max(preferredPoint.y, minY), maxY);
+    if (isDeskAreaFree(preferredX, preferredY, width, height, excludeDeskId)) {
+      return { x: preferredX, y: preferredY };
+    }
+  }
+  if (preferredPoint) {
+    const preferredX = Math.min(Math.max(preferredPoint.x, minX), maxX);
+    const preferredY = Math.min(Math.max(preferredPoint.y, minY), maxY);
+    let bestPoint = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    const maxOffsetX = Math.max(maxX - preferredX, preferredX - minX);
+    const maxOffsetY = Math.max(maxY - preferredY, preferredY - minY);
+    const maxStepsX = Math.ceil(maxOffsetX / step);
+    const maxStepsY = Math.ceil(maxOffsetY / step);
+    for (let dyStep = -maxStepsY; dyStep <= maxStepsY; dyStep += 1) {
+      const y = preferredY + dyStep * step;
+      if (y < minY || y > maxY) {
+        continue;
+      }
+      for (let dxStep = -maxStepsX; dxStep <= maxStepsX; dxStep += 1) {
+        const x = preferredX + dxStep * step;
+        if (x < minX || x > maxX) {
+          continue;
+        }
+        if (!isDeskAreaFree(x, y, width, height, excludeDeskId)) {
+          continue;
+        }
+        const dx = x - preferredX;
+        const dy = y - preferredY;
+        const distance = Math.hypot(dx, dy);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestPoint = { x, y };
+        }
+      }
+    }
+    if (bestPoint) {
+      return bestPoint;
+    }
+  }
+  for (let y = minY; y <= maxY; y += step) {
+    for (let x = minX; x <= maxX; x += step) {
+      if (isDeskAreaFree(x, y, width, height, excludeDeskId)) {
+        return { x, y };
+      }
+    }
+  }
+  return null;
+};
+
+const findFreeGroupPosition = (bounds, desks = [], preferredPoint = null, excludeDeskIds = null) => {
+  if (!bounds || desks.length === 0) {
+    return null;
+  }
+  const groupBounds = getGroupBounds(desks);
+  if (!groupBounds) {
+    return null;
+  }
+  const minX = bounds.minX + groupBounds.width / 2;
+  const maxX = bounds.minX + bounds.width - groupBounds.width / 2;
+  const minY = bounds.minY + groupBounds.height / 2;
+  const maxY = bounds.minY + bounds.height - groupBounds.height / 2;
+  if (minX > maxX || minY > maxY) {
+    return null;
+  }
+  const step = Math.max(deskSnapDistance * 2, Math.min(groupBounds.width, groupBounds.height) / 4);
+  const preferredX = preferredPoint
+    ? Math.min(Math.max(preferredPoint.x, minX), maxX)
+    : groupBounds.centerX;
+  const preferredY = preferredPoint
+    ? Math.min(Math.max(preferredPoint.y, minY), maxY)
+    : groupBounds.centerY;
+  let bestPoint = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  const maxOffsetX = Math.max(maxX - preferredX, preferredX - minX);
+  const maxOffsetY = Math.max(maxY - preferredY, preferredY - minY);
+  const maxStepsX = Math.ceil(maxOffsetX / step);
+  const maxStepsY = Math.ceil(maxOffsetY / step);
+  for (let dyStep = -maxStepsY; dyStep <= maxStepsY; dyStep += 1) {
+    const centerY = preferredY + dyStep * step;
+    if (centerY < minY || centerY > maxY) {
+      continue;
+    }
+    for (let dxStep = -maxStepsX; dxStep <= maxStepsX; dxStep += 1) {
+      const centerX = preferredX + dxStep * step;
+      if (centerX < minX || centerX > maxX) {
+        continue;
+      }
+      const deltaX = centerX - groupBounds.centerX;
+      const deltaY = centerY - groupBounds.centerY;
+      const fits = desks.every((desk) => {
+        const dimensions = getDeskDimensions(desk);
+        return isDeskAreaFree(
+          desk.x + deltaX,
+          desk.y + deltaY,
+          dimensions.width,
+          dimensions.height,
+          excludeDeskIds
+        );
+      });
+      if (!fits) {
+        continue;
+      }
+      const dx = centerX - preferredX;
+      const dy = centerY - preferredY;
+      const distance = Math.hypot(dx, dy);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPoint = { x: centerX, y: centerY };
+      }
+    }
+  }
+  return bestPoint;
+};
+
+const addDeskToFreeSpot = async () => {
+  if (!isSpaceEditing) {
+    setSpacePageStatus("Сначала включите режим редактирования.", "error");
+    return;
+  }
+  if (!currentSpace?.id) {
+    setSpacePageStatus("Сначала выберите пространство.", "error");
+    return;
+  }
+  const svg = getSnapshotSvg();
+  const viewBox = parseViewBox(svg);
+  const bounds = currentSpaceBounds || viewBox;
+  const normalizedSize = normalizeDeskSizeForBounds(deskPixelWidth, deskPixelHeight, bounds);
+  const width = normalizedSize.width;
+  const height = normalizedSize.height;
+  const position = findFreeDeskPosition(bounds, width, height);
+  if (!position) {
+    setSpacePageStatus("Нет свободного места для нового стола.", "error");
+    return;
+  }
+  const clamped = clampDeskCenterToBounds(position.x, position.y, width, height, bounds);
+  try {
+    if (addDeskBtn) {
+      addDeskBtn.disabled = true;
+    }
+    const label = getNextDeskLabel(currentDesks);
+    const result = await apiRequest("/api/desks", {
+      method: "POST",
+      body: JSON.stringify({
+        space_id: currentSpace.id,
+        label,
+        x: clamped.x,
+        y: clamped.y,
+        width,
+        height,
+        rotation: 0,
+      }),
+    });
+    if (result) {
+      currentDesks = [result, ...currentDesks];
+      renderSpaceDesks(currentDesks);
+      setSelectedDesk(result.id);
+    }
+  } catch (error) {
+    setSpacePageStatus(error.message, "error");
+  } finally {
+    if (addDeskBtn) {
+      addDeskBtn.disabled = false;
+    }
+  }
+};
+
+const copySelectedDesk = () => {
+  if (!isSpaceEditing) {
+    setSpacePageStatus("Сначала включите режим редактирования.", "error");
+    return;
+  }
+  const deskId = deskEditState.selectedDeskId;
+  if (!deskId) {
+    setSpacePageStatus("Выберите стол для копирования.", "error");
+    return;
+  }
+  const desk = findDeskById(deskId);
+  if (!desk) {
+    return;
+  }
+  copiedDesk = {
+    width: Number.isFinite(desk.width) ? desk.width : deskPixelWidth,
+    height: Number.isFinite(desk.height) ? desk.height : deskPixelHeight,
+    rotation: Number.isFinite(desk.rotation) ? desk.rotation : 0,
+    x: Number.isFinite(desk.x) ? desk.x : 0,
+    y: Number.isFinite(desk.y) ? desk.y : 0,
+  };
+  updateDeskClipboardButtons();
+};
+
+const pasteCopiedDesk = async () => {
+  if (!isSpaceEditing) {
+    setSpacePageStatus("Сначала включите режим редактирования.", "error");
+    return;
+  }
+  if (!currentSpace?.id) {
+    setSpacePageStatus("Сначала выберите пространство.", "error");
+    return;
+  }
+  if (!copiedDesk) {
+    setSpacePageStatus("Нет скопированного стола.", "error");
+    return;
+  }
+  const svg = getSnapshotSvg();
+  const viewBox = parseViewBox(svg);
+  const bounds = currentSpaceBounds || viewBox;
+  const baseWidth = Number.isFinite(copiedDesk.width) ? copiedDesk.width : deskPixelWidth;
+  const baseHeight = Number.isFinite(copiedDesk.height) ? copiedDesk.height : deskPixelHeight;
+  const normalizedSize = normalizeDeskSizeForBounds(baseWidth, baseHeight, bounds);
+  const width = normalizedSize.width;
+  const height = normalizedSize.height;
+  const rotation = Number.isFinite(copiedDesk.rotation) ? copiedDesk.rotation : 0;
+  const offset = deskSnapDistance * 2;
+  const baseX = Number.isFinite(copiedDesk.x) ? copiedDesk.x + offset : 0;
+  const baseY = Number.isFinite(copiedDesk.y) ? copiedDesk.y + offset : 0;
+  const position = findFreeDeskPosition(bounds, width, height, { x: baseX, y: baseY });
+  if (!position) {
+    setSpacePageStatus("Нет свободного места для вставки стола.", "error");
+    return;
+  }
+  const clamped = clampDeskCenterToBounds(position.x, position.y, width, height, bounds);
+
+  try {
+    if (pasteDeskBtn) {
+      pasteDeskBtn.disabled = true;
+    }
+    const label = getNextDeskLabel(currentDesks);
+    const result = await apiRequest("/api/desks", {
+      method: "POST",
+      body: JSON.stringify({
+        space_id: currentSpace.id,
+        label,
+        x: clamped.x,
+        y: clamped.y,
+        width,
+        height,
+        rotation,
+      }),
+    });
+    if (result) {
+      currentDesks = [result, ...currentDesks];
+      renderSpaceDesks(currentDesks);
+      setSelectedDesk(result.id);
+    }
+  } catch (error) {
+    setSpacePageStatus(error.message, "error");
+  } finally {
+    if (pasteDeskBtn) {
+      pasteDeskBtn.disabled = false;
+    }
+    updateDeskClipboardButtons();
+  }
 };
 
 const getSnapshotPoint = (event, svg) => {
@@ -2495,7 +3101,9 @@ const handleDeskPointerMove = (event) => {
   if (!isSpaceEditing) {
     return;
   }
-  if (!deskEditState.draggingDeskId || deskEditState.draggingPointerId !== event.pointerId) {
+  const isDragPointer = deskEditState.draggingPointerId === event.pointerId;
+  const isTransformPointer = deskEditState.transformPointerId === event.pointerId;
+  if (!isDragPointer && !isTransformPointer) {
     return;
   }
   event.preventDefault();
@@ -2508,6 +3116,125 @@ const handleDeskPointerMove = (event) => {
     return;
   }
   if (deskEditState.transformMode) {
+    if (deskEditState.transformMode === "group-resize") {
+      const startBounds = deskEditState.groupTransformStartBounds;
+      const startDesks = deskEditState.groupTransformStartDesks;
+      if (!startBounds || !startDesks) {
+        return;
+      }
+      const handleKey = deskEditState.transformHandle || "se";
+      const affectsX = handleKey.includes("e") || handleKey.includes("w");
+      const affectsY = handleKey.includes("n") || handleKey.includes("s");
+      const fixedMinX = startBounds.minX;
+      const fixedMaxX = startBounds.maxX;
+      const fixedMinY = startBounds.minY;
+      const fixedMaxY = startBounds.maxY;
+      let nextMinX = fixedMinX;
+      let nextMaxX = fixedMaxX;
+      let nextMinY = fixedMinY;
+      let nextMaxY = fixedMaxY;
+      if (affectsX) {
+        if (handleKey.includes("w")) {
+          nextMinX = point.x;
+        } else {
+          nextMaxX = point.x;
+        }
+      }
+      if (affectsY) {
+        if (handleKey.includes("n")) {
+          nextMinY = point.y;
+        } else {
+          nextMaxY = point.y;
+        }
+      }
+      const rawWidth = Math.max(1, nextMaxX - nextMinX);
+      const rawHeight = Math.max(1, nextMaxY - nextMinY);
+      let scaleX = affectsX ? rawWidth / startBounds.width : 1;
+      let scaleY = affectsY ? rawHeight / startBounds.height : 1;
+      let minScaleX = 0.01;
+      let minScaleY = 0.01;
+      startDesks.forEach((value) => {
+        const baseWidth = Number.isFinite(value.width) ? value.width : deskPixelWidth;
+        const baseHeight = Number.isFinite(value.height) ? value.height : deskPixelHeight;
+        if (baseWidth > 0) {
+          minScaleX = Math.max(minScaleX, deskMinWidth / baseWidth);
+        }
+        if (baseHeight > 0) {
+          minScaleY = Math.max(minScaleY, deskMinHeight / baseHeight);
+        }
+      });
+      scaleX = Math.max(scaleX, minScaleX);
+      scaleY = Math.max(scaleY, minScaleY);
+      const nextWidth = startBounds.width * scaleX;
+      const nextHeight = startBounds.height * scaleY;
+      if (affectsX) {
+        if (handleKey.includes("w")) {
+          nextMaxX = fixedMaxX;
+          nextMinX = nextMaxX - nextWidth;
+        } else {
+          nextMinX = fixedMinX;
+          nextMaxX = nextMinX + nextWidth;
+        }
+      } else {
+        nextMinX = fixedMinX;
+        nextMaxX = fixedMaxX;
+      }
+      if (affectsY) {
+        if (handleKey.includes("n")) {
+          nextMaxY = fixedMaxY;
+          nextMinY = nextMaxY - nextHeight;
+        } else {
+          nextMinY = fixedMinY;
+          nextMaxY = nextMinY + nextHeight;
+        }
+      } else {
+        nextMinY = fixedMinY;
+        nextMaxY = fixedMaxY;
+      }
+      const viewBox = parseViewBox(svg);
+      const bounds = currentSpaceBounds || viewBox;
+      if (bounds) {
+        const maxX = bounds.minX + bounds.width;
+        const maxY = bounds.minY + bounds.height;
+        let shiftX = 0;
+        let shiftY = 0;
+        if (nextMinX < bounds.minX) {
+          shiftX = bounds.minX - nextMinX;
+        } else if (nextMaxX > maxX) {
+          shiftX = maxX - nextMaxX;
+        }
+        if (nextMinY < bounds.minY) {
+          shiftY = bounds.minY - nextMinY;
+        } else if (nextMaxY > maxY) {
+          shiftY = maxY - nextMaxY;
+        }
+        nextMinX += shiftX;
+        nextMaxX += shiftX;
+        nextMinY += shiftY;
+        nextMaxY += shiftY;
+      }
+      const nextCenterX = (nextMinX + nextMaxX) / 2;
+      const nextCenterY = (nextMinY + nextMaxY) / 2;
+      startDesks.forEach((value, deskId) => {
+        const desk = findDeskById(deskId);
+        if (!desk) {
+          return;
+        }
+        const relX = value.x - startBounds.centerX;
+        const relY = value.y - startBounds.centerY;
+        const nextX = nextCenterX + relX * scaleX;
+        const nextY = nextCenterY + relY * scaleY;
+        desk.x = nextX;
+        desk.y = nextY;
+        desk.width = Math.max(deskMinWidth, value.width * scaleX);
+        desk.height = Math.max(deskMinHeight, value.height * scaleY);
+        const group = svg.querySelector(`.space-desk[data-desk-id="${String(deskId)}"]`);
+        const metrics = getDeskMetrics(svg, desk);
+        updateDeskElementPosition(group, desk, metrics);
+      });
+      renderGroupSelectionOverlay();
+      return;
+    }
     const desk = findDeskById(deskEditState.selectedDeskId);
     if (!desk) {
       return;
@@ -2580,6 +3307,25 @@ const handleDeskPointerMove = (event) => {
     }
     return;
   }
+  if (deskEditState.draggingDeskIds && deskEditState.draggingDeskIds.length > 1) {
+    const viewBox = parseViewBox(svg);
+    const bounds = currentSpaceBounds || viewBox;
+    const deltaX = point.x - deskEditState.groupDragStartPoint.x;
+    const deltaY = point.y - deskEditState.groupDragStartPoint.y;
+    const clamped = clampGroupDragDelta(bounds, deskEditState.groupDragBounds, deltaX, deltaY);
+    deskEditState.draggingDeskIds.forEach((deskId) => {
+      const start = deskEditState.groupDragStartPositions.get(String(deskId));
+      if (!start) {
+        return;
+      }
+      updateDeskPositionLocal(deskId, start.x + clamped.deltaX, start.y + clamped.deltaY);
+    });
+    renderGroupSelectionOverlay();
+    const moved =
+      Math.abs(clamped.deltaX) > 0.5 || Math.abs(clamped.deltaY) > 0.5;
+    deskEditState.hasMoved = deskEditState.hasMoved || moved;
+    return;
+  }
   const desk = findDeskById(deskEditState.draggingDeskId);
   const metrics = getDeskMetrics(svg, desk);
   const rawX = point.x - deskEditState.offsetX;
@@ -2594,59 +3340,155 @@ const handleDeskPointerMove = (event) => {
 
 const finishDeskDrag = async () => {
   const deskId = deskEditState.draggingDeskId;
+  const deskIds =
+    deskEditState.draggingDeskIds && deskEditState.draggingDeskIds.length > 1
+      ? deskEditState.draggingDeskIds
+      : deskId
+        ? [deskId]
+        : [];
   const pointerId = deskEditState.draggingPointerId;
-  if (!deskId) {
+  if (deskIds.length === 0) {
     return;
   }
   const startX = deskEditState.startX;
   const startY = deskEditState.startY;
+  const groupStartPositions = deskEditState.groupDragStartPositions;
   deskEditState.draggingDeskId = null;
+  deskEditState.draggingDeskIds = null;
   deskEditState.draggingPointerId = null;
+  deskEditState.groupDragStartPoint = null;
+  deskEditState.groupDragBounds = null;
+  deskEditState.groupDragStartPositions = null;
   const svg = getSnapshotSvg();
   if (svg) {
-    const group = svg.querySelector(`.space-desk[data-desk-id="${String(deskId)}"]`);
+    deskIds.forEach((id) => {
+      const group = svg.querySelector(`.space-desk[data-desk-id="${String(id)}"]`);
     if (group) {
       group.classList.remove("is-dragging");
       if (group.releasePointerCapture && pointerId !== null) {
         group.releasePointerCapture(pointerId);
       }
     }
+    });
   }
   if (!deskEditState.hasMoved) {
     return;
   }
   deskEditState.hasMoved = false;
-  const desk = findDeskById(deskId);
-  if (!desk) {
+  const desks = deskIds.map(findDeskById).filter(Boolean);
+  if (desks.length === 0) {
     return;
   }
-  const pendingPayload = pendingDeskUpdates.get(String(deskId)) || {};
+  const viewBox = parseViewBox(svg);
+  const bounds = currentSpaceBounds || viewBox;
+  const excludeIds = new Set(deskIds.map(String));
+  let hasOverlap = false;
+  desks.forEach((desk) => {
+    const dimensions = getDeskDimensions(desk);
+    if (!isDeskAreaFree(desk.x, desk.y, dimensions.width, dimensions.height, excludeIds)) {
+      hasOverlap = true;
+    }
+  });
+  if (hasOverlap) {
+    const groupBounds = getGroupBounds(desks);
+    const position = findFreeGroupPosition(
+      bounds,
+      desks,
+      groupBounds ? { x: groupBounds.centerX, y: groupBounds.centerY } : null,
+      excludeIds
+    );
+    if (!position) {
+      if (deskIds.length > 1 && groupStartPositions) {
+        groupStartPositions.forEach((value, id) => {
+          updateDeskPositionLocal(id, value.x, value.y);
+        });
+      } else if (deskId) {
+        updateDeskPositionLocal(deskId, startX, startY);
+      }
+      setSpacePageStatus("Нет свободного места для размещения столов.", "error");
+      return;
+    }
+    const deltaX = position.x - groupBounds.centerX;
+    const deltaY = position.y - groupBounds.centerY;
+    desks.forEach((desk) => {
+      updateDeskPositionLocal(desk.id, desk.x + deltaX, desk.y + deltaY);
+    });
+  }
+  for (const desk of desks) {
+    const pendingPayload = pendingDeskUpdates.get(String(desk.id)) || {};
   try {
     const payload = { ...pendingPayload, x: desk.x, y: desk.y };
-    const updated = await apiRequest(`/api/desks/${deskId}`, {
+      const updated = await apiRequest(`/api/desks/${desk.id}`, {
       method: "PUT",
       body: JSON.stringify(payload),
     });
     if (updated) {
-      const index = currentDesks.findIndex((item) => String(item.id) === String(deskId));
+        const index = currentDesks.findIndex((item) => String(item.id) === String(desk.id));
       if (index >= 0) {
         currentDesks[index] = updated;
-        renderSpaceDesks(currentDesks);
       }
       if (Object.keys(pendingPayload).length > 0) {
-        pendingDeskUpdates.delete(String(deskId));
+          pendingDeskUpdates.delete(String(desk.id));
       }
     }
   } catch (error) {
+      if (deskIds.length > 1 && groupStartPositions) {
+        groupStartPositions.forEach((value, id) => {
+          updateDeskPositionLocal(id, value.x, value.y);
+        });
+      } else if (deskId) {
     updateDeskPositionLocal(deskId, startX, startY);
+      }
     setSpacePageStatus(error.message, "error");
+      return;
   }
+  }
+  renderSpaceDesks(currentDesks);
 };
 
 const handleDeskPointerEnd = (event) => {
+  if (deskEditState.transformMode === "group-resize" && deskEditState.transformPointerId === event.pointerId) {
+    const startDesks = deskEditState.groupTransformStartDesks;
+    deskEditState.skipSelectionClear = true;
+    deskEditState.transformMode = null;
+    deskEditState.transformHandle = null;
+    deskEditState.transformPointerId = null;
+    deskEditState.groupTransformStartBounds = null;
+    deskEditState.groupTransformStartDesks = null;
+    deskEditState.draggingDeskId = null;
+    deskEditState.draggingDeskIds = null;
+    deskEditState.draggingPointerId = null;
+    if (!startDesks) {
+      return;
+    }
+    startDesks.forEach((value, deskId) => {
+      const desk = findDeskById(deskId);
+      if (!desk) {
+        return;
+      }
+      const payload = {};
+      if (desk.width !== value.width) {
+        payload.width = desk.width;
+      }
+      if (desk.height !== value.height) {
+        payload.height = desk.height;
+      }
+      if (desk.x !== value.x) {
+        payload.x = desk.x;
+      }
+      if (desk.y !== value.y) {
+        payload.y = desk.y;
+      }
+      if (Object.keys(payload).length > 0) {
+        queueDeskUpdate(deskId, payload);
+      }
+    });
+    return;
+  }
   if (deskEditState.transformMode && deskEditState.transformPointerId === event.pointerId) {
     const deskId = deskEditState.selectedDeskId;
     const desk = findDeskById(deskId);
+    deskEditState.skipSelectionClear = true;
     const startWidth = deskEditState.transformStartWidth;
     const startHeight = deskEditState.transformStartHeight;
     const startRotation = deskEditState.transformStartRotation;
@@ -2689,6 +3531,43 @@ const handleDeskPointerEnd = (event) => {
 };
 
 const finalizeActiveDeskInteraction = async () => {
+  if (deskEditState.transformMode === "group-resize") {
+    const startDesks = deskEditState.groupTransformStartDesks;
+    deskEditState.transformMode = null;
+    deskEditState.transformHandle = null;
+    deskEditState.transformPointerId = null;
+    deskEditState.groupTransformStartBounds = null;
+    deskEditState.groupTransformStartDesks = null;
+    deskEditState.draggingDeskId = null;
+    deskEditState.draggingDeskIds = null;
+    deskEditState.draggingPointerId = null;
+    if (!startDesks) {
+      return;
+    }
+    startDesks.forEach((value, deskId) => {
+      const desk = findDeskById(deskId);
+      if (!desk) {
+        return;
+      }
+      const payload = {};
+      if (desk.width !== value.width) {
+        payload.width = desk.width;
+      }
+      if (desk.height !== value.height) {
+        payload.height = desk.height;
+      }
+      if (desk.x !== value.x) {
+        payload.x = desk.x;
+      }
+      if (desk.y !== value.y) {
+        payload.y = desk.y;
+      }
+      if (Object.keys(payload).length > 0) {
+        queueDeskUpdate(deskId, payload);
+      }
+    });
+    return;
+  }
   if (deskEditState.transformMode) {
     const deskId = deskEditState.selectedDeskId;
     const desk = findDeskById(deskId);
@@ -3765,7 +4644,8 @@ if (addDeskBtn) {
       return;
     }
     clearSpacePageStatus();
-    setDeskPlacementActive(!isDeskPlacementActive);
+    setDeskPlacementActive(false);
+    void addDeskToFreeSpot();
   });
 }
 
@@ -3775,27 +4655,48 @@ if (deleteDeskBtn) {
       setSpacePageStatus("Сначала включите режим редактирования.", "error");
       return;
     }
-    const deskId = deskEditState.selectedDeskId;
-    if (!deskId) {
+    const selectedIds = getSelectedDeskIds();
+    if (selectedIds.length === 0) {
       setSpacePageStatus("Выберите стол для удаления.", "error");
       return;
     }
-    if (!window.confirm("Удалить стол?")) {
+    const confirmMessage =
+      selectedIds.length === 1 ? "Удалить стол?" : `Удалить выбранные столы (${selectedIds.length})?`;
+    if (!window.confirm(confirmMessage)) {
       return;
     }
     deleteDeskBtn.disabled = true;
     try {
+      for (const deskId of selectedIds) {
       await apiRequest(`/api/desks/${deskId}`, { method: "DELETE" });
       currentDesks = currentDesks.filter((desk) => String(desk.id) !== String(deskId));
       pendingDeskUpdates.delete(String(deskId));
+      }
       renderSpaceDesks(currentDesks);
       setSelectedDesk(null);
-      setSpacePageStatus("Стол удален.", "success");
+      setSpacePageStatus(
+        selectedIds.length === 1 ? "Стол удален." : "Столы удалены.",
+        "success"
+      );
     } catch (error) {
       setSpacePageStatus(error.message, "error");
     } finally {
       deleteDeskBtn.disabled = false;
     }
+  });
+}
+
+if (copyDeskBtn) {
+  copyDeskBtn.addEventListener("click", () => {
+    clearSpacePageStatus();
+    copySelectedDesk();
+  });
+}
+
+if (pasteDeskBtn) {
+  pasteDeskBtn.addEventListener("click", () => {
+    clearSpacePageStatus();
+    void pasteCopiedDesk();
   });
 }
 
@@ -3824,6 +4725,10 @@ if (rotateDeskBtn) {
 if (spaceSnapshot) {
   spaceSnapshot.addEventListener("click", (event) => {
     void handleSnapshotDeskPlacement(event);
+    if (deskEditState.skipSelectionClear) {
+      deskEditState.skipSelectionClear = false;
+      return;
+    }
     if (
       isSpaceEditing &&
       !isDeskPlacementActive &&
@@ -3847,6 +4752,22 @@ document.addEventListener("keydown", (event) => {
     target instanceof HTMLTextAreaElement ||
     target instanceof HTMLSelectElement
   ) {
+    return;
+  }
+  const key = event.key ? event.key.toLowerCase() : "";
+  const hasModifier = event.metaKey || event.ctrlKey;
+  if (hasModifier && key === "c") {
+    if (copyDeskBtn && !copyDeskBtn.disabled) {
+      event.preventDefault();
+      copyDeskBtn.click();
+    }
+    return;
+  }
+  if (hasModifier && key === "v") {
+    if (pasteDeskBtn && !pasteDeskBtn.disabled) {
+      event.preventDefault();
+      pasteDeskBtn.click();
+    }
     return;
   }
   if (event.key === "Delete" || event.key === "Backspace") {
