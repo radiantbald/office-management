@@ -248,6 +248,7 @@ const AVATAR_CACHE_URL_KEY = "avatar_cache_url";
 const AVATAR_CACHE_DATA_KEY = "avatar_cache_data";
 const AVATAR_CACHE_AT_KEY = "avatar_cache_at";
 const avatarInFlight = new Map();
+const imagePreloadCache = new Map();
 
 let authSticker = null;
 let authTTL = null;
@@ -363,6 +364,29 @@ const cacheAvatarFromUrl = async (avatarUrl) => {
   })();
   avatarInFlight.set(avatarUrl, fetchPromise);
   return fetchPromise;
+};
+
+const preloadImage = (src) => {
+  if (!src) {
+    return Promise.resolve(false);
+  }
+  if (imagePreloadCache.has(src)) {
+    return imagePreloadCache.get(src);
+  }
+  const img = new Image();
+  const promise = new Promise((resolve) => {
+    img.onload = () => resolve(true);
+    img.onerror = () => resolve(false);
+  });
+  img.src = src;
+  imagePreloadCache.set(src, promise);
+  return promise;
+};
+
+const preloadBuildingImage = (building) => {
+  if (building && building.image_url) {
+    preloadImage(building.image_url);
+  }
 };
 
 const clearAuthStorage = () => {
@@ -707,6 +731,10 @@ const initializeAuth = async () => {
   if (!token) {
     showAuthGate();
     return;
+  }
+  const cachedUser = getUserInfo();
+  if (cachedUser) {
+    updateAuthUserBlock(cachedUser);
   }
   // Kick off app initialization immediately so key data requests start without delay.
   void runAppInit();
@@ -4947,6 +4975,7 @@ const deleteCurrentBuilding = async () => {
 const refreshBuildings = async () => {
   const data = await apiRequest("/api/buildings");
   buildings = Array.isArray(data.items) ? data.items : [];
+  buildings.forEach((building) => preloadBuildingImage(building));
 };
 
 const getBuildingIdFromPath = () => {
@@ -5079,6 +5108,7 @@ const loadBuildingPage = async (buildingID) => {
       return;
     }
     currentBuilding = building;
+    preloadBuildingImage(building);
     if (pageTitle) {
       pageTitle.textContent = building.name;
     }
@@ -5131,6 +5161,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       return;
     }
     currentBuilding = building;
+    preloadBuildingImage(building);
     if (breadcrumbBuilding) {
       breadcrumbBuilding.href = `/buildings/${encodeURIComponent(building.id)}`;
       breadcrumbBuilding.textContent = building.name || "Здание";
