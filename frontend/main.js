@@ -7,6 +7,7 @@ const openAddModalBtn = document.getElementById("openAddModalBtn");
 const editBuildingBtn = document.getElementById("editBuildingBtn");
 const editFloorBtn = document.getElementById("editFloorBtn");
 const editSpaceBtn = document.getElementById("editSpaceBtn");
+const cancelSpaceEditBtn = document.getElementById("cancelSpaceEditBtn");
 const imagePreview = document.getElementById("imagePreview");
 const imagePreviewImg = document.getElementById("imagePreviewImg");
 const removeImageBtn = document.getElementById("removeImageBtn");
@@ -63,7 +64,6 @@ const spaceColorInput = document.getElementById("spaceColorInput");
 const spaceColorPreview = document.getElementById("spaceColorPreview");
 const spaceSaveBtn = document.getElementById("spaceSaveBtn");
 const spaceModalCloseBtn = document.getElementById("spaceModalCloseBtn");
-const spaceCancelBtn = document.getElementById("spaceCancelBtn");
 const spaceDeleteBtn = document.getElementById("spaceDeleteBtn");
 const spaceStatus = document.getElementById("spaceStatus");
 const breadcrumbBuildings = document.getElementById("breadcrumbBuildings");
@@ -75,10 +75,22 @@ const spaceName = document.getElementById("spaceName");
 const spaceKindTag = document.getElementById("spaceKindTag");
 const spaceCapacityTag = document.getElementById("spaceCapacityTag");
 const spaceIdTag = document.getElementById("spaceIdTag");
+const spaceLayout = document.getElementById("spaceLayout");
 const spaceSnapshot = document.getElementById("spaceSnapshot");
 const spaceSnapshotCanvas = document.getElementById("spaceSnapshotCanvas");
 const spaceSnapshotPlaceholder = document.getElementById("spaceSnapshotPlaceholder");
 const spacePageStatus = document.getElementById("spacePageStatus");
+const spaceDesksPanel = document.getElementById("spaceDesksPanel");
+const spaceDesksList = document.getElementById("spaceDesksList");
+const spaceDesksEmpty = document.getElementById("spaceDesksEmpty");
+const deskModal = document.getElementById("deskModal");
+const deskModalTitle = document.getElementById("deskModalTitle");
+const deskForm = document.getElementById("deskForm");
+const deskNameField = document.getElementById("deskNameField");
+const deskSaveBtn = document.getElementById("deskSaveBtn");
+const deskModalCloseBtn = document.getElementById("deskModalCloseBtn");
+const deskCancelBtn = document.getElementById("deskCancelBtn");
+const deskStatus = document.getElementById("deskStatus");
 const addDeskBtn = document.getElementById("addDeskBtn");
 const deleteDeskBtn = document.getElementById("deleteDeskBtn");
 const copyDeskBtn = document.getElementById("copyDeskBtn");
@@ -130,6 +142,7 @@ let hasFloorPlan = false;
 let removeImage = false;
 let previewObjectUrl = null;
 let editingSpace = null;
+let editingDesk = null;
 const svgNamespace = "http://www.w3.org/2000/svg";
 const lassoDefaults = {
   kind: "polygon",
@@ -296,6 +309,22 @@ const clearSpaceStatus = () => {
   spaceStatus.dataset.tone = "";
 };
 
+const setDeskStatus = (message, tone = "info") => {
+  if (!deskStatus) {
+    return;
+  }
+  deskStatus.textContent = message;
+  deskStatus.dataset.tone = tone;
+};
+
+const clearDeskStatus = () => {
+  if (!deskStatus) {
+    return;
+  }
+  deskStatus.textContent = "";
+  deskStatus.dataset.tone = "";
+};
+
 const setSpacePageStatus = (message, tone = "info") => {
   if (!spacePageStatus) {
     return;
@@ -393,6 +422,47 @@ const closeSpaceModal = () => {
   }
   lassoState.pendingPoints = null;
   lassoState.points = [];
+};
+
+const openDeskModal = (desk) => {
+  if (!deskModal) {
+    return;
+  }
+  if (desk?.id) {
+    setSelectedDesk(desk.id);
+  }
+  editingDesk = desk;
+  deskModal.classList.add("is-open");
+  deskModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  clearDeskStatus();
+  if (deskModalTitle) {
+    deskModalTitle.textContent = "Редактировать стол";
+  }
+  if (deskNameField) {
+    deskNameField.value = desk?.label || "";
+    deskNameField.focus();
+  }
+};
+
+const closeDeskModal = () => {
+  if (!deskModal) {
+    return;
+  }
+  editingDesk = null;
+  deskModal.classList.remove("is-open");
+  deskModal.setAttribute("aria-hidden", "true");
+  if (
+    !(buildingModal && buildingModal.classList.contains("is-open")) &&
+    !(spaceModal && spaceModal.classList.contains("is-open")) &&
+    !(floorPlanModal && floorPlanModal.classList.contains("is-open"))
+  ) {
+    document.body.classList.remove("modal-open");
+  }
+  clearDeskStatus();
+  if (deskForm) {
+    deskForm.reset();
+  }
 };
 
 if (spaceColorInput) {
@@ -1124,6 +1194,88 @@ const renderFloorSpaces = (spaces) => {
   updateFloorPlanSpacesVisibility();
 };
 
+const getDeskDisplayLabel = (desk) => {
+  const raw = typeof desk?.label === "string" ? desk.label.trim() : "";
+  return raw || "Без названия";
+};
+
+const updateDeskListSelection = () => {
+  if (!spaceDesksList) {
+    return;
+  }
+  const selectedIds = deskEditState.selectedDeskIds || new Set();
+  spaceDesksList.querySelectorAll(".desk-list-item").forEach((item) => {
+    const id = item.dataset.deskId || "";
+    item.classList.toggle("is-selected", Boolean(id && selectedIds.has(String(id))));
+  });
+};
+
+const selectDeskFromList = (desk) => {
+  if (!desk?.id) {
+    return;
+  }
+  if (!isSpaceEditing) {
+    setSpacePageStatus("Сначала включите режим редактирования.", "error");
+    return;
+  }
+  clearSpacePageStatus();
+  setSelectedDesk(desk.id);
+};
+
+const renderSpaceDeskList = (desks) => {
+  if (!spaceDesksList || !spaceDesksEmpty) {
+    return;
+  }
+  const list = Array.isArray(desks) ? desks : [];
+  spaceDesksList.innerHTML = "";
+  if (list.length === 0) {
+    spaceDesksEmpty.classList.toggle("is-hidden", !isSpaceEditing);
+    return;
+  }
+  spaceDesksEmpty.classList.add("is-hidden");
+  const sorted = [...list].sort((left, right) => {
+    const leftLabel = getDeskDisplayLabel(left);
+    const rightLabel = getDeskDisplayLabel(right);
+    if (leftLabel !== rightLabel) {
+      return leftLabel.localeCompare(rightLabel, "ru", { sensitivity: "base" });
+    }
+    const leftId = left?.id ? String(left.id) : "";
+    const rightId = right?.id ? String(right.id) : "";
+    return leftId.localeCompare(rightId, "ru");
+  });
+  sorted.forEach((desk) => {
+    const item = document.createElement("div");
+    item.className = "space-list-item desk-list-item";
+    item.dataset.deskId = desk.id ? String(desk.id) : "";
+
+    const selectButton = document.createElement("button");
+    selectButton.type = "button";
+    selectButton.className = "space-select-button";
+
+    const label = document.createElement("span");
+    label.className = "space-name";
+    label.textContent = getDeskDisplayLabel(desk);
+    selectButton.appendChild(label);
+
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "space-edit-button";
+    editButton.setAttribute("aria-label", "Редактировать стол");
+    editButton.textContent = "✏";
+
+    selectButton.addEventListener("click", () => selectDeskFromList(desk));
+    editButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openDeskModal(desk);
+    });
+
+    item.appendChild(selectButton);
+    item.appendChild(editButton);
+    spaceDesksList.appendChild(item);
+  });
+  updateDeskListSelection();
+};
+
 const collectSpacePolygons = () => {
   if (!lassoState.spacesLayer) {
     return [];
@@ -1767,6 +1919,12 @@ const scheduleDeskRender = () => {
 const setSpaceEditMode = (editing) => {
   isSpaceEditing = editing;
   document.body.classList.toggle("space-editing", editing);
+  if (spaceLayout) {
+    spaceLayout.classList.toggle("is-editing", editing);
+  }
+  if (spaceDesksPanel) {
+    spaceDesksPanel.setAttribute("aria-hidden", String(!editing));
+  }
   if (spaceSnapshot) {
     spaceSnapshot.classList.toggle("is-editing", editing);
   }
@@ -1795,13 +1953,18 @@ const setSpaceEditMode = (editing) => {
     editSpaceBtn.classList.toggle("primary", editing);
     editSpaceBtn.classList.toggle("ghost", !editing);
   }
+  if (cancelSpaceEditBtn) {
+    cancelSpaceEditBtn.classList.toggle("is-hidden", !editing);
+  }
   if (spaceSnapshot) {
     scheduleDeskRender();
   }
+  renderSpaceDeskList(currentDesks);
   if (!editing) {
     setSelectedDesk(null);
     setDeskPlacementActive(false);
     renderSpaceDesks(currentDesks);
+    clearSpacePageStatus();
   }
 };
 
@@ -2086,6 +2249,7 @@ const setSelectedDesk = (deskId, options = {}) => {
     rotateDeskBtn.disabled = selectedCount !== 1;
   }
   updateDeskClipboardButtons();
+  updateDeskListSelection();
   if (isSpaceEditing) {
     renderSpaceDesks(currentDesks);
   }
@@ -2680,6 +2844,7 @@ const loadSpaceDesks = async (spaceId) => {
   pendingDeskUpdates = new Map();
   setSelectedDesk(null);
   renderSpaceDesks(currentDesks);
+  renderSpaceDeskList(currentDesks);
   if (normalized.updates.length > 0) {
     await persistDeskNormalizationUpdates(normalized.updates);
   }
@@ -3117,6 +3282,7 @@ const addDeskToFreeSpot = async () => {
     if (result) {
       currentDesks = [result, ...currentDesks];
       renderSpaceDesks(currentDesks);
+      renderSpaceDeskList(currentDesks);
       setSelectedDesk(result.id);
     }
   } catch (error) {
@@ -3208,6 +3374,7 @@ const pasteCopiedDesk = async () => {
     if (created.length > 0) {
       currentDesks = [...created, ...currentDesks];
       renderSpaceDesks(currentDesks);
+      renderSpaceDeskList(currentDesks);
       setSelectedDesk(created[0].id);
       for (let i = 1; i < created.length; i += 1) {
         setSelectedDesk(created[i].id, { additive: true });
@@ -4890,6 +5057,7 @@ if (deleteDeskBtn) {
       currentDesks = currentDesks.filter((desk) => !idSet.has(String(desk.id)));
       numericIds.forEach((id) => pendingDeskUpdates.delete(String(id)));
       renderSpaceDesks(currentDesks);
+      renderSpaceDeskList(currentDesks);
       setSelectedDesk(null);
       setSpacePageStatus(
         selectedIds.length === 1 ? "Стол удален." : "Столы удалены.",
@@ -4997,6 +5165,29 @@ document.addEventListener("keydown", (event) => {
 if (cancelFloorEditBtn) {
   cancelFloorEditBtn.addEventListener("click", () => {
     setFloorEditMode(false);
+  });
+}
+
+if (cancelSpaceEditBtn) {
+  cancelSpaceEditBtn.addEventListener("click", async () => {
+    if (!isSpaceEditing) {
+      return;
+    }
+    if (!currentSpace) {
+      setSpacePageStatus("Сначала выберите пространство.", "error");
+      return;
+    }
+    cancelSpaceEditBtn.disabled = true;
+    try {
+      await finalizeActiveDeskInteraction();
+      setSpaceEditMode(false);
+      await loadSpaceDesks(currentSpace.id);
+      clearSpacePageStatus();
+    } catch (error) {
+      setSpacePageStatus(error.message, "error");
+    } finally {
+      cancelSpaceEditBtn.disabled = false;
+    }
   });
 }
 
@@ -5243,6 +5434,47 @@ if (spaceDeleteBtn) {
       spaceDeleteBtn.disabled = false;
       if (spaceSaveBtn) {
         spaceSaveBtn.disabled = false;
+      }
+    }
+  });
+}
+
+if (deskForm) {
+  deskForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!editingDesk || !editingDesk.id) {
+      setDeskStatus("Не удалось определить стол для редактирования.", "error");
+      return;
+    }
+    const label = deskNameField ? deskNameField.value.trim() : "";
+    if (!label) {
+      setDeskStatus("Укажите название стола.", "error");
+      return;
+    }
+    clearDeskStatus();
+    if (deskSaveBtn) {
+      deskSaveBtn.disabled = true;
+    }
+    try {
+      const updated = await apiRequest(`/api/desks/${editingDesk.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ label }),
+      });
+      const nextDesk = updated || { ...editingDesk, label };
+      const index = currentDesks.findIndex((desk) => String(desk.id) === String(nextDesk.id));
+      if (index >= 0) {
+        currentDesks[index] = nextDesk;
+      }
+      renderSpaceDesks(currentDesks);
+      renderSpaceDeskList(currentDesks);
+      setSelectedDesk(nextDesk.id);
+      setSpacePageStatus("Название стола обновлено.", "success");
+      closeDeskModal();
+    } catch (error) {
+      setDeskStatus(error.message, "error");
+    } finally {
+      if (deskSaveBtn) {
+        deskSaveBtn.disabled = false;
       }
     }
   });
@@ -5639,6 +5871,18 @@ if (spaceModal) {
   });
 }
 
+if (deskModal) {
+  deskModal.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (target.dataset.modalClose === "true") {
+      closeDeskModal();
+    }
+  });
+}
+
 if (floorPlanModal) {
   floorPlanModal.addEventListener("click", (event) => {
     const target = event.target;
@@ -5655,6 +5899,10 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (lassoState.active) {
       cancelLassoMode("Выделение отменено.");
+      return;
+    }
+    if (deskModal && deskModal.classList.contains("is-open")) {
+      closeDeskModal();
       return;
     }
     if (spaceModal && spaceModal.classList.contains("is-open")) {

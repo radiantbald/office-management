@@ -52,6 +52,18 @@ body.space-editing .space-map-card {
   height: 100%;
 }
 
+body.space-editing .space-map-card {
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 0;
+  gap: 0;
+}
+
+body.space-editing .space-map-card .card-header {
+  display: none;
+}
+
 .app-header {
   background: #111827;
   color: #f9fafb;
@@ -436,10 +448,59 @@ body:not(.floor-editing) .floor-page {
 .space-layout {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 0;
+  column-gap: 16px;
+  row-gap: 0;
   align-items: stretch;
   min-height: 0;
   height: 100%;
+}
+
+.space-layout.is-editing {
+  grid-template-columns: minmax(220px, 320px) 1fr;
+}
+
+.space-desks-panel {
+  grid-column: 1;
+  grid-row: 1;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+  padding: 16px;
+  display: none;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.space-layout.is-editing .space-desks-panel {
+  display: flex;
+}
+
+.space-desks-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.space-desks-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.space-desks-list {
+  display: grid;
+  gap: 5px;
+  grid-auto-rows: 30px;
+  align-content: start;
+  overflow-y: auto;
+  padding-right: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .space-info-card {
@@ -473,6 +534,12 @@ body:not(.floor-editing) .floor-page {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.space-desks-header .space-card-actions {
+  margin-left: auto;
+  flex-direction: row;
+  align-items: center;
 }
 
 .space-snapshot {
@@ -1120,6 +1187,14 @@ body:not(.floor-editing) .floor-page {
 
   .space-layout {
     grid-template-columns: 1fr;
+  }
+
+  .space-desks-panel {
+    order: 2;
+  }
+
+  .space-map-card {
+    order: 1;
   }
 
   .floor-plan-spaces {

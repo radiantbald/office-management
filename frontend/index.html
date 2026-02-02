@@ -20,6 +20,9 @@
           <button id="editBuildingBtn" class="ghost is-hidden" type="button">Редактировать</button>
           <button id="editFloorBtn" class="ghost is-hidden" type="button">Редактировать</button>
           <button id="editSpaceBtn" class="ghost is-hidden" type="button">Редактировать</button>
+          <button id="cancelSpaceEditBtn" class="ghost floor-actions-cancel is-hidden" type="button">
+            Отменить
+          </button>
         </div>
       </div>
     </header>
@@ -101,10 +104,10 @@
           <span class="breadcrumb-separator">/</span>
           <a id="spaceBreadcrumbFloor" class="breadcrumb-link" href="/buildings">Этаж</a>
         </div>
-        <div class="space-layout">
-          <div class="card space-map-card">
-            <div class="card-header">
-              <h3>Схема пространства</h3>
+        <div id="spaceLayout" class="space-layout">
+          <aside id="spaceDesksPanel" class="space-desks-panel" aria-hidden="true">
+            <div class="space-desks-header">
+              <h3 class="floor-actions-title">Столы</h3>
               <div class="space-card-actions">
                 <button
                   id="addDeskBtn"
@@ -118,15 +121,6 @@
                   data-active-icon="×"
                 >
                   +
-                </button>
-                <button
-                  id="deleteDeskBtn"
-                  class="icon-button desk-delete-btn is-hidden"
-                  type="button"
-                  aria-label="Удалить стол"
-                  title="Удалить стол"
-                >
-                  🗑
                 </button>
                 <button
                   id="copyDeskBtn"
@@ -147,6 +141,15 @@
                   ⎘
                 </button>
               </div>
+            </div>
+            <div class="space-desks-section">
+              <div id="spaceDesksList" class="space-desks-list"></div>
+              <div id="spaceDesksEmpty" class="placeholder app-empty is-hidden">Столов пока нет.</div>
+            </div>
+          </aside>
+          <div class="card space-map-card">
+            <div class="card-header">
+              <h3>Схема пространства</h3>
             </div>
             <div id="spacePageStatus" class="status" role="status" aria-live="polite"></div>
             <div id="spaceSnapshot" class="space-snapshot">
@@ -294,15 +297,36 @@
           </div>
           <div class="form-actions">
             <button id="spaceSaveBtn" class="primary" type="submit">Сохранить</button>
-            <button id="spaceCancelBtn" class="ghost" type="button" data-modal-close="true">
-              Отменить
-            </button>
             <button id="spaceDeleteBtn" class="danger is-hidden" type="button">
               Удалить
             </button>
           </div>
         </form>
         <div id="spaceStatus" class="status" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+    <div id="deskModal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="deskModalTitle">
+        <div class="modal-header">
+          <h2 id="deskModalTitle">Редактировать стол</h2>
+          <button id="deskModalCloseBtn" class="icon-button" type="button" data-modal-close="true">
+            ✕
+          </button>
+        </div>
+        <form id="deskForm" class="form">
+          <label class="field">
+            <span>Название стола</span>
+            <input id="deskNameField" type="text" placeholder="Например, Стол у окна" required />
+          </label>
+          <div class="form-actions">
+            <button id="deskSaveBtn" class="primary" type="submit">Сохранить</button>
+            <button id="deleteDeskBtn" class="danger desk-delete-btn is-hidden" type="button">
+              Удалить
+            </button>
+          </div>
+        </form>
+        <div id="deskStatus" class="status" role="status" aria-live="polite"></div>
       </div>
     </div>
     <script src="/imagetracer.js"></script>
