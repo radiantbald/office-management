@@ -224,9 +224,31 @@
               <div id="spaceDesksEmpty" class="placeholder app-empty is-hidden">Столов пока нет.</div>
             </div>
           </aside>
+          <aside id="spaceBookingPanel" class="space-booking-panel" aria-hidden="false">
+            <div class="space-booking-header">
+              <h3 class="floor-actions-title"></h3>
+              <button id="spaceBookingsToggleBtn" class="ghost" type="button">Мои бронирования</button>
+            </div>
+            <div id="spaceBookingStatus" class="status" role="status" aria-live="polite"></div>
+            <div id="spaceDatePicker" class="date-picker"></div>
+          </aside>
           <div class="card space-map-card">
             <div class="card-header">
-              <h3>Схема пространства</h3>
+              <h3 id="spaceMapDateTitle">Схема пространства</h3>
+              <div class="space-booking-legend">
+                <div class="booking-legend-item">
+                  <span class="booking-legend-dot is-free"></span>
+                  Свободно
+                </div>
+                <div class="booking-legend-item">
+                  <span class="booking-legend-dot is-my"></span>
+                  Ваше место
+                </div>
+                <div class="booking-legend-item">
+                  <span class="booking-legend-dot is-booked"></span>
+                  Занято
+                </div>
+              </div>
             </div>
             <div id="spacePageStatus" class="status" role="status" aria-live="polite"></div>
             <div id="spaceSnapshot" class="space-snapshot">
@@ -404,6 +426,28 @@
           </div>
         </form>
         <div id="deskStatus" class="status" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+    <div id="spaceBookingsModal" class="modal space-bookings-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="spaceBookingsModalTitle">
+        <div class="modal-header">
+          <h2 id="spaceBookingsModalTitle">Мои бронирования</h2>
+          <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">
+            ✕
+          </button>
+        </div>
+        <div id="spaceBookingsSection" class="space-bookings-section is-hidden" aria-hidden="true">
+          <div class="space-bookings-actions">
+            <button id="spaceBookingsCancelAllBtn" class="context-action danger" type="button">
+              Отменить все
+            </button>
+          </div>
+          <div id="spaceBookingsList" class="space-bookings-list"></div>
+          <div id="spaceBookingsEmpty" class="placeholder app-empty is-hidden">
+            У вас нет активных бронирований
+          </div>
+        </div>
       </div>
     </div>
     <script src="/imagetracer.js"></script>

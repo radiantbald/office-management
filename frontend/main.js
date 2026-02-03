@@ -97,6 +97,16 @@ const spacePageStatus = document.getElementById("spacePageStatus");
 const spaceDesksPanel = document.getElementById("spaceDesksPanel");
 const spaceDesksList = document.getElementById("spaceDesksList");
 const spaceDesksEmpty = document.getElementById("spaceDesksEmpty");
+const spaceBookingPanel = document.getElementById("spaceBookingPanel");
+const spaceBookingStatus = document.getElementById("spaceBookingStatus");
+const spaceDatePicker = document.getElementById("spaceDatePicker");
+const spaceBookingsToggleBtn = document.getElementById("spaceBookingsToggleBtn");
+const spaceMapDateTitle = document.getElementById("spaceMapDateTitle");
+const spaceBookingsModal = document.getElementById("spaceBookingsModal");
+const spaceBookingsSection = document.getElementById("spaceBookingsSection");
+const spaceBookingsList = document.getElementById("spaceBookingsList");
+const spaceBookingsEmpty = document.getElementById("spaceBookingsEmpty");
+const spaceBookingsCancelAllBtn = document.getElementById("spaceBookingsCancelAllBtn");
 const deskModal = document.getElementById("deskModal");
 const deskModalTitle = document.getElementById("deskModalTitle");
 const deskForm = document.getElementById("deskForm");
@@ -151,6 +161,16 @@ const deskEditState = {
   transformStartHeight: 0,
   transformStartRotation: 0,
   transformHandle: null,
+};
+const bookingState = {
+  selectedDate: null,
+  currentMonth: new Date(),
+  bookingsByDeskId: new Map(),
+  myBookings: [],
+  isLoading: false,
+  isListOpen: false,
+  longPressTimer: null,
+  longPressTriggered: false,
 };
 let hasFloorPlan = false;
 let removeImage = false;
@@ -722,7 +742,7 @@ const confirmAuthCode = async (code, sticker) => {
 const fetchAuthUserInfo = async (accessToken) => {
   try {
     if (!accessToken || !accessToken.trim()) {
-      return { success: false, error: "Токен не предоставлен" };
+      return { success: false, error: "Токен не предоставлен", status: 401 };
     }
     const headers = {
       Authorization: `Bearer ${accessToken}`,
@@ -741,11 +761,19 @@ const fetchAuthUserInfo = async (accessToken) => {
     });
     const data = await response.json().catch(() => null);
     if (!response.ok || !data) {
-      throw new Error(data?.error || "Не удалось получить информацию о пользователе");
+      return {
+        success: false,
+        status: response.status,
+        error: data?.error || "Не удалось получить информацию о пользователе",
+      };
     }
-    return { success: true, user: data.data || data };
+    return { success: true, user: data.data || data, status: response.status };
   } catch (error) {
-    return { success: false, error: error.message || "Не удалось получить информацию о пользователе" };
+    return {
+      success: false,
+      status: 0,
+      error: error.message || "Не удалось получить информацию о пользователе",
+    };
   }
 };
 
@@ -783,9 +811,20 @@ const initializeAuth = async () => {
     hideAuthGate();
     return;
   }
-  clearAuthStorage();
-  showAuthGate();
-  setAuthStatus("Авторизуйтесь снова.", "error");
+  const isUnauthorized = userResult.status === 401 || userResult.status === 403;
+  if (isUnauthorized) {
+    clearAuthStorage();
+    showAuthGate();
+    setAuthStatus("Авторизуйтесь снова.", "error");
+    return;
+  }
+  if (cachedUser) {
+    hideAuthGate();
+    setAuthStatus("Не удалось проверить авторизацию. Продолжаем работу офлайн.", "warning");
+    return;
+  }
+  hideAuthGate();
+  setAuthStatus("Не удалось проверить авторизацию. Повторите попытку позже.", "warning");
 };
 
 const apiRequest = async (path, options = {}) => {
@@ -912,6 +951,786 @@ const clearSpacePageStatus = () => {
   spacePageStatus.dataset.tone = "";
 };
 
+const setBookingStatus = (message, tone = "info") => {
+  if (!spaceBookingStatus) {
+    return;
+  }
+  spaceBookingStatus.textContent = message;
+  spaceBookingStatus.dataset.tone = tone;
+};
+
+const clearBookingStatus = () => {
+  if (!spaceBookingStatus) {
+    return;
+  }
+  spaceBookingStatus.textContent = "";
+  spaceBookingStatus.dataset.tone = "";
+};
+
+const getBookingUserKey = (user) =>
+  String(
+    user?.id ||
+      user?.employee_id ||
+      user?.employeeId ||
+      user?.email ||
+      user?.phone ||
+      ""
+  ).trim();
+
+const getBookingUserInfo = () => {
+  const user = getUserInfo();
+  const key = getBookingUserKey(user);
+  const name = getDisplayNameFromUser(user) || key;
+  return { user, key, name };
+};
+
+const getBookingHeaders = () => {
+  const info = getBookingUserInfo();
+  if (!info.key) {
+    return {};
+  }
+  return {
+    "X-User-Key": info.key,
+  };
+};
+
+const normalizeBookingDate = (raw) => {
+  if (!raw) {
+    return "";
+  }
+  return String(raw).split("T")[0].split(" ")[0].trim();
+};
+
+const formatBookingDate = (raw) => {
+  const dateStr = normalizeBookingDate(raw);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return raw || "";
+  }
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return `${String(day).padStart(2, "0")}.${String(month).padStart(2, "0")}.${year}`;
+};
+
+const formatBookingWeekday = (raw) => {
+  const dateStr = normalizeBookingDate(raw);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return "";
+  }
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  const weekdays = ["Воскресенье", "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"];
+  return weekdays[date.getDay()];
+};
+
+const formatSelectedDateTitle = (raw) => {
+  const dateStr = normalizeBookingDate(raw);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return "Схема пространства";
+  }
+  const weekday = formatBookingWeekday(dateStr);
+  const date = formatBookingDate(dateStr);
+  if (!weekday || !date) {
+    return "Схема пространства";
+  }
+  return `${weekday}, ${date}`;
+};
+
+const updateSpaceMapDateTitle = (raw) => {
+  if (!spaceMapDateTitle) {
+    return;
+  }
+  spaceMapDateTitle.textContent = formatSelectedDateTitle(raw);
+};
+
+const mergeDeskBookingState = (desk, previous = null) => {
+  if (!desk) {
+    return desk;
+  }
+  const booking = bookingState.bookingsByDeskId.get(String(desk.id));
+  if (booking) {
+    const { key: userKey } = getBookingUserInfo();
+    desk.bookingUserName = booking.user_name || booking.user_key || "";
+    desk.bookingUserKey = booking.user_key || "";
+    desk.bookingStatus = userKey && booking.user_key === userKey ? "my" : "booked";
+    return desk;
+  }
+  if (previous) {
+    desk.bookingStatus = previous.bookingStatus;
+    desk.bookingUserName = previous.bookingUserName;
+    desk.bookingUserKey = previous.bookingUserKey;
+  }
+  return desk;
+};
+
+const formatPickerDate = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const isDateNotPast = (date) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const checkDate = new Date(date);
+  checkDate.setHours(0, 0, 0, 0);
+  return checkDate >= today;
+};
+
+const getMonthName = (date) => {
+  const months = [
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
+  ];
+  return months[date.getMonth()];
+};
+
+const getDaysInMonth = (date) => {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+  const firstDayOfWeek = firstDay.getDay();
+  const adjustedFirstDay = firstDayOfWeek === 0 ? 7 : firstDayOfWeek;
+  const days = [];
+  for (let i = 1; i < adjustedFirstDay; i += 1) {
+    days.push(null);
+  }
+  for (let i = 1; i <= lastDay.getDate(); i += 1) {
+    days.push(new Date(year, month, i));
+  }
+  return days;
+};
+
+const renderDatePicker = () => {
+  if (!spaceDatePicker) {
+    return;
+  }
+  const currentMonth = bookingState.currentMonth;
+  const selectedDate = bookingState.selectedDate;
+  const days = getDaysInMonth(currentMonth);
+
+  spaceDatePicker.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.className = "date-picker-header";
+
+  const prevButton = document.createElement("button");
+  prevButton.className = "month-nav-button";
+  prevButton.type = "button";
+  prevButton.textContent = "‹";
+  prevButton.addEventListener("click", () => {
+    bookingState.currentMonth = new Date(
+      currentMonth.getFullYear(),
+      currentMonth.getMonth() - 1,
+      1
+    );
+    renderDatePicker();
+  });
+
+  const title = document.createElement("h2");
+  title.textContent = `${getMonthName(currentMonth)} ${currentMonth.getFullYear()}`;
+
+  const nextButton = document.createElement("button");
+  nextButton.className = "month-nav-button";
+  nextButton.type = "button";
+  nextButton.textContent = "›";
+  nextButton.addEventListener("click", () => {
+    bookingState.currentMonth = new Date(
+      currentMonth.getFullYear(),
+      currentMonth.getMonth() + 1,
+      1
+    );
+    renderDatePicker();
+  });
+
+  header.appendChild(prevButton);
+  header.appendChild(title);
+  header.appendChild(nextButton);
+
+  const grid = document.createElement("div");
+  grid.className = "date-picker-grid";
+  ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].forEach((weekday) => {
+    const cell = document.createElement("div");
+    cell.className = "weekday-header";
+    cell.textContent = weekday;
+    grid.appendChild(cell);
+  });
+
+  const normalizedSelected = selectedDate ? normalizeBookingDate(selectedDate) : null;
+
+  days.forEach((day, index) => {
+    if (!day) {
+      const cell = document.createElement("div");
+      cell.className = "date-cell empty";
+      cell.setAttribute("aria-hidden", "true");
+      cell.dataset.index = String(index);
+      grid.appendChild(cell);
+      return;
+    }
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = "date-cell";
+    const dayFormatted = formatPickerDate(day);
+    const isSelected = normalizedSelected === dayFormatted;
+    if (isSelected) {
+      cell.classList.add("selected");
+    }
+    if (!isDateNotPast(day)) {
+      cell.disabled = true;
+    }
+    cell.textContent = String(day.getDate());
+    cell.addEventListener("click", () => {
+      if (!cell.disabled) {
+        setBookingSelectedDate(dayFormatted);
+      }
+    });
+    grid.appendChild(cell);
+  });
+
+  const footer = document.createElement("div");
+  footer.className = "date-picker-footer";
+  const todayButton = document.createElement("button");
+  todayButton.className = "today-button";
+  todayButton.type = "button";
+  todayButton.textContent = "Сегодня";
+  todayButton.addEventListener("click", () => {
+    const today = new Date();
+    bookingState.currentMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    setBookingSelectedDate(formatPickerDate(today));
+  });
+  footer.appendChild(todayButton);
+  if (spaceBookingsToggleBtn) {
+    spaceBookingsToggleBtn.classList.remove("ghost");
+    spaceBookingsToggleBtn.classList.add("today-button");
+    spaceBookingsToggleBtn.classList.add("bookings-toggle-button");
+    footer.appendChild(spaceBookingsToggleBtn);
+  }
+
+  spaceDatePicker.appendChild(header);
+  spaceDatePicker.appendChild(grid);
+  spaceDatePicker.appendChild(footer);
+};
+
+const setBookingSelectedDate = (date) => {
+  const normalized = normalizeBookingDate(date);
+  if (!normalized) {
+    return;
+  }
+  clearBookingStatus();
+  bookingState.selectedDate = normalized;
+  updateSpaceMapDateTitle(normalized);
+  const [year, month] = normalized.split("-").map(Number);
+  if (
+    bookingState.currentMonth.getFullYear() !== year ||
+    bookingState.currentMonth.getMonth() !== month - 1
+  ) {
+    bookingState.currentMonth = new Date(year, month - 1, 1);
+  }
+  renderDatePicker();
+  if (currentSpace?.id) {
+    void loadSpaceBookings(currentSpace.id, normalized);
+  }
+};
+
+const ensureBookingDate = () => {
+  if (bookingState.selectedDate) {
+    return;
+  }
+  const today = new Date();
+  setBookingSelectedDate(formatPickerDate(today));
+};
+
+const applyBookingsToDesks = (bookings = []) => {
+  const byDesk = new Map();
+  bookings.forEach((booking) => {
+    if (booking?.desk_id) {
+      byDesk.set(String(booking.desk_id), booking);
+    }
+  });
+  bookingState.bookingsByDeskId = byDesk;
+  const { key: userKey } = getBookingUserInfo();
+  currentDesks.forEach((desk) => {
+    const booking = byDesk.get(String(desk.id));
+    if (!booking) {
+      desk.bookingStatus = "free";
+      desk.bookingUserName = "";
+      desk.bookingUserKey = "";
+      return;
+    }
+    desk.bookingUserName = booking.user_name || booking.user_key || "";
+    desk.bookingUserKey = booking.user_key || "";
+    if (userKey && booking.user_key === userKey) {
+      desk.bookingStatus = "my";
+    } else {
+      desk.bookingStatus = "booked";
+    }
+  });
+  renderSpaceDesks(currentDesks);
+};
+
+const loadSpaceBookings = async (spaceId, date) => {
+  if (!spaceId || !date) {
+    return;
+  }
+  clearBookingStatus();
+  bookingState.isLoading = true;
+  try {
+    const response = await apiRequest(
+      `/api/bookings?space_id=${encodeURIComponent(spaceId)}&date=${encodeURIComponent(date)}`
+    );
+    const items = Array.isArray(response?.items) ? response.items : [];
+    applyBookingsToDesks(items);
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  } finally {
+    bookingState.isLoading = false;
+  }
+};
+
+const loadMyBookings = async () => {
+  if (!spaceBookingsList || !spaceBookingsEmpty) {
+    return;
+  }
+  const headers = getBookingHeaders();
+  if (!headers["X-User-Key"]) {
+    setBookingStatus("Нужна информация о пользователе для бронирований.", "error");
+    return;
+  }
+  try {
+    const response = await apiRequest("/api/bookings/me", { headers });
+    const bookings = Array.isArray(response?.bookings) ? response.bookings : [];
+    bookingState.myBookings = bookings;
+    renderBookingsList();
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const renderBookingsList = () => {
+  if (!spaceBookingsList || !spaceBookingsEmpty) {
+    return;
+  }
+  spaceBookingsList.innerHTML = "";
+  if (!bookingState.myBookings || bookingState.myBookings.length === 0) {
+    spaceBookingsEmpty.classList.remove("is-hidden");
+    return;
+  }
+  spaceBookingsEmpty.classList.add("is-hidden");
+  const sortedBookings = [...bookingState.myBookings].sort((a, b) => {
+    const aDate = normalizeBookingDate(a?.date);
+    const bDate = normalizeBookingDate(b?.date);
+    if (!aDate && !bDate) {
+      return 0;
+    }
+    if (!aDate) {
+      return 1;
+    }
+    if (!bDate) {
+      return -1;
+    }
+    return aDate.localeCompare(bDate);
+  });
+  sortedBookings.forEach((booking) => {
+    const item = document.createElement("div");
+    item.className = "space-booking-item";
+    item.tabIndex = 0;
+    const info = document.createElement("div");
+    info.className = "space-booking-info";
+    const date = document.createElement("div");
+    date.className = "space-booking-date";
+    date.textContent = `${formatBookingWeekday(booking.date)} ${formatBookingDate(booking.date)}`;
+    const desk = document.createElement("div");
+    desk.className = "space-booking-desk";
+    desk.textContent = booking.desk_label || `Стол ${booking.desk_id}`;
+    const space = document.createElement("div");
+    space.textContent = booking.space_name ? `${booking.space_name}` : `Пространство ${booking.space_id}`;
+    info.appendChild(date);
+    info.appendChild(desk);
+    info.appendChild(space);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "space-booking-cancel";
+    cancelBtn.textContent = "Отменить";
+    cancelBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void handleCancelBooking(booking);
+    });
+
+    item.addEventListener("click", () => {
+      if (booking?.date) {
+        setBookingSelectedDate(booking.date);
+        closeBookingsModal();
+      }
+    });
+
+    item.appendChild(info);
+    item.appendChild(cancelBtn);
+    spaceBookingsList.appendChild(item);
+  });
+};
+
+const openBookingsModal = () => {
+  if (!spaceBookingsModal || !spaceBookingsSection) {
+    return;
+  }
+  bookingState.isListOpen = true;
+  spaceBookingsModal.classList.add("is-open");
+  spaceBookingsModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  spaceBookingsSection.classList.remove("is-hidden");
+  spaceBookingsSection.setAttribute("aria-hidden", "false");
+  if (spaceBookingsToggleBtn) {
+    spaceBookingsToggleBtn.textContent = "Мои бронирования";
+  }
+  void loadMyBookings();
+};
+
+const closeBookingsModal = () => {
+  if (!spaceBookingsModal || !spaceBookingsSection) {
+    return;
+  }
+  bookingState.isListOpen = false;
+  spaceBookingsModal.classList.remove("is-open");
+  spaceBookingsModal.setAttribute("aria-hidden", "true");
+  spaceBookingsSection.classList.add("is-hidden");
+  spaceBookingsSection.setAttribute("aria-hidden", "true");
+  if (
+    !(buildingModal && buildingModal.classList.contains("is-open")) &&
+    !(spaceModal && spaceModal.classList.contains("is-open")) &&
+    !(deskModal && deskModal.classList.contains("is-open")) &&
+    !(floorPlanModal && floorPlanModal.classList.contains("is-open"))
+  ) {
+    document.body.classList.remove("modal-open");
+  }
+};
+
+const toggleBookingsList = () => {
+  if (!spaceBookingsModal || !spaceBookingsSection || !spaceBookingsToggleBtn) {
+    return;
+  }
+  if (bookingState.isListOpen) {
+    closeBookingsModal();
+    return;
+  }
+  openBookingsModal();
+};
+
+const handleCancelBooking = async (booking) => {
+  const headers = getBookingHeaders();
+  if (!headers["X-User-Key"]) {
+    setBookingStatus("Нужна информация о пользователе для отмены.", "error");
+    return;
+  }
+  const confirmed = window.confirm(
+    `Вы уверены, что хотите отменить бронирование стола "${
+      booking.desk_label || "стол"
+    }" на ${formatBookingDate(booking.date)}?`
+  );
+  if (!confirmed) {
+    return;
+  }
+  try {
+    await apiRequest("/api/bookings", {
+      method: "DELETE",
+      headers,
+      body: JSON.stringify({
+        date: normalizeBookingDate(booking.date),
+        desk_id: Number(booking.desk_id),
+      }),
+    });
+    await loadMyBookings();
+    if (currentSpace?.id && bookingState.selectedDate) {
+      void loadSpaceBookings(currentSpace.id, bookingState.selectedDate);
+    }
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const handleCancelAllBookings = async () => {
+  const headers = getBookingHeaders();
+  if (!headers["X-User-Key"]) {
+    setBookingStatus("Нужна информация о пользователе для отмены.", "error");
+    return;
+  }
+  const confirmed = window.confirm("Вы уверены, что хотите отменить все ваши бронирования?");
+  if (!confirmed) {
+    return;
+  }
+  try {
+    await apiRequest("/api/bookings/all", { method: "DELETE", headers });
+    bookingState.myBookings = [];
+    renderBookingsList();
+    if (currentSpace?.id && bookingState.selectedDate) {
+      void loadSpaceBookings(currentSpace.id, bookingState.selectedDate);
+    }
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const handleDeskBookingClick = async (desk) => {
+  if (!bookingState.selectedDate) {
+    ensureBookingDate();
+  }
+  const headers = getBookingHeaders();
+  if (!headers["X-User-Key"]) {
+    setBookingStatus("Нужна информация о пользователе для бронирования.", "error");
+    return;
+  }
+  const status = desk.bookingStatus || "free";
+  try {
+    if (status === "my") {
+      const confirmed = window.confirm("Отменить выбор этого стола?");
+      if (!confirmed) {
+        return;
+      }
+      await apiRequest("/api/bookings", {
+        method: "DELETE",
+        headers,
+        body: JSON.stringify({
+          date: bookingState.selectedDate,
+          desk_id: Number(desk.id),
+        }),
+      });
+      setBookingStatus("Бронирование отменено.", "success");
+      if (currentSpace?.id) {
+        await loadSpaceBookings(currentSpace.id, bookingState.selectedDate);
+      }
+      if (bookingState.isListOpen) {
+        await loadMyBookings();
+      }
+      return;
+    }
+    if (status !== "free") {
+      return;
+    }
+    await apiRequest("/api/bookings", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        date: bookingState.selectedDate,
+        desk_id: Number(desk.id),
+      }),
+    });
+    setBookingStatus("Место успешно забронировано.", "success");
+    if (currentSpace?.id) {
+      await loadSpaceBookings(currentSpace.id, bookingState.selectedDate);
+    }
+    if (bookingState.isListOpen) {
+      await loadMyBookings();
+    }
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const startDeskLongPress = (desk, event) => {
+  if (!desk || desk.bookingStatus === "booked") {
+    return;
+  }
+  bookingState.longPressTriggered = false;
+  if (bookingState.longPressTimer) {
+    clearTimeout(bookingState.longPressTimer);
+  }
+  bookingState.longPressTimer = setTimeout(() => {
+    bookingState.longPressTriggered = true;
+    bookingState.longPressTimer = null;
+    openWeekCalendar(desk);
+    setTimeout(() => {
+      bookingState.longPressTriggered = false;
+    }, 300);
+  }, 1500);
+
+  const cancel = () => {
+    if (bookingState.longPressTimer) {
+      clearTimeout(bookingState.longPressTimer);
+      bookingState.longPressTimer = null;
+    }
+  };
+
+  if (event?.target) {
+    event.target.addEventListener("pointerup", cancel, { once: true });
+    event.target.addEventListener("pointercancel", cancel, { once: true });
+    event.target.addEventListener("pointerleave", cancel, { once: true });
+  }
+};
+
+const openWeekCalendar = (desk) => {
+  if (!spaceBookingPanel) {
+    return;
+  }
+  const overlay = document.createElement("div");
+  overlay.className = "week-calendar-overlay";
+  const modal = document.createElement("div");
+  modal.className = "week-calendar";
+  const header = document.createElement("div");
+  header.className = "week-calendar-header";
+  const title = document.createElement("h3");
+  title.textContent = `Бронирование: ${desk.label || "Стол"}`;
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "week-calendar-close";
+  closeBtn.type = "button";
+  closeBtn.textContent = "×";
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+
+  const content = document.createElement("div");
+  content.className = "week-calendar-content";
+  const hint = document.createElement("p");
+  hint.className = "week-calendar-hint";
+  hint.textContent = "Выберите дни недели для бронирования:";
+  const grid = document.createElement("div");
+  grid.className = "week-days-grid";
+  const weekDayNames = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+  const selectedDays = new Set();
+  weekDayNames.forEach((dayName, index) => {
+    const dayIndex = index + 1;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "week-day-button";
+    button.innerHTML = `<div class="week-day-name">${dayName}</div>`;
+    button.addEventListener("click", () => {
+      if (selectedDays.has(dayIndex)) {
+        selectedDays.delete(dayIndex);
+        button.classList.remove("selected");
+      } else {
+        selectedDays.add(dayIndex);
+        button.classList.add("selected");
+      }
+      confirmBtn.disabled = selectedDays.size === 0;
+    });
+    grid.appendChild(button);
+  });
+  content.appendChild(hint);
+  content.appendChild(grid);
+
+  const footer = document.createElement("div");
+  footer.className = "week-calendar-footer";
+  const confirmBtn = document.createElement("button");
+  confirmBtn.type = "button";
+  confirmBtn.className = "week-calendar-button confirm";
+  confirmBtn.textContent = "Забронировать";
+  confirmBtn.disabled = true;
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "week-calendar-button cancel";
+  cancelBtn.textContent = "Отмена";
+
+  footer.appendChild(confirmBtn);
+  footer.appendChild(cancelBtn);
+
+  modal.appendChild(header);
+  modal.appendChild(content);
+  modal.appendChild(footer);
+
+  const close = () => {
+    document.body.classList.remove("modal-open");
+    overlay.remove();
+    modal.remove();
+  };
+
+  closeBtn.addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+  overlay.addEventListener("click", close);
+
+  confirmBtn.addEventListener("click", async () => {
+    const days = Array.from(selectedDays.values());
+    if (days.length === 0) {
+      return;
+    }
+    close();
+    await handleWeekBooking(desk, days);
+  });
+
+  document.body.classList.add("modal-open");
+  document.body.appendChild(overlay);
+  document.body.appendChild(modal);
+  requestAnimationFrame(() => {
+    modal.classList.add("week-calendar-visible");
+  });
+};
+
+const handleWeekBooking = async (desk, selectedDays) => {
+  const headers = getBookingHeaders();
+  if (!headers["X-User-Key"]) {
+    setBookingStatus("Нужна информация о пользователе для бронирования.", "error");
+    return;
+  }
+  const dates = getWeekDatesForSelectedDays(selectedDays, bookingState.selectedDate);
+  if (dates.length === 0) {
+    setBookingStatus("Не удалось подобрать даты для бронирования.", "error");
+    return;
+  }
+  try {
+    const response = await apiRequest("/api/bookings/multiple", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        dates,
+        desk_id: Number(desk.id),
+      }),
+    });
+    const createdCount = response?.createdDates?.length || 0;
+    const failedCount = response?.failedDates?.length || 0;
+    if (createdCount > 0) {
+      alert(`Успешно забронировано на ${createdCount} дат(ы)`);
+    }
+    if (failedCount > 0 && response.failedDates) {
+      alert(
+        `Стол "${desk.label}" уже занят другими пользователями на следующие даты: ${response.failedDates
+          .map((item) => formatBookingDate(item))
+          .join(", ")}.`
+      );
+    }
+    if (currentSpace?.id && bookingState.selectedDate) {
+      await loadSpaceBookings(currentSpace.id, bookingState.selectedDate);
+    }
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const getWeekDatesForSelectedDays = (selectedDays, startDate) => {
+  const dates = [];
+  const start = startDate ? new Date(startDate) : new Date();
+  start.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const minDate = start < today ? today : start;
+  const dayOfWeek = minDate.getDay();
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  const weekStart = new Date(minDate);
+  weekStart.setDate(minDate.getDate() + mondayOffset);
+  const endDate = new Date(minDate);
+  endDate.setFullYear(minDate.getFullYear() + 1);
+  const selectedSet = new Set(selectedDays);
+  let currentWeekStart = new Date(weekStart);
+  while (currentWeekStart < endDate) {
+    selectedSet.forEach((dayIndex) => {
+      const offset = dayIndex === 7 ? 6 : dayIndex - 1;
+      const date = new Date(currentWeekStart);
+      date.setDate(currentWeekStart.getDate() + offset);
+      if (date >= minDate && date < endDate) {
+        dates.push(formatPickerDate(date));
+      }
+    });
+    currentWeekStart.setDate(currentWeekStart.getDate() + 7);
+  }
+  return Array.from(new Set(dates)).sort();
+};
+
 const updateSpaceColorPreview = (color) => {
   if (!spaceColorPreview) {
     return;
@@ -981,7 +1800,14 @@ const closeSpaceModal = () => {
   editingSpace = null;
   spaceModal.classList.remove("is-open");
   spaceModal.setAttribute("aria-hidden", "true");
-  document.body.classList.remove("modal-open");
+  if (
+    !(buildingModal && buildingModal.classList.contains("is-open")) &&
+    !(deskModal && deskModal.classList.contains("is-open")) &&
+    !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
+    !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open"))
+  ) {
+    document.body.classList.remove("modal-open");
+  }
   clearSpaceStatus();
   if (spaceForm) {
     spaceForm.reset();
@@ -1026,7 +1852,8 @@ const closeDeskModal = () => {
   if (
     !(buildingModal && buildingModal.classList.contains("is-open")) &&
     !(spaceModal && spaceModal.classList.contains("is-open")) &&
-    !(floorPlanModal && floorPlanModal.classList.contains("is-open"))
+    !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
+    !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -2369,7 +3196,9 @@ const closeFloorPlanModal = () => {
   floorPlanModalRequested = false;
   if (
     !buildingModal.classList.contains("is-open") &&
-    !(spaceModal && spaceModal.classList.contains("is-open"))
+    !(spaceModal && spaceModal.classList.contains("is-open")) &&
+    !(deskModal && deskModal.classList.contains("is-open")) &&
+    !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -2496,8 +3325,13 @@ const setSpaceEditMode = (editing) => {
   if (spaceDesksPanel) {
     spaceDesksPanel.setAttribute("aria-hidden", String(!editing));
   }
+  if (spaceBookingPanel) {
+    spaceBookingPanel.classList.toggle("is-hidden", editing);
+    spaceBookingPanel.setAttribute("aria-hidden", String(editing));
+  }
   if (spaceSnapshot) {
     spaceSnapshot.classList.toggle("is-editing", editing);
+    spaceSnapshot.classList.toggle("is-booking", !editing);
   }
   if (addDeskBtn) {
     const canEdit = Boolean(currentSpace && currentSpace.kind === "coworking");
@@ -2536,6 +3370,9 @@ const setSpaceEditMode = (editing) => {
     setDeskPlacementActive(false);
     renderSpaceDesks(currentDesks);
     clearSpacePageStatus();
+    if (bookingState.selectedDate) {
+      renderDatePicker();
+    }
   }
 };
 
@@ -3014,7 +3851,7 @@ const persistDeskNormalizationUpdates = async (updates = []) => {
       if (updated) {
         const index = currentDesks.findIndex((desk) => String(desk.id) === String(update.id));
         if (index >= 0) {
-          currentDesks[index] = updated;
+          currentDesks[index] = mergeDeskBookingState(updated, currentDesks[index]);
         }
       }
     } catch (error) {
@@ -3186,6 +4023,11 @@ const renderSpaceDesks = (desks = []) => {
     group.classList.add("space-desk");
     group.setAttribute("data-desk-id", String(desk.id));
     group.classList.toggle("is-selected", isDeskSelected(desk.id));
+    if (desk.bookingStatus === "booked") {
+      group.classList.add("is-booked");
+    } else if (desk.bookingStatus === "my") {
+      group.classList.add("is-my-booking");
+    }
 
     const shape = document.createElementNS(svgNamespace, "rect");
     shape.classList.add("space-desk-shape");
@@ -3205,7 +4047,13 @@ const renderSpaceDesks = (desks = []) => {
     label.setAttribute("transform", `rotate(${-rotation} ${desk.x} ${desk.y})`);
 
     const title = document.createElementNS(svgNamespace, "title");
-    title.textContent = desk.label || "Стол";
+    if (desk.bookingStatus === "booked") {
+      title.textContent = `Занято: ${desk.bookingUserName || "сотрудник"}`;
+    } else if (desk.bookingStatus === "my") {
+      title.textContent = "Ваше место";
+    } else {
+      title.textContent = "Свободно. Нажмите для бронирования";
+    }
 
     group.appendChild(title);
     group.appendChild(shape);
@@ -3337,6 +4185,7 @@ const renderSpaceDesks = (desks = []) => {
     }
     group.addEventListener("pointerdown", (event) => {
       if (!isSpaceEditing) {
+        startDeskLongPress(desk, event);
         return;
       }
       event.stopPropagation();
@@ -3395,6 +4244,20 @@ const renderSpaceDesks = (desks = []) => {
     });
     group.addEventListener("pointerup", handleDeskPointerEnd);
     group.addEventListener("pointercancel", handleDeskPointerEnd);
+    group.addEventListener("click", (event) => {
+      if (isSpaceEditing) {
+        return;
+      }
+      if (bookingState.longPressTriggered) {
+        bookingState.longPressTriggered = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void handleDeskBookingClick(desk);
+    });
     layer.appendChild(group);
   });
   renderGroupSelectionOverlay();
@@ -3418,6 +4281,9 @@ const loadSpaceDesks = async (spaceId) => {
   renderSpaceDeskList(currentDesks);
   if (normalized.updates.length > 0) {
     await persistDeskNormalizationUpdates(normalized.updates);
+  }
+  if (bookingState.selectedDate) {
+    await loadSpaceBookings(spaceId, bookingState.selectedDate);
   }
 };
 
@@ -4370,7 +5236,7 @@ const finishDeskDrag = async () => {
     if (updated) {
         const index = currentDesks.findIndex((item) => String(item.id) === String(desk.id));
       if (index >= 0) {
-        currentDesks[index] = updated;
+        currentDesks[index] = mergeDeskBookingState(updated, currentDesks[index]);
       }
       if (Object.keys(pendingPayload).length > 0) {
           pendingDeskUpdates.delete(String(desk.id));
@@ -4568,7 +5434,7 @@ const persistDeskUpdate = async (deskId, payload, onRollback) => {
     if (updated) {
       const index = currentDesks.findIndex((item) => String(item.id) === String(deskId));
       if (index >= 0) {
-        currentDesks[index] = updated;
+        currentDesks[index] = mergeDeskBookingState(updated, currentDesks[index]);
         renderSpaceDesks(currentDesks);
         setSelectedDesk(deskId);
       }
@@ -4599,7 +5465,7 @@ const flushPendingDeskUpdates = async () => {
     if (updated) {
       const index = currentDesks.findIndex((item) => String(item.id) === String(deskId));
       if (index >= 0) {
-        currentDesks[index] = updated;
+        currentDesks[index] = mergeDeskBookingState(updated, currentDesks[index]);
       }
     }
     pendingDeskUpdates.delete(deskId);
@@ -5301,6 +6167,22 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   currentDesks = [];
   pendingDeskUpdates = new Map();
   setSpaceEditMode(false);
+  bookingState.selectedDate = null;
+  updateSpaceMapDateTitle(null);
+  bookingState.currentMonth = new Date();
+  bookingState.bookingsByDeskId = new Map();
+  bookingState.myBookings = [];
+  bookingState.isListOpen = false;
+  closeBookingsModal();
+  if (spaceBookingsToggleBtn) {
+    spaceBookingsToggleBtn.textContent = "Мои бронирования";
+  }
+  if (spaceBookingsList) {
+    spaceBookingsList.innerHTML = "";
+  }
+  if (spaceBookingsEmpty) {
+    spaceBookingsEmpty.classList.add("is-hidden");
+  }
   try {
     const space = await apiRequest(`/api/spaces/${spaceId}`);
     if (!space || !space.id) {
@@ -5368,6 +6250,10 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       if (editSpaceBtn) {
         editSpaceBtn.classList.add("is-hidden");
       }
+      if (spaceBookingPanel) {
+        spaceBookingPanel.classList.add("is-hidden");
+        spaceBookingPanel.setAttribute("aria-hidden", "true");
+      }
       setSpacePageStatus("Страница доступна только для коворкингов.", "info");
       if (spaceSnapshotPlaceholder) {
         spaceSnapshotPlaceholder.classList.remove("is-hidden");
@@ -5378,8 +6264,13 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     if (editSpaceBtn) {
       editSpaceBtn.classList.remove("is-hidden");
     }
+    if (spaceBookingPanel) {
+      spaceBookingPanel.classList.remove("is-hidden");
+      spaceBookingPanel.setAttribute("aria-hidden", "false");
+    }
     renderSpaceSnapshot(space, floorDetails?.plan_svg || "");
     await loadSpaceDesks(space.id);
+    ensureBookingDate();
   } catch (error) {
     setSpacePageStatus(error.message, "error");
     if (spaceSnapshotPlaceholder) {
@@ -5709,6 +6600,20 @@ if (spaceSnapshot) {
   spaceSnapshot.addEventListener("pointermove", handleDeskPointerMove);
   spaceSnapshot.addEventListener("pointerup", handleDeskPointerEnd);
   spaceSnapshot.addEventListener("pointercancel", handleDeskPointerEnd);
+}
+
+if (spaceBookingsToggleBtn) {
+  spaceBookingsToggleBtn.addEventListener("click", () => {
+    clearBookingStatus();
+    toggleBookingsList();
+  });
+}
+
+if (spaceBookingsCancelAllBtn) {
+  spaceBookingsCancelAllBtn.addEventListener("click", () => {
+    clearBookingStatus();
+    void handleCancelAllBookings();
+  });
 }
 
 document.addEventListener("keydown", (event) => {
@@ -6641,11 +7546,27 @@ if (floorPlanModal) {
   });
 }
 
+if (spaceBookingsModal) {
+  spaceBookingsModal.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (target.dataset.modalClose === "true") {
+      closeBookingsModal();
+    }
+  });
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeBreadcrumbMenus();
     if (lassoState.active) {
       cancelLassoMode("Выделение отменено.");
+      return;
+    }
+    if (spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) {
+      closeBookingsModal();
       return;
     }
     if (deskModal && deskModal.classList.contains("is-open")) {

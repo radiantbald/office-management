@@ -141,6 +141,8 @@ func main() {
 	mux.HandleFunc("/api/desks/bulk", app.handleDeskBulk)
 	mux.HandleFunc("/api/desks/", app.handleDeskSubroutes)
 	mux.HandleFunc("/api/meeting-rooms", app.handleMeetingRooms)
+	mux.HandleFunc("/api/bookings", app.handleBookings)
+	mux.HandleFunc("/api/bookings/", app.handleBookingsSubroutes)
 	mux.HandleFunc("/api/auth/user/info", app.handleAuthUserInfo)
 	mux.HandleFunc("/api/auth/v2/code/wb-captcha", app.handleAuthRequestCode)
 	mux.HandleFunc("/api/auth/v2/auth", app.handleAuthConfirmCode)
@@ -223,6 +225,17 @@ func migrate(db *sql.DB) error {
 			capacity INTEGER NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			FOREIGN KEY(space_id) REFERENCES spaces(id) ON DELETE CASCADE
+		);`,
+		`CREATE TABLE IF NOT EXISTS bookings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			desk_id INTEGER NOT NULL,
+			user_key TEXT NOT NULL,
+			user_name TEXT NOT NULL DEFAULT '',
+			date TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY(desk_id) REFERENCES desks(id) ON DELETE CASCADE,
+			UNIQUE(desk_id, date),
+			UNIQUE(user_key, date)
 		);`,
 	}
 
