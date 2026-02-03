@@ -15,14 +15,30 @@
           </div>
           <p id="pageSubtitle">Добавляйте здания и выбирайте нужное из списка.</p>
         </div>
-        <div id="headerActions" class="header-actions">
-          <button id="openAddModalBtn" class="primary" type="button">Добавить здание</button>
-          <button id="editBuildingBtn" class="ghost is-hidden" type="button">Редактировать</button>
-          <button id="editFloorBtn" class="ghost is-hidden" type="button">Редактировать</button>
-          <button id="editSpaceBtn" class="ghost is-hidden" type="button">Редактировать</button>
-          <button id="cancelSpaceEditBtn" class="ghost floor-actions-cancel is-hidden" type="button">
-            Отменить
-          </button>
+        <div class="header-side">
+          <div class="breadcrumb-profile header-profile is-hidden" data-role="breadcrumb-profile">
+            <button
+              class="breadcrumb-trigger"
+              type="button"
+              data-role="breadcrumb-trigger"
+              aria-haspopup="true"
+              aria-expanded="false"
+            >
+              <span class="breadcrumb-name"></span>
+              <img class="breadcrumb-avatar" alt="Аватар пользователя" />
+            </button>
+            <div class="breadcrumb-menu is-hidden" data-role="breadcrumb-menu" role="menu">
+              <button class="breadcrumb-menu-item" type="button" data-role="breadcrumb-logout">Выйти</button>
+            </div>
+          </div>
+          <div id="headerActions" class="header-actions">
+            <button id="editBuildingBtn" class="ghost is-hidden" type="button">Редактировать</button>
+            <button id="editFloorBtn" class="ghost is-hidden" type="button">Редактировать</button>
+            <button id="editSpaceBtn" class="ghost is-hidden" type="button">Редактировать</button>
+            <button id="cancelSpaceEditBtn" class="ghost floor-actions-cancel is-hidden" type="button">
+              Отменить
+            </button>
+          </div>
         </div>
       </div>
     </header>
@@ -72,7 +88,17 @@
     <main class="app">
       <section id="buildingsPage" class="buildings-page">
         <div id="emptyState" class="placeholder app-empty">Добавьте первое здание.</div>
-        <div id="buildingsGrid" class="buildings-grid"></div>
+        <div id="buildingsGrid" class="buildings-grid">
+          <button
+            id="openAddModalBtn"
+            class="building-tile building-tile-add"
+            type="button"
+            aria-label="Добавить здание"
+            title="Добавить здание"
+          >
+            <span class="building-tile-icon">+</span>
+          </button>
+        </div>
       </section>
 
       <section id="buildingPage" class="building-page is-hidden">
@@ -80,21 +106,7 @@
           <div class="breadcrumb-links">
             <a class="breadcrumb-link" href="/buildings">← К списку зданий</a>
           </div>
-          <div class="breadcrumb-profile is-hidden" data-role="breadcrumb-profile">
-            <button
-              class="breadcrumb-trigger"
-              type="button"
-              data-role="breadcrumb-trigger"
-              aria-haspopup="true"
-              aria-expanded="false"
-            >
-              <span class="breadcrumb-name"></span>
-              <img class="breadcrumb-avatar" alt="Аватар пользователя" />
-            </button>
-            <div class="breadcrumb-menu is-hidden" data-role="breadcrumb-menu" role="menu">
-              <button class="breadcrumb-menu-item" type="button" data-role="breadcrumb-logout">Выйти</button>
-            </div>
-          </div>
+          <div class="breadcrumb-actions" data-role="breadcrumb-actions" data-page="building"></div>
         </div>
         <div class="card">
           <div class="card-header">
@@ -114,21 +126,7 @@
             <span class="breadcrumb-separator">/</span>
             <a id="breadcrumbBuilding" class="breadcrumb-link" href="/buildings">Здание</a>
           </div>
-          <div class="breadcrumb-profile is-hidden" data-role="breadcrumb-profile">
-            <button
-              class="breadcrumb-trigger"
-              type="button"
-              data-role="breadcrumb-trigger"
-              aria-haspopup="true"
-              aria-expanded="false"
-            >
-              <span class="breadcrumb-name"></span>
-              <img class="breadcrumb-avatar" alt="Аватар пользователя" />
-            </button>
-            <div class="breadcrumb-menu is-hidden" data-role="breadcrumb-menu" role="menu">
-              <button class="breadcrumb-menu-item" type="button" data-role="breadcrumb-logout">Выйти</button>
-            </div>
-          </div>
+          <div class="breadcrumb-actions" data-role="breadcrumb-actions" data-page="floor"></div>
         </div>
         <div id="floorPlanLayout" class="floor-plan-layout">
           <aside id="floorPlanActions" class="floor-plan-actions is-hidden" aria-hidden="true">
@@ -181,21 +179,7 @@
             <span class="breadcrumb-separator">/</span>
             <a id="spaceBreadcrumbFloor" class="breadcrumb-link" href="/buildings">Этаж</a>
           </div>
-          <div class="breadcrumb-profile is-hidden" data-role="breadcrumb-profile">
-            <button
-              class="breadcrumb-trigger"
-              type="button"
-              data-role="breadcrumb-trigger"
-              aria-haspopup="true"
-              aria-expanded="false"
-            >
-              <span class="breadcrumb-name"></span>
-              <img class="breadcrumb-avatar" alt="Аватар пользователя" />
-            </button>
-            <div class="breadcrumb-menu is-hidden" data-role="breadcrumb-menu" role="menu">
-              <button class="breadcrumb-menu-item" type="button" data-role="breadcrumb-logout">Выйти</button>
-            </div>
-          </div>
+          <div class="breadcrumb-actions" data-role="breadcrumb-actions" data-page="space"></div>
         </div>
         <div id="spaceLayout" class="space-layout">
           <aside id="spaceDesksPanel" class="space-desks-panel" aria-hidden="true">

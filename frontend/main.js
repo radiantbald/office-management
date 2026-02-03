@@ -240,6 +240,18 @@ const fallbackBuildingImages = [
 const cancelFloorEditHome = cancelFloorEditBtn
   ? { parent: cancelFloorEditBtn.parentElement, nextSibling: cancelFloorEditBtn.nextElementSibling }
   : null;
+const buildingBreadcrumbActions = document.querySelector(
+  '[data-role="breadcrumb-actions"][data-page="building"]'
+);
+const floorBreadcrumbActions = document.querySelector(
+  '[data-role="breadcrumb-actions"][data-page="floor"]'
+);
+const spaceBreadcrumbActions = document.querySelector(
+  '[data-role="breadcrumb-actions"][data-page="space"]'
+);
+const headerActionsHome = headerActions
+  ? { parent: headerActions.parentElement, nextSibling: headerActions.nextElementSibling }
+  : null;
 
 const AUTH_TOKEN_KEY = "auth_access_token";
 const AUTH_USER_KEY = "auth_user_info";
@@ -259,6 +271,29 @@ const setAuthToken = (token) => {
     localStorage.setItem(AUTH_TOKEN_KEY, token);
   } else {
     localStorage.removeItem(AUTH_TOKEN_KEY);
+  }
+};
+
+const placeHeaderActions = (target) => {
+  if (!headerActions) {
+    return;
+  }
+  if (target) {
+    if (!target.contains(headerActions)) {
+      target.appendChild(headerActions);
+    }
+    return;
+  }
+  if (!headerActionsHome?.parent) {
+    return;
+  }
+  if (
+    headerActionsHome.nextSibling &&
+    headerActionsHome.nextSibling.parentElement === headerActionsHome.parent
+  ) {
+    headerActionsHome.parent.insertBefore(headerActions, headerActionsHome.nextSibling);
+  } else {
+    headerActionsHome.parent.appendChild(headerActions);
   }
 };
 
@@ -4717,9 +4752,9 @@ const renderBuildings = () => {
   buildingsGrid.innerHTML = "";
   if (buildings.length === 0) {
     emptyState.style.display = "block";
-    return;
+  } else {
+    emptyState.style.display = "none";
   }
-  emptyState.style.display = "none";
   buildings.forEach((building) => {
     const tile = document.createElement("button");
     tile.type = "button";
@@ -4734,6 +4769,19 @@ const renderBuildings = () => {
     });
     buildingsGrid.appendChild(tile);
   });
+  if (openAddModalBtn) {
+    const isHidden = openAddModalBtn.classList.contains("is-hidden");
+    openAddModalBtn.className = `building-tile building-tile-add${isHidden ? " is-hidden" : ""}`;
+    openAddModalBtn.type = "button";
+    openAddModalBtn.setAttribute("aria-label", "Добавить здание");
+    openAddModalBtn.setAttribute("title", "Добавить здание");
+    openAddModalBtn.innerHTML = "";
+    const icon = document.createElement("span");
+    icon.className = "building-tile-icon";
+    icon.textContent = "+";
+    openAddModalBtn.append(icon);
+    buildingsGrid.appendChild(openAddModalBtn);
+  }
 };
 
 const setPageMode = (mode) => {
@@ -4767,6 +4815,7 @@ const setPageMode = (mode) => {
     if (pageSubtitle) {
       pageSubtitle.textContent = "Просмотр этажей и планировок.";
     }
+    placeHeaderActions(buildingBreadcrumbActions);
     return;
   }
   if (mode === "floor") {
@@ -4796,6 +4845,7 @@ const setPageMode = (mode) => {
     if (pageSubtitle) {
       pageSubtitle.textContent = "Загрузка плана и данные этажа.";
     }
+    placeHeaderActions(floorBreadcrumbActions);
     return;
   }
   if (mode === "space") {
@@ -4825,6 +4875,7 @@ const setPageMode = (mode) => {
     if (pageSubtitle) {
       pageSubtitle.textContent = "Просмотр коворкинга.";
     }
+    placeHeaderActions(spaceBreadcrumbActions);
     return;
   }
   setFloorEditMode(false);
@@ -4850,6 +4901,7 @@ const setPageMode = (mode) => {
   if (pageSubtitle) {
     pageSubtitle.textContent = "Добавляйте здания и выбирайте нужное из списка.";
   }
+  placeHeaderActions(null);
 };
 
 const renderFloors = (floors) => {
