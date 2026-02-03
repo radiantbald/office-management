@@ -993,6 +993,11 @@ body.space-editing .space-booking-panel {
   color: #1d4ed8;
 }
 
+.space-booking-space {
+  font-weight: 600;
+  color: #0f766e;
+}
+
 .space-booking-cancel {
   border: none;
   background: #fee2e2;

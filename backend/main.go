@@ -42,13 +42,13 @@ type building struct {
 }
 
 type floor struct {
-	ID         int64  `json:"id"`
-	BuildingID int64  `json:"building_id"`
-	Name       string `json:"name"`
-	Level      int    `json:"level"`
-	SpacesCount int   `json:"spaces_count"`
-	PlanSVG    string `json:"plan_svg,omitempty"`
-	CreatedAt  string `json:"created_at"`
+	ID          int64  `json:"id"`
+	BuildingID  int64  `json:"building_id"`
+	Name        string `json:"name"`
+	Level       int    `json:"level"`
+	SpacesCount int    `json:"spaces_count"`
+	PlanSVG     string `json:"plan_svg,omitempty"`
+	CreatedAt   string `json:"created_at"`
 }
 
 type space struct {
@@ -229,13 +229,14 @@ func migrate(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS bookings (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			desk_id INTEGER NOT NULL,
+			building_id INTEGER NOT NULL,
 			user_key TEXT NOT NULL,
 			user_name TEXT NOT NULL DEFAULT '',
 			date TEXT NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			FOREIGN KEY(desk_id) REFERENCES desks(id) ON DELETE CASCADE,
 			UNIQUE(desk_id, date),
-			UNIQUE(user_key, date)
+			UNIQUE(user_key, date, building_id)
 		);`,
 	}
 
@@ -272,6 +273,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "desks", "rotation", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := migrateBookingsTable(db); err != nil {
 		return err
 	}
 	return nil

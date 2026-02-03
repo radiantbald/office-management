@@ -1354,10 +1354,18 @@ const renderBookingsList = () => {
     const date = document.createElement("div");
     date.className = "space-booking-date";
     date.textContent = `${formatBookingWeekday(booking.date)} ${formatBookingDate(booking.date)}`;
+    const spaceLabel =
+      booking?.space_name || (booking?.space_id ? `Пространство ${booking.space_id}` : "");
+    const space = document.createElement("div");
+    space.className = "space-booking-space";
+    space.textContent = spaceLabel;
     const desk = document.createElement("div");
     desk.className = "space-booking-desk";
     desk.textContent = booking.desk_label || `Стол ${booking.desk_id}`;
     info.appendChild(date);
+    if (spaceLabel) {
+      info.appendChild(space);
+    }
     info.appendChild(desk);
 
     const cancelBtn = document.createElement("button");
@@ -1393,9 +1401,8 @@ const openBookingsModal = () => {
   spaceBookingsSection.classList.remove("is-hidden");
   spaceBookingsSection.setAttribute("aria-hidden", "false");
   const baseTitle = "Мои бронирования";
-  const spaceTitle = currentSpace?.name ? `${baseTitle} — ${currentSpace.name}` : baseTitle;
   if (spaceBookingsModalTitle) {
-    spaceBookingsModalTitle.textContent = spaceTitle;
+    spaceBookingsModalTitle.textContent = baseTitle;
   }
   if (spaceBookingsToggleBtn) {
     spaceBookingsToggleBtn.textContent = baseTitle;
