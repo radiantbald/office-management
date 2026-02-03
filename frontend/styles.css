@@ -681,11 +681,22 @@ body.space-editing .space-booking-panel {
 
 .space-desk {
   pointer-events: none;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.3s ease, filter 0.3s ease, opacity 0.3s ease;
+  animation: deskFadeIn 0.2s ease-out both;
 }
 
 .space-snapshot.is-editing .space-desk {
   pointer-events: all;
   cursor: grab;
+}
+
+.space-snapshot.is-editing .space-desk,
+.space-snapshot.is-editing .space-desk-shape,
+.space-snapshot.is-editing .space-desk-label {
+  animation: none;
+  transition: none;
 }
 
 .space-snapshot.is-booking .space-desk {
@@ -701,33 +712,42 @@ body.space-editing .space-booking-panel {
   cursor: grabbing;
 }
 
+.space-snapshot.is-editing .space-desk.is-dragging,
+.space-snapshot.is-editing .space-desk.is-dragging .space-desk-shape,
+.space-snapshot.is-editing .space-desk.is-dragging .space-desk-label {
+  animation: none;
+  transition: none;
+  transform: none;
+  filter: none;
+}
+
 .space-desk-shape {
-  fill: #e5e7eb;
-  stroke: #cbd5e1;
+  fill: #4a90e2;
+  stroke: #357abd;
   stroke-width: 1;
+  transition: fill 0.3s ease, stroke 0.3s ease;
 }
 
 .space-desk.is-selected .space-desk-shape {
-  fill: #e5e7eb;
   stroke: #2563eb;
 }
 
 .space-desk.is-booked .space-desk-shape {
-  fill: #fee2e2;
-  stroke: #f87171;
+  fill: #999;
+  stroke: #777;
 }
 
 .space-desk.is-my-booking .space-desk-shape {
-  fill: #dcfce7;
-  stroke: #22c55e;
+  fill: #4caf50;
+  stroke: #45a049;
 }
 
 .space-desk.is-booked .space-desk-label {
-  fill: #7f1d1d;
+  fill: #ffffff;
 }
 
 .space-desk.is-my-booking .space-desk-label {
-  fill: #14532d;
+  fill: #ffffff;
 }
 
 .desk-handles {
@@ -792,7 +812,41 @@ body.space-editing .space-booking-panel {
 .space-desk-label {
   font-size: 12px;
   font-weight: 600;
-  fill: #000000;
+  fill: #ffffff;
+  transition: fill 0.3s ease, font-size 0.3s ease;
+}
+
+.space-desk:not(.is-booked):hover .space-desk-label {
+  font-size: 14px;
+}
+
+.space-desk.is-booked {
+  opacity: 0.7;
+}
+
+.space-snapshot.is-booking .space-desk:not(.is-booked):hover {
+  transform: scale(1.1);
+  filter: drop-shadow(0 4px 12px rgba(53, 122, 189, 0.4));
+}
+
+.space-snapshot.is-booking .space-desk.is-my-booking:hover {
+  filter: drop-shadow(0 4px 12px rgba(69, 160, 73, 0.4));
+}
+
+.space-snapshot.is-booking .space-desk.is-booked:hover {
+  transform: none;
+  filter: none;
+}
+
+@keyframes deskFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .space-booking-header {
@@ -843,18 +897,18 @@ body.space-editing .space-booking-panel {
 }
 
 .booking-legend-dot.is-free {
-  background: #e5e7eb;
-  border-color: #cbd5e1;
+  background: #4a90e2;
+  border-color: #357abd;
 }
 
 .booking-legend-dot.is-my {
-  background: #dcfce7;
-  border-color: #22c55e;
+  background: #4caf50;
+  border-color: #45a049;
 }
 
 .booking-legend-dot.is-booked {
-  background: #fee2e2;
-  border-color: #f87171;
+  background: #999;
+  border-color: #777;
 }
 
 .space-bookings-section {
@@ -880,6 +934,13 @@ body.space-editing .space-booking-panel {
 
 .space-bookings-modal .space-bookings-list {
   max-height: min(50vh, 420px);
+}
+
+.space-bookings-header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .space-bookings-actions {

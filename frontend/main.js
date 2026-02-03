@@ -103,6 +103,7 @@ const spaceDatePicker = document.getElementById("spaceDatePicker");
 const spaceBookingsToggleBtn = document.getElementById("spaceBookingsToggleBtn");
 const spaceMapDateTitle = document.getElementById("spaceMapDateTitle");
 const spaceBookingsModal = document.getElementById("spaceBookingsModal");
+const spaceBookingsModalTitle = document.getElementById("spaceBookingsModalTitle");
 const spaceBookingsSection = document.getElementById("spaceBookingsSection");
 const spaceBookingsList = document.getElementById("spaceBookingsList");
 const spaceBookingsEmpty = document.getElementById("spaceBookingsEmpty");
@@ -1352,11 +1353,8 @@ const renderBookingsList = () => {
     const desk = document.createElement("div");
     desk.className = "space-booking-desk";
     desk.textContent = booking.desk_label || `Стол ${booking.desk_id}`;
-    const space = document.createElement("div");
-    space.textContent = booking.space_name ? `${booking.space_name}` : `Пространство ${booking.space_id}`;
     info.appendChild(date);
     info.appendChild(desk);
-    info.appendChild(space);
 
     const cancelBtn = document.createElement("button");
     cancelBtn.type = "button";
@@ -1390,8 +1388,13 @@ const openBookingsModal = () => {
   document.body.classList.add("modal-open");
   spaceBookingsSection.classList.remove("is-hidden");
   spaceBookingsSection.setAttribute("aria-hidden", "false");
+  const baseTitle = "Мои бронирования";
+  const spaceTitle = currentSpace?.name ? `${baseTitle} — ${currentSpace.name}` : baseTitle;
+  if (spaceBookingsModalTitle) {
+    spaceBookingsModalTitle.textContent = spaceTitle;
+  }
   if (spaceBookingsToggleBtn) {
-    spaceBookingsToggleBtn.textContent = "Мои бронирования";
+    spaceBookingsToggleBtn.textContent = baseTitle;
   }
   void loadMyBookings();
 };
