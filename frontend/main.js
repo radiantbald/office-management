@@ -134,9 +134,13 @@ let isFloorEditing = false;
 let isSpaceEditing = false;
 let isDeskPlacementActive = false;
 let pendingDeskUpdates = new Map();
+let pendingDeskCreates = new Map();
+let pendingDeskDeletes = new Set();
 let pendingDeskRender = false;
 let currentSpaceBounds = null;
 let copiedDesk = null;
+let tempDeskSequence = 0;
+const TEMP_DESK_PREFIX = "tmp-";
 const deskEditState = {
   selectedDeskId: null,
   selectedDeskIds: new Set(),
@@ -2326,7 +2330,6 @@ const buildSpaceSnapshotSvg = (planSvgMarkup, points, color = "#60a5fa", spaceId
 
   const desksLayer = document.createElementNS(svgNamespace, "g");
   desksLayer.setAttribute("id", "spaceDesksLayer");
-  desksLayer.setAttribute("clip-path", `url(#${clipId})`);
   snapshotSvg.appendChild(desksLayer);
 
   return snapshotSvg;
@@ -3403,6 +3406,18 @@ const getDeskDimensions = (desk) => {
   return { width, height };
 };
 
+const getDeskRotation = (desk) => (Number.isFinite(desk?.rotation) ? desk.rotation : 0);
+
+const getRotatedDeskHalfExtents = (width, height, rotationDeg = 0) => {
+  const radians = (rotationDeg * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(radians));
+  const sin = Math.abs(Math.sin(radians));
+  return {
+    halfWidth: (width * cos + height * sin) / 2,
+    halfHeight: (width * sin + height * cos) / 2,
+  };
+};
+
 const getDeskMetrics = (svg, desk) => {
   const viewBox = parseViewBox(svg);
   const rect = svg ? svg.getBoundingClientRect() : null;
@@ -3517,10 +3532,6 @@ const ensureDeskLayer = (svg) => {
   if (!layer) {
     layer = document.createElementNS(svgNamespace, "g");
     layer.setAttribute("id", "spaceDesksLayer");
-    const clipId = svg.getAttribute("data-clip-id");
-    if (clipId) {
-      layer.setAttribute("clip-path", `url(#${clipId})`);
-    }
     svg.appendChild(layer);
   }
   return layer;
@@ -3542,6 +3553,10 @@ const ensureDeskOverlayLayer = (svg) => {
 const findDeskById = (deskId) =>
   currentDesks.find((desk) => String(desk.id) === String(deskId)) || null;
 
+const isTempDeskId = (deskId) => String(deskId).startsWith(TEMP_DESK_PREFIX);
+
+const createTempDeskId = () => `${TEMP_DESK_PREFIX}${Date.now()}-${tempDeskSequence++}`;
+
 const getSelectedDeskIds = () => Array.from(deskEditState.selectedDeskIds || []);
 
 const isDeskSelected = (deskId) =>
@@ -3551,15 +3566,19 @@ const getSelectedDesks = () => getSelectedDeskIds().map(findDeskById).filter(Boo
 
 const getDeskRect = (desk) => {
   const dimensions = getDeskDimensions(desk);
-  const halfWidth = dimensions.width / 2;
-  const halfHeight = dimensions.height / 2;
+  const rotation = getDeskRotation(desk);
+  const { halfWidth, halfHeight } = getRotatedDeskHalfExtents(
+    dimensions.width,
+    dimensions.height,
+    rotation
+  );
   return {
     left: desk.x - halfWidth,
     right: desk.x + halfWidth,
     top: desk.y - halfHeight,
     bottom: desk.y + halfHeight,
-    width: dimensions.width,
-    height: dimensions.height,
+    width: halfWidth * 2,
+    height: halfHeight * 2,
   };
 };
 
@@ -3752,10 +3771,9 @@ const updateDeskElementPosition = (group, desk, metrics) => {
   group.setAttribute("transform", `rotate(${rotation} ${desk.x} ${desk.y})`);
 };
 
-const getDeskRotationRadians = (desk) =>
-  ((Number.isFinite(desk?.rotation) ? desk.rotation : 0) * Math.PI) / 180;
+const getDeskRotationRadians = (desk) => (getDeskRotation(desk) * Math.PI) / 180;
 
-const clampDeskPosition = (x, y, metrics) => {
+const clampDeskPosition = (x, y, metrics, rotationDeg = 0) => {
   if (!metrics?.viewBox && !currentSpaceBounds) {
     return { x, y };
   }
@@ -3763,24 +3781,46 @@ const clampDeskPosition = (x, y, metrics) => {
   if (!bounds) {
     return { x, y };
   }
-  const minX = bounds.minX + metrics.width / 2;
-  const maxX = bounds.minX + bounds.width - metrics.width / 2;
-  const minY = bounds.minY + metrics.height / 2;
-  const maxY = bounds.minY + bounds.height - metrics.height / 2;
+  const { halfWidth, halfHeight } = getRotatedDeskHalfExtents(
+    metrics.width,
+    metrics.height,
+    rotationDeg
+  );
+  let minX = bounds.minX + halfWidth;
+  let maxX = bounds.minX + bounds.width - halfWidth;
+  let minY = bounds.minY + halfHeight;
+  let maxY = bounds.minY + bounds.height - halfHeight;
+  if (minX > maxX) {
+    minX = bounds.minX + bounds.width / 2;
+    maxX = minX;
+  }
+  if (minY > maxY) {
+    minY = bounds.minY + bounds.height / 2;
+    maxY = minY;
+  }
   return {
     x: Math.min(Math.max(x, minX), maxX),
     y: Math.min(Math.max(y, minY), maxY),
   };
 };
 
-const clampDeskCenterToBounds = (x, y, width, height, bounds) => {
+const clampDeskCenterToBounds = (x, y, width, height, bounds, rotationDeg = 0) => {
   if (!bounds) {
     return { x, y };
   }
-  const minX = bounds.minX + width / 2;
-  const maxX = bounds.minX + bounds.width - width / 2;
-  const minY = bounds.minY + height / 2;
-  const maxY = bounds.minY + bounds.height - height / 2;
+  const { halfWidth, halfHeight } = getRotatedDeskHalfExtents(width, height, rotationDeg);
+  let minX = bounds.minX + halfWidth;
+  let maxX = bounds.minX + bounds.width - halfWidth;
+  let minY = bounds.minY + halfHeight;
+  let maxY = bounds.minY + bounds.height - halfHeight;
+  if (minX > maxX) {
+    minX = bounds.minX + bounds.width / 2;
+    maxX = minX;
+  }
+  if (minY > maxY) {
+    minY = bounds.minY + bounds.height / 2;
+    maxY = minY;
+  }
   return {
     x: Math.min(Math.max(x, minX), maxX),
     y: Math.min(Math.max(y, minY), maxY),
@@ -3810,7 +3850,7 @@ const normalizeDeskForBounds = (desk, bounds) => {
   const fallbackY = bounds ? bounds.minY + bounds.height / 2 : 0;
   let x = Number.isFinite(rawX) ? rawX : fallbackX;
   let y = Number.isFinite(rawY) ? rawY : fallbackY;
-  const clamped = clampDeskCenterToBounds(x, y, width, height, bounds);
+  const clamped = clampDeskCenterToBounds(x, y, width, height, bounds, getDeskRotation(desk));
   x = clamped.x;
   y = clamped.y;
   const changed = width !== desk.width || height !== desk.height || x !== desk.x || y !== desk.y;
@@ -3892,7 +3932,7 @@ const updateDeskDimensionsLocal = (deskId, width, height) => {
     return;
   }
   const metrics = getDeskMetrics(svg, desk);
-  const clamped = clampDeskPosition(desk.x, desk.y, metrics);
+  const clamped = clampDeskPosition(desk.x, desk.y, metrics, getDeskRotation(desk));
   desk.x = clamped.x;
   desk.y = clamped.y;
   const group = svg.querySelector(`.space-desk[data-desk-id="${String(deskId)}"]`);
@@ -4270,6 +4310,8 @@ const loadSpaceDesks = async (spaceId) => {
   if (!spaceId) {
     currentDesks = [];
     pendingDeskUpdates = new Map();
+    pendingDeskCreates = new Map();
+    pendingDeskDeletes = new Set();
     setSelectedDesk(null);
     renderSpaceDesks([]);
     return;
@@ -4279,6 +4321,8 @@ const loadSpaceDesks = async (spaceId) => {
   const normalized = normalizeDesksForCurrentSpace(rawDesks);
   currentDesks = normalized.desks;
   pendingDeskUpdates = new Map();
+  pendingDeskCreates = new Map();
+  pendingDeskDeletes = new Set();
   setSelectedDesk(null);
   renderSpaceDesks(currentDesks);
   renderSpaceDeskList(currentDesks);
@@ -4701,36 +4745,22 @@ const addDeskToFreeSpot = async () => {
     setSpacePageStatus("Нет свободного места для нового стола.", "error");
     return;
   }
-  const clamped = clampDeskCenterToBounds(position.x, position.y, width, height, bounds);
-  try {
-    if (addDeskBtn) {
-      addDeskBtn.disabled = true;
-    }
-    const label = getNextDeskLabel(currentDesks);
-    const result = await apiRequest("/api/desks", {
-      method: "POST",
-      body: JSON.stringify({
-        space_id: currentSpace.id,
-        label,
-        x: clamped.x,
-        y: clamped.y,
-        width,
-        height,
-        rotation: 0,
-      }),
-    });
-    if (result) {
-      currentDesks = [result, ...currentDesks];
-      renderSpaceDesks(currentDesks);
-      renderSpaceDeskList(currentDesks);
-      setSelectedDesk(result.id);
-    }
-  } catch (error) {
-    setSpacePageStatus(error.message, "error");
-  } finally {
-    if (addDeskBtn) {
-      addDeskBtn.disabled = false;
-    }
+  const clamped = clampDeskCenterToBounds(position.x, position.y, width, height, bounds, 0);
+  if (addDeskBtn) {
+    addDeskBtn.disabled = true;
+  }
+  const label = getNextDeskLabel(currentDesks);
+  addLocalDesk({
+    space_id: currentSpace.id,
+    label,
+    x: clamped.x,
+    y: clamped.y,
+    width,
+    height,
+    rotation: 0,
+  });
+  if (addDeskBtn) {
+    addDeskBtn.disabled = false;
   }
 };
 
@@ -4786,17 +4816,17 @@ const pasteCopiedDesk = async () => {
     return;
   }
 
-  try {
-    if (pasteDeskBtn) {
-      pasteDeskBtn.disabled = true;
-    }
-    let workingDesks = currentDesks.slice();
-    const payloads = group.desks.map((desk) => {
-      const label = getNextDeskLabel(workingDesks);
-      workingDesks = [{ label }, ...workingDesks];
-      const x = position.x + desk.dx;
-      const y = position.y + desk.dy;
-      return {
+  if (pasteDeskBtn) {
+    pasteDeskBtn.disabled = true;
+  }
+  let workingDesks = currentDesks.slice();
+  const created = group.desks.map((desk) => {
+    const label = getNextDeskLabel(workingDesks);
+    workingDesks = [{ label }, ...workingDesks];
+    const x = position.x + desk.dx;
+    const y = position.y + desk.dy;
+    return addLocalDesk(
+      {
         space_id: currentSpace.id,
         label,
         x,
@@ -4804,30 +4834,20 @@ const pasteCopiedDesk = async () => {
         width: desk.width,
         height: desk.height,
         rotation: desk.rotation,
-      };
-    });
-    const result = await apiRequest("/api/desks/bulk", {
-      method: "POST",
-      body: JSON.stringify({ items: payloads }),
-    });
-    const created = Array.isArray(result?.items) ? result.items : [];
-    if (created.length > 0) {
-      currentDesks = [...created, ...currentDesks];
-      renderSpaceDesks(currentDesks);
-      renderSpaceDeskList(currentDesks);
-      setSelectedDesk(created[0].id);
-      for (let i = 1; i < created.length; i += 1) {
-        setSelectedDesk(created[i].id, { additive: true });
-      }
+      },
+      { select: false }
+    );
+  });
+  if (created.length > 0) {
+    setSelectedDesk(created[0].id);
+    for (let i = 1; i < created.length; i += 1) {
+      setSelectedDesk(created[i].id, { additive: true });
     }
-  } catch (error) {
-    setSpacePageStatus(error.message, "error");
-  } finally {
-    if (pasteDeskBtn) {
-      pasteDeskBtn.disabled = false;
-    }
-    updateDeskClipboardButtons();
   }
+  if (pasteDeskBtn) {
+    pasteDeskBtn.disabled = false;
+  }
+  updateDeskClipboardButtons();
 };
 
 const getSnapshotPoint = (event, svg) => {
@@ -4879,35 +4899,23 @@ const handleSnapshotDeskPlacement = async (event) => {
     return;
   }
     const metrics = getDeskMetrics(svg, null);
-    const clamped = clampDeskPosition(point.x, point.y, metrics);
-  try {
-    if (addDeskBtn) {
-      addDeskBtn.disabled = true;
-    }
-    const label = getNextDeskLabel(currentDesks);
-    const result = await apiRequest("/api/desks", {
-      method: "POST",
-      body: JSON.stringify({
-        space_id: currentSpace.id,
-        label,
-        x: clamped.x,
-        y: clamped.y,
-          width: deskPixelWidth,
-          height: deskPixelHeight,
-          rotation: 0,
-      }),
-    });
-    if (result) {
-      currentDesks = [result, ...currentDesks];
-      renderSpaceDesks(currentDesks);
-      setSpacePageStatus("Стол добавлен.", "success");
-    }
-  } catch (error) {
-    setSpacePageStatus(error.message, "error");
-  } finally {
-    if (addDeskBtn) {
-      addDeskBtn.disabled = false;
-    }
+    const clamped = clampDeskPosition(point.x, point.y, metrics, 0);
+  if (addDeskBtn) {
+    addDeskBtn.disabled = true;
+  }
+  const label = getNextDeskLabel(currentDesks);
+  addLocalDesk({
+    space_id: currentSpace.id,
+    label,
+    x: clamped.x,
+    y: clamped.y,
+    width: deskPixelWidth,
+    height: deskPixelHeight,
+    rotation: 0,
+  });
+  setSpacePageStatus("Стол добавлен.", "success");
+  if (addDeskBtn) {
+    addDeskBtn.disabled = false;
   }
 };
 
@@ -5117,6 +5125,9 @@ const handleDeskPointerMove = (event) => {
       desk.rotation = snapRotation(rotationDeg);
       const group = svg.querySelector(`.space-desk[data-desk-id="${String(desk.id)}"]`);
       const deskMetrics = getDeskMetrics(svg, desk);
+      const clamped = clampDeskPosition(desk.x, desk.y, deskMetrics, desk.rotation);
+      desk.x = clamped.x;
+      desk.y = clamped.y;
       updateDeskElementPosition(group, desk, deskMetrics);
     }
     return;
@@ -5145,7 +5156,7 @@ const handleDeskPointerMove = (event) => {
   const rawX = point.x - deskEditState.offsetX;
   const rawY = point.y - deskEditState.offsetY;
   const snapped = snapDeskCenter(rawX, rawY, desk, metrics);
-  const clamped = clampDeskPosition(snapped.x, snapped.y, metrics);
+  const clamped = clampDeskPosition(snapped.x, snapped.y, metrics, getDeskRotation(desk));
   updateDeskPositionLocal(deskEditState.draggingDeskId, clamped.x, clamped.y);
   const moved =
     Math.abs(clamped.x - deskEditState.startX) > 0.5 || Math.abs(clamped.y - deskEditState.startY) > 0.5;
@@ -5228,34 +5239,40 @@ const finishDeskDrag = async () => {
       updateDeskPositionLocal(desk.id, desk.x + deltaX, desk.y + deltaY);
     });
   }
-  for (const desk of desks) {
-    const pendingPayload = pendingDeskUpdates.get(String(desk.id)) || {};
-  try {
-    const payload = { ...pendingPayload, x: desk.x, y: desk.y };
-      const updated = await apiRequest(`/api/desks/${desk.id}`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
+  if (isSpaceEditing) {
+    desks.forEach((desk) => {
+      queueDeskUpdate(desk.id, { x: desk.x, y: desk.y });
     });
-    if (updated) {
-        const index = currentDesks.findIndex((item) => String(item.id) === String(desk.id));
-      if (index >= 0) {
-        currentDesks[index] = mergeDeskBookingState(updated, currentDesks[index]);
-      }
-      if (Object.keys(pendingPayload).length > 0) {
-          pendingDeskUpdates.delete(String(desk.id));
+  } else {
+    for (const desk of desks) {
+      const pendingPayload = pendingDeskUpdates.get(String(desk.id)) || {};
+      try {
+        const payload = { ...pendingPayload, x: desk.x, y: desk.y };
+        const updated = await apiRequest(`/api/desks/${desk.id}`, {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+        if (updated) {
+          const index = currentDesks.findIndex((item) => String(item.id) === String(desk.id));
+          if (index >= 0) {
+            currentDesks[index] = mergeDeskBookingState(updated, currentDesks[index]);
+          }
+          if (Object.keys(pendingPayload).length > 0) {
+            pendingDeskUpdates.delete(String(desk.id));
+          }
+        }
+      } catch (error) {
+        if (deskIds.length > 1 && groupStartPositions) {
+          groupStartPositions.forEach((value, id) => {
+            updateDeskPositionLocal(id, value.x, value.y);
+          });
+        } else if (deskId) {
+          updateDeskPositionLocal(deskId, startX, startY);
+        }
+        setSpacePageStatus(error.message, "error");
+        return;
       }
     }
-  } catch (error) {
-      if (deskIds.length > 1 && groupStartPositions) {
-        groupStartPositions.forEach((value, id) => {
-          updateDeskPositionLocal(id, value.x, value.y);
-        });
-      } else if (deskId) {
-    updateDeskPositionLocal(deskId, startX, startY);
-      }
-    setSpacePageStatus(error.message, "error");
-      return;
-  }
   }
   renderSpaceDesks(currentDesks);
 };
@@ -5450,30 +5467,93 @@ const persistDeskUpdate = async (deskId, payload, onRollback) => {
   }
 };
 
+const addLocalDesk = (payload, { select = true } = {}) => {
+  const tempId = createTempDeskId();
+  const desk = { id: tempId, ...payload };
+  pendingDeskCreates.set(String(tempId), { ...payload });
+  currentDesks = [desk, ...currentDesks];
+  renderSpaceDesks(currentDesks);
+  renderSpaceDeskList(currentDesks);
+  if (select) {
+    setSelectedDesk(tempId);
+  }
+  return desk;
+};
+
 const queueDeskUpdate = (deskId, payload) => {
   if (!deskId) {
     return;
   }
-  const existing = pendingDeskUpdates.get(String(deskId)) || {};
-  pendingDeskUpdates.set(String(deskId), { ...existing, ...payload });
+  const deskKey = String(deskId);
+  if (pendingDeskCreates.has(deskKey)) {
+    const existing = pendingDeskCreates.get(deskKey) || {};
+    pendingDeskCreates.set(deskKey, { ...existing, ...payload });
+    return;
+  }
+  if (isTempDeskId(deskKey)) {
+    return;
+  }
+  const existing = pendingDeskUpdates.get(deskKey) || {};
+  pendingDeskUpdates.set(deskKey, { ...existing, ...payload });
 };
 
-const flushPendingDeskUpdates = async () => {
-  const entries = Array.from(pendingDeskUpdates.entries());
-  for (const [deskId, payload] of entries) {
-    const updated = await apiRequest(`/api/desks/${deskId}`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
-    });
-    if (updated) {
-      const index = currentDesks.findIndex((item) => String(item.id) === String(deskId));
-      if (index >= 0) {
-        currentDesks[index] = mergeDeskBookingState(updated, currentDesks[index]);
-      }
-    }
-    pendingDeskUpdates.delete(deskId);
+const flushPendingDeskChanges = async () => {
+  const hasCreates = pendingDeskCreates.size > 0;
+  const hasUpdates = pendingDeskUpdates.size > 0;
+  const hasDeletes = pendingDeskDeletes.size > 0;
+  if (!hasCreates && !hasUpdates && !hasDeletes) {
+    return;
   }
-  renderSpaceDesks(currentDesks);
+  if (hasCreates) {
+    const entries = Array.from(pendingDeskCreates.entries());
+    for (const [, payload] of entries) {
+      await apiRequest("/api/desks", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    }
+    pendingDeskCreates.clear();
+  }
+  if (hasUpdates) {
+    const entries = Array.from(pendingDeskUpdates.entries());
+    for (const [deskId, payload] of entries) {
+      if (pendingDeskDeletes.has(String(deskId))) {
+        pendingDeskUpdates.delete(deskId);
+        continue;
+      }
+      if (isTempDeskId(deskId)) {
+        pendingDeskUpdates.delete(deskId);
+        continue;
+      }
+      const updated = await apiRequest(`/api/desks/${deskId}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      if (updated) {
+        const index = currentDesks.findIndex((item) => String(item.id) === String(deskId));
+        if (index >= 0) {
+          currentDesks[index] = mergeDeskBookingState(updated, currentDesks[index]);
+        }
+      }
+      pendingDeskUpdates.delete(deskId);
+    }
+    renderSpaceDesks(currentDesks);
+  }
+  if (hasDeletes) {
+    const ids = Array.from(pendingDeskDeletes)
+      .map((value) => Number(value))
+      .filter(Number.isFinite);
+    if (ids.length > 0) {
+      await apiRequest("/api/desks/bulk", {
+        method: "DELETE",
+        body: JSON.stringify({ ids }),
+      });
+    }
+    pendingDeskDeletes.clear();
+  }
+  if (currentSpace?.id && (hasCreates || hasDeletes)) {
+    await loadSpaceDesks(currentSpace.id);
+  }
 };
 
 const shrinkSelectedDesk = () => {
@@ -5509,6 +5589,13 @@ const rotateSelectedDesk = () => {
   const baseRotation = Number.isFinite(desk.rotation) ? desk.rotation : 0;
   const nextRotation = (baseRotation + deskRotateStep) % 360;
   desk.rotation = nextRotation;
+  const svg = getSnapshotSvg();
+  if (svg) {
+    const metrics = getDeskMetrics(svg, desk);
+    const clamped = clampDeskPosition(desk.x, desk.y, metrics, desk.rotation);
+    desk.x = clamped.x;
+    desk.y = clamped.y;
+  }
   renderSpaceDesks(currentDesks);
   setSelectedDesk(deskId);
   queueDeskUpdate(deskId, { rotation: nextRotation });
@@ -6474,8 +6561,10 @@ if (editSpaceBtn) {
       }
       try {
         await finalizeActiveDeskInteraction();
-        if (pendingDeskUpdates.size > 0) {
-          await flushPendingDeskUpdates();
+        const hasPendingChanges =
+          pendingDeskUpdates.size > 0 || pendingDeskCreates.size > 0 || pendingDeskDeletes.size > 0;
+        if (hasPendingChanges) {
+          await flushPendingDeskChanges();
           setSpacePageStatus("Изменения столов сохранены.", "success");
         }
         setSpaceEditMode(false);
@@ -6521,31 +6610,30 @@ if (deleteDeskBtn) {
       return;
     }
     deleteDeskBtn.disabled = true;
-    try {
-      const numericIds = selectedIds.map((deskId) => Number(deskId)).filter(Number.isFinite);
-      if (numericIds.length === 0) {
-        setSpacePageStatus("Выберите стол для удаления.", "error");
+    const idSet = new Set(selectedIds.map(String));
+    const remaining = [];
+    currentDesks.forEach((desk) => {
+      const deskId = String(desk.id);
+      if (!idSet.has(deskId)) {
+        remaining.push(desk);
         return;
       }
-      await apiRequest("/api/desks/bulk", {
-        method: "DELETE",
-        body: JSON.stringify({ ids: numericIds }),
-      });
-      const idSet = new Set(numericIds.map((id) => String(id)));
-      currentDesks = currentDesks.filter((desk) => !idSet.has(String(desk.id)));
-      numericIds.forEach((id) => pendingDeskUpdates.delete(String(id)));
-      renderSpaceDesks(currentDesks);
-      renderSpaceDeskList(currentDesks);
-      setSelectedDesk(null);
-      setSpacePageStatus(
-        selectedIds.length === 1 ? "Стол удален." : "Столы удалены.",
-        "success"
-      );
-    } catch (error) {
-      setSpacePageStatus(error.message, "error");
-    } finally {
-      deleteDeskBtn.disabled = false;
-    }
+      if (pendingDeskCreates.has(deskId) || isTempDeskId(deskId)) {
+        pendingDeskCreates.delete(deskId);
+        return;
+      }
+      pendingDeskDeletes.add(deskId);
+      pendingDeskUpdates.delete(deskId);
+    });
+    currentDesks = remaining;
+    renderSpaceDesks(currentDesks);
+    renderSpaceDeskList(currentDesks);
+    setSelectedDesk(null);
+    setSpacePageStatus(
+      selectedIds.length === 1 ? "Стол удален." : "Столы удалены.",
+      "success"
+    );
+    deleteDeskBtn.disabled = false;
   });
 }
 
@@ -6948,6 +7036,20 @@ if (deskForm) {
       deskSaveBtn.disabled = true;
     }
     try {
+      if (isSpaceEditing) {
+        const nextDesk = { ...editingDesk, label };
+        const index = currentDesks.findIndex((desk) => String(desk.id) === String(nextDesk.id));
+        if (index >= 0) {
+          currentDesks[index] = nextDesk;
+        }
+        queueDeskUpdate(nextDesk.id, { label });
+        renderSpaceDesks(currentDesks);
+        renderSpaceDeskList(currentDesks);
+        setSelectedDesk(nextDesk.id);
+        setSpacePageStatus("Название стола обновлено.", "success");
+        closeDeskModal();
+        return;
+      }
       const updated = await apiRequest(`/api/desks/${editingDesk.id}`, {
         method: "PUT",
         body: JSON.stringify({ label }),
