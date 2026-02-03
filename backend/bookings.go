@@ -15,6 +15,7 @@ type booking struct {
 	ID         int64  `json:"id"`
 	DeskID     int64  `json:"desk_id"`
 	BuildingID int64  `json:"building_id,omitempty"`
+	FloorLevel int    `json:"floor_level,omitempty"`
 	UserKey    string `json:"user_key"`
 	UserName   string `json:"user_name"`
 	Date       string `json:"date"`
@@ -290,7 +291,7 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := a.db.Query(
 		`SELECT b.id, b.date, b.created_at, b.desk_id, b.user_key, b.user_name,
-		        d.label, d.space_id, s.name, f.building_id
+		        d.label, d.space_id, s.name, f.building_id, f.level
 		   FROM bookings b
 		   JOIN desks d ON d.id = b.desk_id
 		   JOIN spaces s ON s.id = d.space_id
@@ -319,6 +320,7 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 			&item.SpaceID,
 			&item.SpaceName,
 			&item.BuildingID,
+			&item.FloorLevel,
 		); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return

@@ -28,7 +28,12 @@
               <img class="breadcrumb-avatar" alt="Аватар пользователя" />
             </button>
             <div class="breadcrumb-menu is-hidden" data-role="breadcrumb-menu" role="menu">
-              <button class="breadcrumb-menu-item" type="button" data-role="breadcrumb-logout">Выйти</button>
+              <button class="breadcrumb-menu-item" type="button" data-role="breadcrumb-bookings">
+                Мои бронирования
+              </button>
+              <button class="breadcrumb-menu-item is-logout" type="button" data-role="breadcrumb-logout">
+                Выйти
+              </button>
             </div>
           </div>
           <div id="headerActions" class="header-actions">
@@ -253,6 +258,32 @@
             <div id="spacePageStatus" class="status" role="status" aria-live="polite"></div>
             <div id="spaceSnapshot" class="space-snapshot">
               <div id="spaceSnapshotCanvas" class="space-snapshot-canvas"></div>
+              <button
+                id="spaceSnapshotToggleBtn"
+                class="icon-button space-snapshot-toggle"
+                type="button"
+                aria-pressed="false"
+                aria-label="Скрыть подложку"
+                title="Скрыть подложку"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path
+                    d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  />
+                  <circle cx="12" cy="12" r="3" fill="currentColor" />
+                  <path
+                    class="space-snapshot-eye-slash"
+                    d="M4 4l16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </button>
             </div>
             <div id="spaceSnapshotPlaceholder" class="placeholder app-empty is-hidden">
               Схема пространства пока недоступна.

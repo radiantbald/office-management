@@ -92,6 +92,7 @@ const spaceIdTag = document.getElementById("spaceIdTag");
 const spaceLayout = document.getElementById("spaceLayout");
 const spaceSnapshot = document.getElementById("spaceSnapshot");
 const spaceSnapshotCanvas = document.getElementById("spaceSnapshotCanvas");
+const spaceSnapshotToggleBtn = document.getElementById("spaceSnapshotToggleBtn");
 const spaceSnapshotPlaceholder = document.getElementById("spaceSnapshotPlaceholder");
 const spacePageStatus = document.getElementById("spacePageStatus");
 const spaceDesksPanel = document.getElementById("spaceDesksPanel");
@@ -1006,9 +1007,21 @@ const normalizeBookingDate = (raw) => {
   return String(raw).split("T")[0].split(" ")[0].trim();
 };
 
+const isValidBookingDate = (dateStr) => /^\d{4}-\d{2}-\d{2}$/.test(dateStr || "");
+
+const getBookingDateFromLocation = () => {
+  const query = window.location.search || "";
+  if (!query) {
+    return "";
+  }
+  const params = new URLSearchParams(query);
+  const date = normalizeBookingDate(params.get("date"));
+  return isValidBookingDate(date) ? date : "";
+};
+
 const formatBookingDate = (raw) => {
   const dateStr = normalizeBookingDate(raw);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+  if (!isValidBookingDate(dateStr)) {
     return raw || "";
   }
   const [year, month, day] = dateStr.split("-").map(Number);
@@ -1017,7 +1030,7 @@ const formatBookingDate = (raw) => {
 
 const formatBookingWeekday = (raw) => {
   const dateStr = normalizeBookingDate(raw);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+  if (!isValidBookingDate(dateStr)) {
     return "";
   }
   const [year, month, day] = dateStr.split("-").map(Number);
@@ -1028,7 +1041,7 @@ const formatBookingWeekday = (raw) => {
 
 const formatSelectedDateTitle = (raw) => {
   const dateStr = normalizeBookingDate(raw);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+  if (!isValidBookingDate(dateStr)) {
     return "Схема пространства";
   }
   const weekday = formatBookingWeekday(dateStr);
@@ -1378,8 +1391,28 @@ const renderBookingsList = () => {
     });
 
     item.addEventListener("click", () => {
-      if (booking?.date) {
-        setBookingSelectedDate(booking.date);
+      const normalizedDate = normalizeBookingDate(booking?.date);
+      const bookingSpaceId = Number(booking?.space_id);
+      const bookingBuildingId = Number(booking?.building_id);
+      const bookingFloorLevel = Number(booking?.floor_level);
+      if (
+        Number.isFinite(bookingSpaceId) &&
+        Number.isFinite(bookingBuildingId) &&
+        Number.isFinite(bookingFloorLevel) &&
+        (!currentSpace || Number(currentSpace.id) !== bookingSpaceId)
+      ) {
+        const query = isValidBookingDate(normalizedDate)
+          ? `?date=${encodeURIComponent(normalizedDate)}`
+          : "";
+        window.location.assign(
+          `/buildings/${encodeURIComponent(bookingBuildingId)}/floors/${encodeURIComponent(
+            bookingFloorLevel
+          )}/spaces/${encodeURIComponent(bookingSpaceId)}${query}`
+        );
+        return;
+      }
+      if (isValidBookingDate(normalizedDate)) {
+        setBookingSelectedDate(normalizedDate);
         closeBookingsModal();
       }
     });
@@ -2008,6 +2041,20 @@ const resetSpaceSnapshotTransform = () => {
   applySpaceSnapshotTransform();
 };
 
+const applySpaceSnapshotBackgroundState = (hidden) => {
+  const isHidden = Boolean(hidden);
+  if (spaceSnapshot) {
+    spaceSnapshot.classList.toggle("is-background-hidden", isHidden);
+  }
+  if (spaceSnapshotToggleBtn) {
+    const label = isHidden ? "Показать подложку" : "Скрыть подложку";
+    spaceSnapshotToggleBtn.setAttribute("aria-pressed", String(isHidden));
+    spaceSnapshotToggleBtn.setAttribute("aria-label", label);
+    spaceSnapshotToggleBtn.title = label;
+    spaceSnapshotToggleBtn.classList.toggle("is-off", isHidden);
+  }
+};
+
 const ensureSpaceLayers = (svg) => {
   if (!svg) {
     return;
@@ -2329,11 +2376,17 @@ const buildSpaceSnapshotSvg = (planSvgMarkup, points, color = "#60a5fa", spaceId
   snapshotSvg.setAttribute("data-clip-id", clipId);
 
   const planGroup = document.createElementNS(svgNamespace, "g");
+  planGroup.classList.add("space-snapshot-background");
   planGroup.setAttribute("clip-path", `url(#${clipId})`);
   Array.from(sourceSvg.childNodes).forEach((node) => {
     planGroup.appendChild(document.importNode(node, true));
   });
   snapshotSvg.appendChild(planGroup);
+
+  const outlinePolygon = document.createElementNS(svgNamespace, "polygon");
+  outlinePolygon.classList.add("space-snapshot-outline");
+  outlinePolygon.setAttribute("points", stringifyPoints(points));
+  snapshotSvg.appendChild(outlinePolygon);
 
   const desksLayer = document.createElementNS(svgNamespace, "g");
   desksLayer.setAttribute("id", "spaceDesksLayer");
@@ -3345,6 +3398,10 @@ const setSpaceEditMode = (editing) => {
   if (spaceSnapshot) {
     spaceSnapshot.classList.toggle("is-editing", editing);
     spaceSnapshot.classList.toggle("is-booking", !editing);
+  }
+  if (spaceSnapshotToggleBtn) {
+    spaceSnapshotToggleBtn.classList.toggle("is-hidden", !editing);
+    spaceSnapshotToggleBtn.setAttribute("aria-hidden", String(!editing));
   }
   if (addDeskBtn) {
     const canEdit = Boolean(currentSpace && currentSpace.kind === "coworking");
@@ -6239,6 +6296,7 @@ const renderSpaceSnapshot = (space, floorPlanMarkup) => {
     space?.color || "#60a5fa",
     space?.id || null
   );
+  applySpaceSnapshotBackgroundState(space?.snapshot_hidden);
   if (!snapshotSvg) {
     spaceSnapshotPlaceholder.classList.remove("is-hidden");
     resetSpaceSnapshotTransform();
@@ -6253,12 +6311,18 @@ const renderSpaceSnapshot = (space, floorPlanMarkup) => {
 const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   setPageMode("space");
   clearSpacePageStatus();
+  const initialBookingDate = getBookingDateFromLocation();
   if (spaceSnapshotCanvas) {
     spaceSnapshotCanvas.innerHTML = "";
   }
   if (spaceSnapshotPlaceholder) {
     spaceSnapshotPlaceholder.classList.add("is-hidden");
   }
+  if (spaceSnapshotToggleBtn) {
+    spaceSnapshotToggleBtn.classList.add("is-hidden");
+    spaceSnapshotToggleBtn.setAttribute("aria-hidden", "true");
+  }
+  applySpaceSnapshotBackgroundState(false);
   currentSpace = null;
   currentSpaceBounds = null;
   currentDesks = [];
@@ -6286,6 +6350,9 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       throw new Error("Пространство не найдено.");
     }
     currentSpace = space;
+    if (initialBookingDate) {
+      setBookingSelectedDate(initialBookingDate);
+    }
     const floorsResponse = await apiRequest(`/api/buildings/${buildingID}/floors`);
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
     const floor = floors.find((item) => item.level === floorNumber) || null;
@@ -6585,6 +6652,44 @@ if (editSpaceBtn) {
       return;
     }
     setSpaceEditMode(true);
+  });
+}
+
+if (spaceSnapshotToggleBtn) {
+  spaceSnapshotToggleBtn.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
+  spaceSnapshotToggleBtn.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!currentSpace || !currentSpace.id) {
+      return;
+    }
+    if (!isSpaceEditing) {
+      setSpacePageStatus("Сначала включите режим редактирования.", "error");
+      return;
+    }
+    const previousHidden = Boolean(currentSpace.snapshot_hidden);
+    const nextHidden = !previousHidden;
+    applySpaceSnapshotBackgroundState(nextHidden);
+    spaceSnapshotToggleBtn.disabled = true;
+    try {
+      const updated = await apiRequest(`/api/spaces/${currentSpace.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ snapshot_hidden: nextHidden }),
+      });
+      currentSpace = {
+        ...currentSpace,
+        snapshot_hidden: Boolean(updated?.snapshot_hidden ?? nextHidden),
+      };
+      applySpaceSnapshotBackgroundState(currentSpace.snapshot_hidden);
+    } catch (error) {
+      currentSpace = { ...currentSpace, snapshot_hidden: previousHidden };
+      applySpaceSnapshotBackgroundState(previousHidden);
+      setSpacePageStatus(error.message, "error");
+    } finally {
+      spaceSnapshotToggleBtn.disabled = false;
+    }
   });
 }
 
@@ -7468,6 +7573,7 @@ if (backToPhoneBtn) {
 if (breadcrumbProfiles.length > 0) {
   breadcrumbProfiles.forEach((profile) => {
     const trigger = profile.querySelector('[data-role="breadcrumb-trigger"]');
+    const bookingsButton = profile.querySelector('[data-role="breadcrumb-bookings"]');
     const logoutButton = profile.querySelector('[data-role="breadcrumb-logout"]');
 
     if (trigger) {
@@ -7488,6 +7594,14 @@ if (breadcrumbProfiles.length > 0) {
         showAuthGate();
         setAuthStep("phone");
         window.location.assign("/buildings");
+      });
+    }
+
+    if (bookingsButton) {
+      bookingsButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        closeBreadcrumbMenus();
+        openBookingsModal();
       });
     }
   });
