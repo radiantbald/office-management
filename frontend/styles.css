@@ -725,8 +725,6 @@ body.space-editing .space-booking-panel {
 
 .space-desk {
   pointer-events: none;
-  transform-box: fill-box;
-  transform-origin: center;
   transition: transform 0.3s ease, filter 0.3s ease, opacity 0.3s ease;
   animation: deskFadeIn 0.2s ease-out both;
 }
