@@ -503,6 +503,9 @@ button:disabled {
 .building-page {
   display: grid;
   gap: 0;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  height: 100%;
 }
 
 .floor-page {
@@ -755,8 +758,7 @@ body.space-editing .space-booking-panel {
 }
 
 .space-snapshot.is-editing .space-desk.is-dragging,
-.space-snapshot.is-editing .space-desk.is-dragging .space-desk-shape,
-.space-snapshot.is-editing .space-desk.is-dragging .space-desk-label {
+.space-snapshot.is-editing .space-desk.is-dragging .space-desk-shape {
   animation: none;
   transition: none;
   transform: none;

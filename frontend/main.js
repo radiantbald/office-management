@@ -5840,14 +5840,12 @@ const getBuildingImageUrl = (building) => {
 };
 
 const renderBuildings = () => {
-  if (!buildingsGrid || !emptyState) {
+  if (!buildingsGrid) {
     return;
   }
   buildingsGrid.innerHTML = "";
-  if (buildings.length === 0) {
-    emptyState.style.display = "block";
-  } else {
-    emptyState.style.display = "none";
+  if (emptyState) {
+    emptyState.style.display = buildings.length === 0 ? "block" : "none";
   }
   buildings.forEach((building) => {
     const tile = document.createElement("button");
@@ -5993,7 +5991,7 @@ const setPageMode = (mode) => {
     pageTitle.textContent = "Офисные здания";
   }
   if (pageSubtitle) {
-    pageSubtitle.textContent = "Добавляйте здания и выбирайте нужное из списка.";
+    pageSubtitle.textContent = "Выберите здание из списка.";
   }
   placeHeaderActions(null);
 };

@@ -103,7 +103,7 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 		        d.label, d.space_id
 		   FROM bookings b
 		   JOIN desks d ON d.id = b.desk_id
-		  WHERE d.space_id = ? AND b.date = ?
+		  WHERE d.space_id = $1 AND b.date = $2
 		  ORDER BY b.created_at DESC`,
 		spaceIDValue,
 		date,
@@ -197,7 +197,7 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err = tx.Exec(
-		`DELETE FROM bookings WHERE user_key = ? AND date = ? AND building_id = ?`,
+		`DELETE FROM bookings WHERE user_key = $1 AND date = $2 AND building_id = $3`,
 		userKey,
 		date,
 		buildingID,
@@ -207,7 +207,7 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var existing int
-	err = tx.QueryRow(`SELECT 1 FROM bookings WHERE desk_id = ? AND date = ? LIMIT 1`, payload.DeskID, date).
+	err = tx.QueryRow(`SELECT 1 FROM bookings WHERE desk_id = $1 AND date = $2 LIMIT 1`, payload.DeskID, date).
 		Scan(&existing)
 	if err == nil {
 		respondError(w, http.StatusBadRequest, "Стол уже занят")
@@ -219,7 +219,8 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO bookings (desk_id, building_id, user_key, user_name, date) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO bookings (desk_id, building_id, user_key, user_name, date)
+		 VALUES ($1, $2, $3, $4, $5)`,
 		payload.DeskID,
 		buildingID,
 		userKey,
@@ -263,7 +264,7 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := a.db.Exec(
-		`DELETE FROM bookings WHERE user_key = ? AND desk_id = ? AND date = ?`,
+		`DELETE FROM bookings WHERE user_key = $1 AND desk_id = $2 AND date = $3`,
 		userKey,
 		payload.DeskID,
 		date,
@@ -296,7 +297,7 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 		   JOIN desks d ON d.id = b.desk_id
 		   JOIN spaces s ON s.id = d.space_id
 		   JOIN floors f ON f.id = s.floor_id
-		  WHERE b.user_key = ? AND b.date >= date('now')
+		  WHERE b.user_key = $1 AND b.date >= CURRENT_DATE::text
 		  ORDER BY b.date DESC, b.created_at DESC`,
 		userKey,
 	)
@@ -342,7 +343,7 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := a.db.Exec(`DELETE FROM bookings WHERE user_key = ?`, userKey)
+	result, err := a.db.Exec(`DELETE FROM bookings WHERE user_key = $1`, userKey)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -431,7 +432,8 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	failed := make([]string, 0, len(validDates))
 	for _, date := range available {
 		if _, err := tx.Exec(
-			`INSERT INTO bookings (desk_id, building_id, user_key, user_name, date) VALUES (?, ?, ?, ?, ?)`,
+			`INSERT INTO bookings (desk_id, building_id, user_key, user_name, date)
+			 VALUES ($1, $2, $3, $4, $5)`,
 			payload.DeskID,
 			buildingID,
 			userKey,
@@ -464,7 +466,7 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 }
 
 func (a *app) ensureDeskExists(deskID int64) error {
-	row := a.db.QueryRow(`SELECT id FROM desks WHERE id = ?`, deskID)
+	row := a.db.QueryRow(`SELECT id FROM desks WHERE id = $1`, deskID)
 	var id int64
 	if err := row.Scan(&id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -481,7 +483,7 @@ func getDeskBuildingID(tx *sql.Tx, deskID int64) (int64, error) {
 		   FROM desks d
 		   JOIN spaces s ON s.id = d.space_id
 		   JOIN floors f ON f.id = s.floor_id
-		  WHERE d.id = ?`,
+		  WHERE d.id = $1`,
 		deskID,
 	)
 	var buildingID int64
@@ -564,12 +566,12 @@ func findBookedDates(tx *sql.Tx, deskID int64, userKey string, dates []string) (
 	placeholders := make([]string, 0, len(dates))
 	args := make([]any, 0, len(dates)+1)
 	args = append(args, deskID)
-	for _, date := range dates {
-		placeholders = append(placeholders, "?")
+	for i, date := range dates {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+2))
 		args = append(args, date)
 	}
 	query := fmt.Sprintf(
-		`SELECT date, user_key FROM bookings WHERE desk_id = ? AND date IN (%s)`,
+		`SELECT date, user_key FROM bookings WHERE desk_id = $1 AND date IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 	rows, err := tx.Query(query, args...)
@@ -603,12 +605,12 @@ func deleteUserBookingsForDates(tx *sql.Tx, userKey string, buildingID int64, da
 	args := make([]any, 0, len(dates)+2)
 	args = append(args, userKey)
 	args = append(args, buildingID)
-	for _, date := range dates {
-		placeholders = append(placeholders, "?")
+	for i, date := range dates {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+3))
 		args = append(args, date)
 	}
 	query := fmt.Sprintf(
-		`DELETE FROM bookings WHERE user_key = ? AND building_id = ? AND date IN (%s)`,
+		`DELETE FROM bookings WHERE user_key = $1 AND building_id = $2 AND date IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 	_, err := tx.Exec(query, args...)
@@ -616,30 +618,16 @@ func deleteUserBookingsForDates(tx *sql.Tx, userKey string, buildingID int64, da
 }
 
 func migrateBookingsTable(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(bookings)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	hasBuildingID := false
-	for rows.Next() {
-		var (
-			cid     int
-			name    string
-			colType string
-			notNull int
-			dflt    sql.NullString
-			pk      int
-		)
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			return err
-		}
-		if name == "building_id" {
-			hasBuildingID = true
-		}
-	}
-	if err := rows.Err(); err != nil {
+	var hasBuildingID bool
+	if err := db.QueryRow(
+		`SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = current_schema()
+			  AND table_name = 'bookings'
+			  AND column_name = 'building_id'
+		)`,
+	).Scan(&hasBuildingID); err != nil {
 		return err
 	}
 	if hasBuildingID {
@@ -654,13 +642,13 @@ func migrateBookingsTable(db *sql.DB) error {
 
 	if _, err := tx.Exec(
 		`CREATE TABLE IF NOT EXISTS bookings_new (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			desk_id INTEGER NOT NULL,
-			building_id INTEGER NOT NULL,
+			id BIGSERIAL PRIMARY KEY,
+			desk_id BIGINT NOT NULL,
+			building_id BIGINT NOT NULL,
 			user_key TEXT NOT NULL,
 			user_name TEXT NOT NULL DEFAULT '',
 			date TEXT NOT NULL,
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			created_at TEXT NOT NULL DEFAULT (now()::text),
 			FOREIGN KEY(desk_id) REFERENCES desks(id) ON DELETE CASCADE,
 			UNIQUE(desk_id, date),
 			UNIQUE(user_key, date, building_id)
@@ -684,6 +672,11 @@ func migrateBookingsTable(db *sql.DB) error {
 		return err
 	}
 	if _, err := tx.Exec(`ALTER TABLE bookings_new RENAME TO bookings`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`SELECT setval(pg_get_serial_sequence('bookings', 'id'), COALESCE((SELECT MAX(id) FROM bookings), 0))`,
+	); err != nil {
 		return err
 	}
 

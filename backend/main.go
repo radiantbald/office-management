@@ -17,10 +17,9 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-const dbFile = "office.db"
 const uploadDirName = "uploads"
 const buildingUploadDirName = "buildings"
 const maxBuildingImageSize = 5 << 20
@@ -52,15 +51,15 @@ type floor struct {
 }
 
 type space struct {
-	ID        int64   `json:"id"`
-	FloorID   int64   `json:"floor_id"`
-	Name      string  `json:"name"`
-	Kind      string  `json:"kind"`
-	Capacity  int     `json:"capacity"`
-	Color     string  `json:"color,omitempty"`
-	SnapshotHidden bool `json:"snapshot_hidden"`
-	Points    []point `json:"points"`
-	CreatedAt string  `json:"created_at"`
+	ID             int64   `json:"id"`
+	FloorID        int64   `json:"floor_id"`
+	Name           string  `json:"name"`
+	Kind           string  `json:"kind"`
+	Capacity       int     `json:"capacity"`
+	Color          string  `json:"color,omitempty"`
+	SnapshotHidden bool    `json:"snapshot_hidden"`
+	Points         []point `json:"points"`
+	CreatedAt      string  `json:"created_at"`
 }
 
 type point struct {
@@ -98,19 +97,48 @@ type meetingRoom struct {
 	CreatedAt string `json:"created_at"`
 }
 
+func postgresDSN() string {
+	if dsn := strings.TrimSpace(os.Getenv("DATABASE_URL")); dsn != "" {
+		return dsn
+	}
+	host := strings.TrimSpace(os.Getenv("PGHOST"))
+	if host == "" {
+		host = "localhost"
+	}
+	port := strings.TrimSpace(os.Getenv("PGPORT"))
+	if port == "" {
+		port = "5432"
+	}
+	user := strings.TrimSpace(os.Getenv("PGUSER"))
+	if user == "" {
+		user = "postgres"
+	}
+	password := os.Getenv("PGPASSWORD")
+	dbName := strings.TrimSpace(os.Getenv("PGDATABASE"))
+	if dbName == "" {
+		dbName = "office"
+	}
+	sslMode := strings.TrimSpace(os.Getenv("PGSSLMODE"))
+	if sslMode == "" {
+		sslMode = "disable"
+	}
+	return fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		host,
+		port,
+		user,
+		password,
+		dbName,
+		sslMode,
+	)
+}
+
 func main() {
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_fk=1", dbFile))
+	db, err := sql.Open("pgx", postgresDSN())
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
-
-	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
-		log.Fatalf("set busy_timeout: %v", err)
-	}
-	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
-		log.Fatalf("set journal_mode: %v", err)
-	}
 
 	if err := migrate(db); err != nil {
 		log.Fatalf("migrate: %v", err)
@@ -180,62 +208,62 @@ func main() {
 func migrate(db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS office_buildings (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			id BIGSERIAL PRIMARY KEY,
 			name TEXT NOT NULL,
 			address TEXT NOT NULL,
 			image_url TEXT,
 			floors TEXT NOT NULL DEFAULT '[]',
-			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+			created_at TEXT NOT NULL DEFAULT (now()::text)
 		);`,
 		`CREATE TABLE IF NOT EXISTS floors (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			building_id INTEGER NOT NULL,
+			id BIGSERIAL PRIMARY KEY,
+			building_id BIGINT NOT NULL,
 			name TEXT NOT NULL,
 			level INTEGER NOT NULL,
 			plan_svg TEXT NOT NULL,
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			created_at TEXT NOT NULL DEFAULT (now()::text),
 			FOREIGN KEY(building_id) REFERENCES office_buildings(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS spaces (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			floor_id INTEGER NOT NULL,
+			id BIGSERIAL PRIMARY KEY,
+			floor_id BIGINT NOT NULL,
 			name TEXT NOT NULL,
 			kind TEXT NOT NULL,
 			capacity INTEGER NOT NULL DEFAULT 0,
 			points_json TEXT NOT NULL DEFAULT '[]',
 			color TEXT NOT NULL DEFAULT '',
 			snapshot_hidden INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			created_at TEXT NOT NULL DEFAULT (now()::text),
 			FOREIGN KEY(floor_id) REFERENCES floors(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS desks (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			space_id INTEGER NOT NULL,
+			id BIGSERIAL PRIMARY KEY,
+			space_id BIGINT NOT NULL,
 			label TEXT NOT NULL,
-			x REAL NOT NULL DEFAULT 0,
-			y REAL NOT NULL DEFAULT 0,
-			width REAL NOT NULL DEFAULT 200,
-			height REAL NOT NULL DEFAULT 100,
-			rotation REAL NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			x DOUBLE PRECISION NOT NULL DEFAULT 0,
+			y DOUBLE PRECISION NOT NULL DEFAULT 0,
+			width DOUBLE PRECISION NOT NULL DEFAULT 200,
+			height DOUBLE PRECISION NOT NULL DEFAULT 100,
+			rotation DOUBLE PRECISION NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (now()::text),
 			FOREIGN KEY(space_id) REFERENCES spaces(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS meeting_rooms (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			space_id INTEGER NOT NULL,
+			id BIGSERIAL PRIMARY KEY,
+			space_id BIGINT NOT NULL,
 			name TEXT NOT NULL,
 			capacity INTEGER NOT NULL,
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			created_at TEXT NOT NULL DEFAULT (now()::text),
 			FOREIGN KEY(space_id) REFERENCES spaces(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS bookings (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			desk_id INTEGER NOT NULL,
-			building_id INTEGER NOT NULL,
+			id BIGSERIAL PRIMARY KEY,
+			desk_id BIGINT NOT NULL,
+			building_id BIGINT NOT NULL,
 			user_key TEXT NOT NULL,
 			user_name TEXT NOT NULL DEFAULT '',
 			date TEXT NOT NULL,
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			created_at TEXT NOT NULL DEFAULT (now()::text),
 			FOREIGN KEY(desk_id) REFERENCES desks(id) ON DELETE CASCADE,
 			UNIQUE(desk_id, date),
 			UNIQUE(user_key, date, building_id)
@@ -287,37 +315,24 @@ func migrate(db *sql.DB) error {
 }
 
 func ensureColumn(db *sql.DB, table, column, definition string) error {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	exists := false
-	for rows.Next() {
-		var (
-			cid     int
-			name    string
-			colType string
-			notNull int
-			dflt    sql.NullString
-			pk      int
-		)
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			return err
-		}
-		if name == column {
-			exists = true
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
+	var exists bool
+	if err := db.QueryRow(
+		`SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = current_schema()
+			  AND table_name = $1
+			  AND column_name = $2
+		)`,
+		table,
+		column,
+	).Scan(&exists); err != nil {
 		return err
 	}
 	if exists {
 		return nil
 	}
-	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
 	return err
 }
 
@@ -791,7 +806,7 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 				}
 				effectiveKind := payload.Kind
 				if effectiveKind == "" && payload.Capacity != nil {
-					row := a.db.QueryRow(`SELECT kind FROM spaces WHERE id = ?`, id)
+					row := a.db.QueryRow(`SELECT kind FROM spaces WHERE id = $1`, id)
 					if err := row.Scan(&effectiveKind); err != nil {
 						if errors.Is(err, sql.ErrNoRows) {
 							respondError(w, http.StatusNotFound, "space not found")
@@ -1143,18 +1158,16 @@ func (a *app) createBuildingWithFloors(name, address, imageURL string, undergrou
 		}
 	}()
 
-	result, err := tx.Exec(
-		`INSERT INTO office_buildings (name, address, image_url, floors) VALUES (?, ?, ?, ?)`,
+	var buildingID int64
+	if err = tx.QueryRow(
+		`INSERT INTO office_buildings (name, address, image_url, floors)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id`,
 		name,
 		address,
 		imageURL,
 		"[]",
-	)
-	if err != nil {
-		return building{}, err
-	}
-	buildingID, err := result.LastInsertId()
-	if err != nil {
+	).Scan(&buildingID); err != nil {
 		return building{}, err
 	}
 
@@ -1182,7 +1195,7 @@ func (a *app) createBuildingWithFloors(name, address, imageURL string, undergrou
 	if err != nil {
 		return building{}, err
 	}
-	if _, err = tx.Exec(`UPDATE office_buildings SET floors = ? WHERE id = ?`, floorsJSON, buildingID); err != nil {
+	if _, err = tx.Exec(`UPDATE office_buildings SET floors = $1 WHERE id = $2`, floorsJSON, buildingID); err != nil {
 		return building{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -1202,7 +1215,7 @@ func (a *app) getBuilding(id int64) (building, error) {
 	row := a.db.QueryRow(
 		`SELECT id, name, address, COALESCE(image_url, ''), COALESCE(floors, '[]'), created_at
 		FROM office_buildings
-		WHERE id = ?`,
+		WHERE id = $1`,
 		id,
 	)
 	var b building
@@ -1219,7 +1232,7 @@ func (a *app) getBuilding(id int64) (building, error) {
 
 func (a *app) updateBuilding(id int64, name, address string) (building, error) {
 	result, err := a.db.Exec(
-		`UPDATE office_buildings SET name = ?, address = ? WHERE id = ?`,
+		`UPDATE office_buildings SET name = $1, address = $2 WHERE id = $3`,
 		name,
 		address,
 		id,
@@ -1238,7 +1251,7 @@ func (a *app) updateBuilding(id int64, name, address string) (building, error) {
 }
 
 func (a *app) deleteBuilding(id int64) error {
-	result, err := a.db.Exec(`DELETE FROM office_buildings WHERE id = ?`, id)
+	result, err := a.db.Exec(`DELETE FROM office_buildings WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -1268,7 +1281,7 @@ func (a *app) clearBuildingImage(id int64) (building, error) {
 
 func (a *app) updateBuildingImage(id int64, imageURL string) (building, error) {
 	result, err := a.db.Exec(
-		`UPDATE office_buildings SET image_url = ? WHERE id = ?`,
+		`UPDATE office_buildings SET image_url = $1 WHERE id = $2`,
 		imageURL,
 		id,
 	)
@@ -1290,7 +1303,7 @@ func (a *app) listFloorsByBuilding(buildingID int64) ([]floor, error) {
 		`SELECT f.id, f.building_id, f.name, f.level, f.created_at, COUNT(s.id) AS spaces_count
 		FROM floors f
 		LEFT JOIN spaces s ON s.floor_id = f.id
-		WHERE f.building_id = ?
+		WHERE f.building_id = $1
 		GROUP BY f.id
 		ORDER BY f.id DESC`,
 		buildingID,
@@ -1313,7 +1326,7 @@ func (a *app) listFloorsByBuilding(buildingID int64) ([]floor, error) {
 
 func (a *app) getFloor(id int64) (floor, error) {
 	row := a.db.QueryRow(
-		`SELECT id, building_id, name, level, plan_svg, created_at FROM floors WHERE id = ?`,
+		`SELECT id, building_id, name, level, plan_svg, created_at FROM floors WHERE id = $1`,
 		id,
 	)
 	var f floor
@@ -1336,7 +1349,7 @@ func (a *app) updateFloorPlan(id int64, planSVG string) (floor, error) {
 			_ = tx.Rollback()
 		}
 	}()
-	result, err := tx.Exec(`UPDATE floors SET plan_svg = ? WHERE id = ?`, planSVG, id)
+	result, err := tx.Exec(`UPDATE floors SET plan_svg = $1 WHERE id = $2`, planSVG, id)
 	if err != nil {
 		return floor{}, err
 	}
@@ -1348,7 +1361,7 @@ func (a *app) updateFloorPlan(id int64, planSVG string) (floor, error) {
 		return floor{}, errNotFound
 	}
 	if planSVG == "" {
-		if _, err = tx.Exec(`DELETE FROM spaces WHERE floor_id = ?`, id); err != nil {
+		if _, err = tx.Exec(`DELETE FROM spaces WHERE floor_id = $1`, id); err != nil {
 			return floor{}, err
 		}
 	}
@@ -1359,18 +1372,16 @@ func (a *app) updateFloorPlan(id int64, planSVG string) (floor, error) {
 }
 
 func (a *app) createFloor(buildingID int64, name string, level int, planSVG string) (floor, error) {
-	result, err := a.db.Exec(
-		`INSERT INTO floors (building_id, name, level, plan_svg) VALUES (?, ?, ?, ?)`,
+	var id int64
+	if err := a.db.QueryRow(
+		`INSERT INTO floors (building_id, name, level, plan_svg)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id`,
 		buildingID,
 		name,
 		level,
 		planSVG,
-	)
-	if err != nil {
-		return floor{}, err
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
+	).Scan(&id); err != nil {
 		return floor{}, err
 	}
 	return floor{
@@ -1384,23 +1395,25 @@ func (a *app) createFloor(buildingID int64, name string, level int, planSVG stri
 }
 
 func (a *app) createFloorInTx(tx *sql.Tx, buildingID int64, name string, level int, planSVG string) (int64, error) {
-	result, err := tx.Exec(
-		`INSERT INTO floors (building_id, name, level, plan_svg) VALUES (?, ?, ?, ?)`,
+	var id int64
+	if err := tx.QueryRow(
+		`INSERT INTO floors (building_id, name, level, plan_svg)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id`,
 		buildingID,
 		name,
 		level,
 		planSVG,
-	)
-	if err != nil {
+	).Scan(&id); err != nil {
 		return 0, err
 	}
-	return result.LastInsertId()
+	return id, nil
 }
 
 func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 	rows, err := a.db.Query(
 		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
-		FROM spaces WHERE floor_id = ? ORDER BY id DESC`,
+		FROM spaces WHERE floor_id = $1 ORDER BY id DESC`,
 		floorID,
 	)
 	if err != nil {
@@ -1436,7 +1449,7 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 func (a *app) getSpace(id int64) (space, error) {
 	row := a.db.QueryRow(
 		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
-		FROM spaces WHERE id = ?`,
+		FROM spaces WHERE id = $1`,
 		id,
 	)
 	var s space
@@ -1468,32 +1481,30 @@ func (a *app) createSpace(floorID int64, name, kind string, capacity int, points
 	if err != nil {
 		return space{}, err
 	}
-	result, err := a.db.Exec(
-		`INSERT INTO spaces (floor_id, name, kind, capacity, points_json, color) VALUES (?, ?, ?, ?, ?, ?)`,
+	var id int64
+	if err := a.db.QueryRow(
+		`INSERT INTO spaces (floor_id, name, kind, capacity, points_json, color)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id`,
 		floorID,
 		name,
 		kind,
 		capacity,
 		pointsJSON,
 		color,
-	)
-	if err != nil {
-		return space{}, err
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
+	).Scan(&id); err != nil {
 		return space{}, err
 	}
 	return space{
-		ID:        id,
-		FloorID:   floorID,
-		Name:      name,
-		Kind:      kind,
-		Capacity:  capacity,
-		Color:     color,
+		ID:             id,
+		FloorID:        floorID,
+		Name:           name,
+		Kind:           kind,
+		Capacity:       capacity,
+		Color:          color,
 		SnapshotHidden: false,
-		Points:    points,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Points:         points,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -1503,7 +1514,7 @@ func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space
 		return space{}, err
 	}
 	result, err := a.db.Exec(
-		`UPDATE spaces SET points_json = ?, color = ? WHERE id = ?`,
+		`UPDATE spaces SET points_json = $1, color = $2 WHERE id = $3`,
 		pointsJSON,
 		color,
 		id,
@@ -1520,7 +1531,7 @@ func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space
 	}
 	row := a.db.QueryRow(
 		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
-		FROM spaces WHERE id = ?`,
+		FROM spaces WHERE id = $1`,
 		id,
 	)
 	var s space
@@ -1551,7 +1562,7 @@ func (a *app) updateSpaceDetails(id int64, name, kind string, capacity int, capa
 	var storedKind string
 	var storedCapacity int
 	if kind == "" || !capacityProvided {
-		row := a.db.QueryRow(`SELECT kind, COALESCE(capacity, 0) FROM spaces WHERE id = ?`, id)
+		row := a.db.QueryRow(`SELECT kind, COALESCE(capacity, 0) FROM spaces WHERE id = $1`, id)
 		if err := row.Scan(&storedKind, &storedCapacity); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return space{}, errNotFound
@@ -1569,7 +1580,7 @@ func (a *app) updateSpaceDetails(id int64, name, kind string, capacity int, capa
 		capacity = 0
 	}
 	result, err := a.db.Exec(
-		`UPDATE spaces SET name = ?, kind = ?, capacity = ?, color = ? WHERE id = ?`,
+		`UPDATE spaces SET name = $1, kind = $2, capacity = $3, color = $4 WHERE id = $5`,
 		name,
 		kind,
 		capacity,
@@ -1588,7 +1599,7 @@ func (a *app) updateSpaceDetails(id int64, name, kind string, capacity int, capa
 	}
 	row := a.db.QueryRow(
 		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
-		FROM spaces WHERE id = ?`,
+		FROM spaces WHERE id = $1`,
 		id,
 	)
 	var s space
@@ -1620,7 +1631,7 @@ func (a *app) updateSpaceSnapshotHidden(id int64, hidden bool) (space, error) {
 	if hidden {
 		value = 1
 	}
-	result, err := a.db.Exec(`UPDATE spaces SET snapshot_hidden = ? WHERE id = ?`, value, id)
+	result, err := a.db.Exec(`UPDATE spaces SET snapshot_hidden = $1 WHERE id = $2`, value, id)
 	if err != nil {
 		return space{}, err
 	}
@@ -1635,7 +1646,7 @@ func (a *app) updateSpaceSnapshotHidden(id int64, hidden bool) (space, error) {
 }
 
 func (a *app) deleteSpace(id int64) error {
-	result, err := a.db.Exec(`DELETE FROM spaces WHERE id = ?`, id)
+	result, err := a.db.Exec(`DELETE FROM spaces WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -1651,7 +1662,7 @@ func (a *app) deleteSpace(id int64) error {
 
 func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 	rows, err := a.db.Query(
-		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM desks WHERE space_id = ? ORDER BY id DESC`,
+		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM desks WHERE space_id = $1 ORDER BY id DESC`,
 		spaceID,
 	)
 	if err != nil {
@@ -1671,8 +1682,11 @@ func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 }
 
 func (a *app) createDesk(spaceID int64, label string, x, y, width, height, rotation float64) (desk, error) {
-	result, err := a.db.Exec(
-		`INSERT INTO desks (space_id, label, x, y, width, height, rotation) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	var id int64
+	if err := a.db.QueryRow(
+		`INSERT INTO desks (space_id, label, x, y, width, height, rotation)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING id`,
 		spaceID,
 		label,
 		x,
@@ -1680,12 +1694,7 @@ func (a *app) createDesk(spaceID int64, label string, x, y, width, height, rotat
 		width,
 		height,
 		rotation,
-	)
-	if err != nil {
-		return desk{}, err
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
+	).Scan(&id); err != nil {
 		return desk{}, err
 	}
 	return desk{
@@ -1715,7 +1724,9 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 		}
 	}()
 	stmt, err := tx.Prepare(
-		`INSERT INTO desks (space_id, label, x, y, width, height, rotation) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO desks (space_id, label, x, y, width, height, rotation)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING id`,
 	)
 	if err != nil {
 		return nil, err
@@ -1725,7 +1736,8 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	created := make([]desk, 0, len(items))
 	for _, item := range items {
-		result, execErr := stmt.Exec(
+		var id int64
+		execErr := stmt.QueryRow(
 			item.SpaceID,
 			item.Label,
 			item.X,
@@ -1733,15 +1745,10 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 			item.Width,
 			item.Height,
 			item.Rotation,
-		)
+		).Scan(&id)
 		if execErr != nil {
 			err = execErr
 			return nil, execErr
-		}
-		id, idErr := result.LastInsertId()
-		if idErr != nil {
-			err = idErr
-			return nil, idErr
 		}
 		created = append(created, desk{
 			ID:        id,
@@ -1765,7 +1772,7 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 func (a *app) getDesk(id int64) (desk, error) {
 	var d desk
 	row := a.db.QueryRow(
-		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM desks WHERE id = ?`,
+		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM desks WHERE id = $1`,
 		id,
 	)
 	if err := row.Scan(&d.ID, &d.SpaceID, &d.Label, &d.X, &d.Y, &d.Width, &d.Height, &d.Rotation, &d.CreatedAt); err != nil {
@@ -1807,7 +1814,7 @@ func (a *app) updateDesk(id int64, label *string, x *float64, y *float64, width 
 		return desk{}, errors.New("width and height must be greater than 0")
 	}
 	result, err := a.db.Exec(
-		`UPDATE desks SET label = ?, x = ?, y = ?, width = ?, height = ?, rotation = ? WHERE id = ?`,
+		`UPDATE desks SET label = $1, x = $2, y = $3, width = $4, height = $5, rotation = $6 WHERE id = $7`,
 		current.Label,
 		current.X,
 		current.Y,
@@ -1830,7 +1837,7 @@ func (a *app) updateDesk(id int64, label *string, x *float64, y *float64, width 
 }
 
 func (a *app) deleteDesk(id int64) error {
-	result, err := a.db.Exec(`DELETE FROM desks WHERE id = ?`, id)
+	result, err := a.db.Exec(`DELETE FROM desks WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -1857,7 +1864,7 @@ func (a *app) deleteDesksBulk(ids []int64) error {
 			_ = tx.Rollback()
 		}
 	}()
-	stmt, err := tx.Prepare(`DELETE FROM desks WHERE id = ?`)
+	stmt, err := tx.Prepare(`DELETE FROM desks WHERE id = $1`)
 	if err != nil {
 		return err
 	}
@@ -1887,7 +1894,7 @@ func (a *app) deleteDesksBulk(ids []int64) error {
 
 func (a *app) listMeetingRoomsBySpace(spaceID int64) ([]meetingRoom, error) {
 	rows, err := a.db.Query(
-		`SELECT id, space_id, name, capacity, created_at FROM meeting_rooms WHERE space_id = ? ORDER BY id DESC`,
+		`SELECT id, space_id, name, capacity, created_at FROM meeting_rooms WHERE space_id = $1 ORDER BY id DESC`,
 		spaceID,
 	)
 	if err != nil {
@@ -1907,17 +1914,15 @@ func (a *app) listMeetingRoomsBySpace(spaceID int64) ([]meetingRoom, error) {
 }
 
 func (a *app) createMeetingRoom(spaceID int64, name string, capacity int) (meetingRoom, error) {
-	result, err := a.db.Exec(
-		`INSERT INTO meeting_rooms (space_id, name, capacity) VALUES (?, ?, ?)`,
+	var id int64
+	if err := a.db.QueryRow(
+		`INSERT INTO meeting_rooms (space_id, name, capacity)
+		 VALUES ($1, $2, $3)
+		 RETURNING id`,
 		spaceID,
 		name,
 		capacity,
-	)
-	if err != nil {
-		return meetingRoom{}, err
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
+	).Scan(&id); err != nil {
 		return meetingRoom{}, err
 	}
 	return meetingRoom{
