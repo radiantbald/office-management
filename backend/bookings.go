@@ -18,6 +18,7 @@ type booking struct {
 	FloorLevel int    `json:"floor_level,omitempty"`
 	UserKey    string `json:"user_key"`
 	UserName   string `json:"user_name"`
+	EmployeeID string `json:"employeeID,omitempty"`
 	Date       string `json:"date"`
 	CreatedAt  string `json:"created_at"`
 	DeskLabel  string `json:"desk_label,omitempty"`
@@ -99,10 +100,13 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 	}
 
 	rows, err := a.db.Query(
-		`SELECT b.id, b.desk_id, b.user_key, b.user_name, b.date, b.created_at,
-		        d.label, d.space_id
+		`SELECT b.id, b.desk_id, b.user_key,
+		        COALESCE(NULLIF(u.user_name, ''), b.user_name),
+		        COALESCE(u.employee_id, ''),
+		        b.date, b.created_at, d.label, d.space_id
 		   FROM bookings b
 		   JOIN desks d ON d.id = b.desk_id
+		   LEFT JOIN users u ON u.user_key = b.user_key
 		  WHERE d.space_id = $1 AND b.date = $2
 		  ORDER BY b.created_at DESC`,
 		spaceIDValue,
@@ -122,6 +126,7 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 			&item.DeskID,
 			&item.UserKey,
 			&item.UserName,
+			&item.EmployeeID,
 			&item.Date,
 			&item.CreatedAt,
 			&item.DeskLabel,
@@ -291,12 +296,15 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := a.db.Query(
-		`SELECT b.id, b.date, b.created_at, b.desk_id, b.user_key, b.user_name,
+		`SELECT b.id, b.date, b.created_at, b.desk_id, b.user_key,
+		        COALESCE(NULLIF(u.user_name, ''), b.user_name),
+		        COALESCE(u.employee_id, ''),
 		        d.label, d.space_id, s.name, f.building_id, f.level
 		   FROM bookings b
 		   JOIN desks d ON d.id = b.desk_id
 		   JOIN spaces s ON s.id = d.space_id
 		   JOIN floors f ON f.id = s.floor_id
+		   LEFT JOIN users u ON u.user_key = b.user_key
 		  WHERE b.user_key = $1 AND b.date >= CURRENT_DATE::text
 		  ORDER BY b.date DESC, b.created_at DESC`,
 		userKey,
@@ -317,6 +325,7 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 			&item.DeskID,
 			&item.UserKey,
 			&item.UserName,
+			&item.EmployeeID,
 			&item.DeskLabel,
 			&item.SpaceID,
 			&item.SpaceName,

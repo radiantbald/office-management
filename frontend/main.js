@@ -497,6 +497,8 @@ const getUserProfileId = (user) => {
       user?.employee_id ||
       user?.employeeId ||
       user?.employeeID ||
+      user?.wbteam_user_id ||
+      user?.wbteamUserId ||
       user?.id ||
       ""
   ).trim();
@@ -1076,7 +1078,9 @@ const clearBookingStatus = () => {
 
 const getBookingUserKey = (user) =>
   String(
-    user?.id ||
+    user?.wbteam_user_id ||
+      user?.wbteamUserId ||
+      user?.id ||
       user?.employee_id ||
       user?.employeeId ||
       user?.employeeID ||
@@ -1162,16 +1166,57 @@ const updateSpaceMapDateTitle = (raw) => {
   spaceMapDateTitle.textContent = formatSelectedDateTitle(raw);
 };
 
+const formatUserNameInitials = (value) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) {
+    return parts[0] || "";
+  }
+  const [base, ...rest] = parts;
+  const initials = rest
+    .map((part) => (part ? `${part[0].toUpperCase()}.` : ""))
+    .join("");
+  return `${base} ${initials}`.trim();
+};
+
+const applyDeskBookingPayload = (desk) => {
+  if (!desk) {
+    return false;
+  }
+  const booking = desk?.booking;
+  if (!booking || typeof booking.is_booked !== "boolean") {
+    desk.bookingStatus = "free";
+    desk.bookingUserName = "";
+    desk.bookingUserKey = "";
+    return true;
+  }
+  if (!booking.is_booked) {
+    desk.bookingStatus = "free";
+    desk.bookingUserName = "";
+    desk.bookingUserKey = "";
+    return true;
+  }
+  const user = booking.user || {};
+  const userKey = String(
+    user.wbteam_user_id || user.wbteamUserId || user.user_key || user.userKey || ""
+  ).trim();
+  const userName = String(
+    user.user_name || user.userName || user.full_name || user.fullName || userKey || ""
+  ).trim();
+  const { key: currentUserKey } = getBookingUserInfo();
+  desk.bookingUserKey = userKey;
+  desk.bookingUserName = formatUserNameInitials(userName);
+  desk.bookingStatus = currentUserKey && userKey && userKey === currentUserKey ? "my" : "booked";
+  return true;
+};
+
 const mergeDeskBookingState = (desk, previous = null) => {
   if (!desk) {
     return desk;
   }
-  const booking = bookingState.bookingsByDeskId.get(String(desk.id));
-  if (booking) {
-    const { key: userKey } = getBookingUserInfo();
-    desk.bookingUserName = booking.user_name || booking.user_key || "";
-    desk.bookingUserKey = booking.user_key || "";
-    desk.bookingStatus = userKey && booking.user_key === userKey ? "my" : "booked";
+  if (applyDeskBookingPayload(desk)) {
     return desk;
   }
   if (previous) {
@@ -1359,7 +1404,7 @@ const setBookingSelectedDate = (date) => {
   }
   renderDatePicker();
   if (currentSpace?.id) {
-    void loadSpaceBookings(currentSpace.id, normalized);
+    void loadSpaceDesks(currentSpace.id);
   }
 };
 
@@ -1379,6 +1424,42 @@ const getDeskBookingTitle = (desk) => {
     return "Ваше место";
   }
   return "Свободно. Нажмите для бронирования";
+};
+
+const getDeskBookingLabelLine = (desk) => {
+  if (desk?.bookingStatus === "booked" || desk?.bookingStatus === "my") {
+    const name = typeof desk?.bookingUserName === "string" ? desk.bookingUserName.trim() : "";
+    return name || "сотрудник";
+  }
+  return "";
+};
+
+const getDeskLabelLines = (desk) => {
+  const label = typeof desk?.label === "string" ? desk.label.trim() : "";
+  const bookingLine = getDeskBookingLabelLine(desk);
+  if (bookingLine) {
+    return label ? [label, bookingLine] : [bookingLine];
+  }
+  return [label || ""];
+};
+
+const setDeskLabelContent = (label, desk) => {
+  if (!label) {
+    return;
+  }
+  const lines = getDeskLabelLines(desk);
+  label.textContent = "";
+  if (lines.length <= 1) {
+    label.textContent = lines[0] || "";
+    return;
+  }
+  lines.forEach((line, index) => {
+    const tspan = document.createElementNS(svgNamespace, "tspan");
+    tspan.setAttribute("x", String(desk.x));
+    tspan.setAttribute("dy", index === 0 ? "-0.35em" : "1.2em");
+    tspan.textContent = line;
+    label.appendChild(tspan);
+  });
 };
 
 const updateDeskBookingIndicators = (desks = []) => {
@@ -1409,8 +1490,40 @@ const updateDeskBookingIndicators = (desks = []) => {
       group.insertBefore(title, group.firstChild);
     }
     title.textContent = getDeskBookingTitle(desk);
+    const label = group.querySelector(".space-desk-label");
+    if (label) {
+      setDeskLabelContent(label, desk);
+    }
   });
   return !missingDeskNode;
+};
+
+const syncBookingsFromDesks = (desks = []) => {
+  const byDesk = new Map();
+  desks.forEach((desk) => {
+    if (!desk?.id) {
+      return;
+    }
+    const booking = desk?.booking;
+    if (!booking?.is_booked) {
+      return;
+    }
+    const user = booking.user || {};
+    const userKey = String(
+      user.wbteam_user_id || user.wbteamUserId || user.user_key || user.userKey || ""
+    ).trim();
+    if (!userKey) {
+      return;
+    }
+    const userName = String(
+      user.user_name || user.userName || user.full_name || user.fullName || userKey || ""
+    ).trim();
+    byDesk.set(String(desk.id), {
+      user_key: userKey,
+      user_name: formatUserNameInitials(userName),
+    });
+  });
+  bookingState.bookingsByDeskId = byDesk;
 };
 
 const applyBookingsToDesks = (bookings = []) => {
@@ -1645,7 +1758,7 @@ const handleCancelBooking = async (booking) => {
     });
     await loadMyBookings();
     if (currentSpace?.id && bookingState.selectedDate) {
-      void loadSpaceBookings(currentSpace.id, bookingState.selectedDate);
+      void loadSpaceDesks(currentSpace.id);
     }
   } catch (error) {
     setBookingStatus(error.message, "error");
@@ -1667,7 +1780,7 @@ const handleCancelAllBookings = async () => {
     bookingState.myBookings = [];
     renderBookingsList();
     if (currentSpace?.id && bookingState.selectedDate) {
-      void loadSpaceBookings(currentSpace.id, bookingState.selectedDate);
+      void loadSpaceDesks(currentSpace.id);
     }
   } catch (error) {
     setBookingStatus(error.message, "error");
@@ -1700,7 +1813,7 @@ const handleDeskBookingClick = async (desk) => {
       });
       setBookingStatus("Бронирование отменено.", "success");
       if (currentSpace?.id) {
-        await loadSpaceBookings(currentSpace.id, bookingState.selectedDate);
+        await loadSpaceDesks(currentSpace.id);
       }
       if (bookingState.isListOpen) {
         await loadMyBookings();
@@ -1720,7 +1833,7 @@ const handleDeskBookingClick = async (desk) => {
     });
     setBookingStatus("Место успешно забронировано.", "success");
     if (currentSpace?.id) {
-      await loadSpaceBookings(currentSpace.id, bookingState.selectedDate);
+      await loadSpaceDesks(currentSpace.id);
     }
     if (bookingState.isListOpen) {
       await loadMyBookings();
@@ -1889,7 +2002,7 @@ const handleWeekBooking = async (desk, selectedDays) => {
       );
     }
     if (currentSpace?.id && bookingState.selectedDate) {
-      await loadSpaceBookings(currentSpace.id, bookingState.selectedDate);
+      await loadSpaceDesks(currentSpace.id);
     }
   } catch (error) {
     setBookingStatus(error.message, "error");
@@ -3921,6 +4034,12 @@ const updateDeskElementPosition = (group, desk, metrics) => {
     label.setAttribute("text-anchor", "middle");
     label.setAttribute("dominant-baseline", "middle");
     label.setAttribute("transform", `rotate(${-rotation} ${desk.x} ${desk.y})`);
+    const tspans = label.querySelectorAll("tspan");
+    if (tspans.length > 0) {
+      tspans.forEach((tspan) => {
+        tspan.setAttribute("x", String(desk.x));
+      });
+    }
   }
   const rotator = group.querySelector(".space-desk-rotator") || group;
   const handlesGroup = group.querySelector(".desk-handles");
@@ -4299,7 +4418,7 @@ const renderSpaceDesks = (desks = []) => {
 
     const label = document.createElementNS(svgNamespace, "text");
     label.classList.add("space-desk-label");
-    label.textContent = desk.label || "";
+    setDeskLabelContent(label, desk);
     label.setAttribute("x", String(desk.x));
     label.setAttribute("y", String(desk.y));
     label.setAttribute("text-anchor", "middle");
@@ -4534,9 +4653,16 @@ const loadSpaceDesks = async (spaceId) => {
     renderSpaceDesks([]);
     return;
   }
-  const response = await apiRequest(`/api/spaces/${spaceId}/desks`);
+  const dateParam = bookingState.selectedDate
+    ? `?date=${encodeURIComponent(bookingState.selectedDate)}`
+    : "";
+  const response = await apiRequest(`/api/spaces/${spaceId}/desks${dateParam}`);
   const rawDesks = Array.isArray(response?.items) ? response.items : [];
   const normalized = normalizeDesksForCurrentSpace(rawDesks);
+  normalized.desks.forEach((desk) => {
+    applyDeskBookingPayload(desk);
+  });
+  syncBookingsFromDesks(normalized.desks);
   currentDesks = normalized.desks;
   pendingDeskUpdates = new Map();
   pendingDeskCreates = new Map();
@@ -4546,9 +4672,6 @@ const loadSpaceDesks = async (spaceId) => {
   renderSpaceDeskList(currentDesks);
   if (normalized.updates.length > 0) {
     await persistDeskNormalizationUpdates(normalized.updates);
-  }
-  if (bookingState.selectedDate) {
-    await loadSpaceBookings(spaceId, bookingState.selectedDate);
   }
 };
 

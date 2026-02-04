@@ -79,6 +79,25 @@ type desk struct {
 	CreatedAt string  `json:"created_at"`
 }
 
+type deskBookingUser struct {
+	WbTeamUserID string `json:"wbteam_user_id"`
+	UserName     string `json:"user_name"`
+	EmployeeID   string `json:"employee_id,omitempty"`
+	WbUserID     string `json:"wb_user_id,omitempty"`
+	AvatarURL    string `json:"avatar_url,omitempty"`
+	WbBand       string `json:"wb_band,omitempty"`
+}
+
+type deskBookingInfo struct {
+	IsBooked bool             `json:"is_booked"`
+	User     *deskBookingUser `json:"user,omitempty"`
+}
+
+type deskWithBooking struct {
+	desk
+	Booking deskBookingInfo `json:"booking"`
+}
+
 type deskCreateInput struct {
 	SpaceID  int64
 	Label    string
@@ -212,6 +231,11 @@ func migrate(db *sql.DB) error {
 			id BIGSERIAL PRIMARY KEY,
 			user_key TEXT NOT NULL UNIQUE,
 			user_name TEXT NOT NULL DEFAULT '',
+			full_name TEXT NOT NULL DEFAULT '',
+			employee_id TEXT NOT NULL DEFAULT '',
+			profile_id TEXT NOT NULL DEFAULT '',
+			wb_user_id TEXT NOT NULL DEFAULT '',
+			avatar_url TEXT NOT NULL DEFAULT '',
 			wb_band TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL DEFAULT (now()::text)
 		);`,
@@ -322,7 +346,49 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "users", "wb_band", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := ensureColumn(db, "users", "employee_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "users", "full_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "users", "profile_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "users", "wb_user_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "users", "avatar_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (a *app) upsertUserInfo(userKey, userName, fullName, employeeID, profileID, wbUserID, avatarURL, wbBand string) error {
+	if strings.TrimSpace(userKey) == "" {
+		return nil
+	}
+	_, err := a.db.Exec(
+		`INSERT INTO users (user_key, user_name, full_name, employee_id, profile_id, wb_user_id, avatar_url, wb_band)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 ON CONFLICT (user_key)
+		 DO UPDATE SET user_name = EXCLUDED.user_name,
+		               full_name = EXCLUDED.full_name,
+		               employee_id = EXCLUDED.employee_id,
+		               profile_id = EXCLUDED.profile_id,
+		               wb_user_id = EXCLUDED.wb_user_id,
+		               avatar_url = EXCLUDED.avatar_url,
+		               wb_band = EXCLUDED.wb_band`,
+		strings.TrimSpace(userKey),
+		strings.TrimSpace(userName),
+		strings.TrimSpace(fullName),
+		strings.TrimSpace(employeeID),
+		strings.TrimSpace(profileID),
+		strings.TrimSpace(wbUserID),
+		strings.TrimSpace(avatarURL),
+		strings.TrimSpace(wbBand),
+	)
+	return err
 }
 
 func (a *app) upsertUserWBBand(userKey, userName, wbBand string) error {
@@ -902,7 +968,19 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		items, err := a.listDesksBySpace(id)
+		dateRaw := strings.TrimSpace(r.URL.Query().Get("date"))
+		date := ""
+		if dateRaw != "" {
+			normalized, err := normalizeBookingDate(dateRaw)
+			if err != nil {
+				respondError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			date = normalized
+		} else {
+			date = time.Now().Format("2006-01-02")
+		}
+		items, err := a.listDesksBySpaceWithBookings(id, date)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1720,6 +1798,83 @@ func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 		var d desk
 		if err := rows.Scan(&d.ID, &d.SpaceID, &d.Label, &d.X, &d.Y, &d.Width, &d.Height, &d.Rotation, &d.CreatedAt); err != nil {
 			return nil, err
+		}
+		items = append(items, d)
+	}
+	return items, rows.Err()
+}
+
+func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWithBooking, error) {
+	rows, err := a.db.Query(
+		`SELECT d.id, d.space_id, d.label, d.x, d.y, d.width, d.height, d.rotation, d.created_at,
+		        b.user_key,
+		        COALESCE(NULLIF(u.full_name, ''), NULLIF(u.user_name, ''), b.user_name),
+		        COALESCE(u.employee_id, ''),
+		        COALESCE(u.wb_user_id, ''),
+		        COALESCE(u.avatar_url, ''),
+		        COALESCE(u.wb_band, '')
+		   FROM desks d
+		   LEFT JOIN bookings b ON b.desk_id = d.id AND b.date = $2
+		   LEFT JOIN LATERAL (
+		     SELECT user_name, full_name, employee_id, profile_id, wb_user_id, avatar_url, wb_band
+		       FROM users
+		      WHERE user_key = b.user_key OR profile_id = b.user_key
+		      ORDER BY (user_key = b.user_key) DESC
+		      LIMIT 1
+		   ) u ON true
+		  WHERE d.space_id = $1
+		  ORDER BY d.id DESC`,
+		spaceID,
+		date,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []deskWithBooking
+	for rows.Next() {
+		var d deskWithBooking
+		var userKey sql.NullString
+		var userName sql.NullString
+		var employeeID sql.NullString
+		var wbUserID sql.NullString
+		var avatarURL sql.NullString
+		var wbBand sql.NullString
+		if err := rows.Scan(
+			&d.ID,
+			&d.SpaceID,
+			&d.Label,
+			&d.X,
+			&d.Y,
+			&d.Width,
+			&d.Height,
+			&d.Rotation,
+			&d.CreatedAt,
+			&userKey,
+			&userName,
+			&employeeID,
+			&wbUserID,
+			&avatarURL,
+			&wbBand,
+		); err != nil {
+			return nil, err
+		}
+		d.Booking.IsBooked = userKey.Valid && strings.TrimSpace(userKey.String) != ""
+		if d.Booking.IsBooked {
+			userKeyValue := strings.TrimSpace(userKey.String)
+			userNameValue := strings.TrimSpace(userName.String)
+			if userNameValue == "" {
+				userNameValue = userKeyValue
+			}
+			d.Booking.User = &deskBookingUser{
+				WbTeamUserID: userKeyValue,
+				UserName:     userNameValue,
+				EmployeeID:   strings.TrimSpace(employeeID.String),
+				WbUserID:     strings.TrimSpace(wbUserID.String),
+				AvatarURL:    strings.TrimSpace(avatarURL.String),
+				WbBand:       strings.TrimSpace(wbBand.String),
+			}
 		}
 		items = append(items, d)
 	}

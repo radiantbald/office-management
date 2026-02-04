@@ -85,10 +85,15 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 				normalizeIDString(dataMap["id"]),
 				normalizeIDString(dataMap["employeeID"]),
 			)
+			fullName := normalizeIDString(dataMap["fullName"])
 			userName := firstNonEmptyString(
-				normalizeIDString(dataMap["fullName"]),
+				fullName,
 				normalizeIDString(dataMap["name"]),
 			)
+			employeeID := normalizeIDString(dataMap["employeeID"])
+			profileIDStr := normalizeIDString(dataMap["id"])
+			wbUserID := normalizeIDString(dataMap["wbUserID"])
+			avatarURL := normalizeIDString(dataMap["avatar_url"])
 
 			wbBand := ""
 			if cached, err := a.getUserWBBand(userKey); err == nil && cached != "" {
@@ -109,16 +114,19 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 					}
 				}()
 			}
+			if err := a.upsertUserInfo(userKey, userName, fullName, employeeID, profileIDStr, wbUserID, avatarURL, wbBand); err != nil {
+				log.Printf("handleAuthUserInfo: failed to save user info: %v", err)
+			}
 
 			response := map[string]any{
 				"status": jsonData["status"],
 				"data": map[string]any{
-					"avatar_url": dataMap["avatar_url"],
-					"employeeID": dataMap["employeeID"],
-					"fullName":   dataMap["fullName"],
-					"id":         dataMap["id"],
-					"wbUserID":   dataMap["wbUserID"],
-					"wb_band":    wbBand,
+					"avatar_url":     dataMap["avatar_url"],
+					"employeeID":     dataMap["employeeID"],
+					"fullName":       dataMap["fullName"],
+					"wbteam_user_id": dataMap["id"],
+					"wbUserID":       dataMap["wbUserID"],
+					"wb_band":        wbBand,
 				},
 			}
 			_ = json.NewEncoder(w).Encode(response)
