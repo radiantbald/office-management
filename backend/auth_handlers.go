@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // handleAuthUserInfo проксирует запрос к team.wb.ru/api/v1/user/info
@@ -73,12 +76,235 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 
+	var jsonData map[string]any
+	if err := json.Unmarshal(body, &jsonData); err == nil {
+		if dataMap, ok := jsonData["data"].(map[string]any); ok {
+			profileID := toInt64(dataMap["id"])
+			userKey := firstNonEmptyString(
+				normalizeIDString(dataMap["wbUserID"]),
+				normalizeIDString(dataMap["id"]),
+				normalizeIDString(dataMap["employeeID"]),
+			)
+			userName := firstNonEmptyString(
+				normalizeIDString(dataMap["fullName"]),
+				normalizeIDString(dataMap["name"]),
+			)
+
+			wbBand := ""
+			if cached, err := a.getUserWBBand(userKey); err == nil && cached != "" {
+				wbBand = cached
+			} else if profileID != 0 {
+				profileIDStr := fmt.Sprintf("%d", profileID)
+				tokenCopy := token
+				cookieCopy := cookie
+				userKeyCopy := userKey
+				userNameCopy := userName
+				go func() {
+					band, err := a.fetchWBBandFromTeam(tokenCopy, profileIDStr, cookieCopy)
+					if err != nil || band == "" {
+						return
+					}
+					if err := a.upsertUserWBBand(userKeyCopy, userNameCopy, band); err != nil {
+						log.Printf("handleAuthUserInfo: failed to save wb_band: %v", err)
+					}
+				}()
+			}
+
+			response := map[string]any{
+				"status": jsonData["status"],
+				"data": map[string]any{
+					"avatar_url": dataMap["avatar_url"],
+					"employeeID": dataMap["employeeID"],
+					"fullName":   dataMap["fullName"],
+					"id":         dataMap["id"],
+					"wbUserID":   dataMap["wbUserID"],
+					"wb_band":    wbBand,
+				},
+			}
+			_ = json.NewEncoder(w).Encode(response)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(jsonData)
+		return
+	}
+	_, _ = w.Write(body)
+}
+
+// handleAuthUserWbBand проксирует запрос к team.wb.ru/api/v1/user/profile/{id}/wbband
+// и сохраняет wb_band в таблицу users по ключу пользователя.
+func (a *app) handleAuthUserWbBand(w http.ResponseWriter, r *http.Request) {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		log.Printf("handleAuthUserWbBand: Authorization header is missing")
+		respondError(w, http.StatusUnauthorized, "Authorization header is required")
+		return
+	}
+
+	token := extractBearerToken(authHeader)
+	if token == "" {
+		log.Printf("handleAuthUserWbBand: Token is empty after extraction")
+		respondError(w, http.StatusUnauthorized, "Invalid authorization token")
+		return
+	}
+
+	profileID := strings.TrimSpace(r.URL.Query().Get("profile_id"))
+	if profileID == "" {
+		respondError(w, http.StatusBadRequest, "profile_id is required")
+		return
+	}
+
+	body, status, err := a.fetchWBBandRaw(token, profileID, "", r)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to make request")
+		return
+	}
+
+	var parsed struct {
+		Status int `json:"status"`
+		Data   struct {
+			WBBand string `json:"wb_band"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		userKey := strings.TrimSpace(r.Header.Get("X-User-Key"))
+		if userKey == "" {
+			userKey = strings.TrimSpace(r.Header.Get("x-user-key"))
+		}
+		userName := strings.TrimSpace(r.Header.Get("X-User-Name"))
+		if userName == "" {
+			userName = strings.TrimSpace(r.Header.Get("x-user-name"))
+		}
+		if parsed.Data.WBBand != "" {
+			if err := a.upsertUserWBBand(userKey, userName, parsed.Data.WBBand); err != nil {
+				log.Printf("handleAuthUserWbBand: failed to save wb_band: %v", err)
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
 	var jsonData interface{}
 	if err := json.Unmarshal(body, &jsonData); err == nil {
 		_ = json.NewEncoder(w).Encode(jsonData)
 		return
 	}
 	_, _ = w.Write(body)
+}
+
+func (a *app) fetchWBBandFromTeam(token, profileID, cookie string) (string, error) {
+	body, _, err := a.fetchWBBandRaw(token, profileID, cookie, nil)
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		Status int `json:"status"`
+		Data   struct {
+			WBBand string `json:"wb_band"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(parsed.Data.WBBand), nil
+}
+
+func (a *app) fetchWBBandRaw(token, profileID, cookie string, sourceReq *http.Request) ([]byte, int, error) {
+	url := fmt.Sprintf("https://team.wb.ru/api/v1/user/profile/%s/wbband", profileID)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+
+	req.Header.Set("accept", "application/json, text/plain, */*")
+	req.Header.Set("authorization", "Bearer "+token)
+	req.Header.Set("cache-control", "no-cache")
+	req.Header.Set("pragma", "no-cache")
+	req.Header.Set("referer", "https://team.wb.ru/account")
+	req.Header.Set("sec-fetch-dest", "empty")
+	req.Header.Set("sec-fetch-mode", "cors")
+	req.Header.Set("sec-fetch-site", "same-origin")
+	req.Header.Set("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
+
+	if sourceReq != nil {
+		cookie, source := collectCookies(sourceReq)
+		if cookie != "" {
+			req.Header.Set("Cookie", cookie)
+			log.Printf("handleAuthUserWbBand: Forwarding cookies from %s (length: %d)", source, len(cookie))
+		} else {
+			log.Printf("handleAuthUserWbBand: No cookies found")
+		}
+	} else if strings.TrimSpace(cookie) != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+	return body, resp.StatusCode, nil
+}
+
+func toInt64(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			return 0
+		}
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func normalizeIDString(value any) string {
+	if value == nil {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		if v == 0 {
+			return ""
+		}
+		return strings.TrimSpace(fmt.Sprintf("%.0f", v))
+	case int64:
+		if v == 0 {
+			return ""
+		}
+		return strings.TrimSpace(fmt.Sprintf("%d", v))
+	case int:
+		if v == 0 {
+			return ""
+		}
+		return strings.TrimSpace(fmt.Sprintf("%d", v))
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // handleAuthRequestCode проксирует запрос к auth-hrtech.wb.ru/v2/code/wb-captcha

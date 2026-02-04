@@ -173,6 +173,7 @@ func main() {
 	mux.HandleFunc("/api/bookings", app.handleBookings)
 	mux.HandleFunc("/api/bookings/", app.handleBookingsSubroutes)
 	mux.HandleFunc("/api/auth/user/info", app.handleAuthUserInfo)
+	mux.HandleFunc("/api/auth/user/wb-band", app.handleAuthUserWbBand)
 	mux.HandleFunc("/api/auth/v2/code/wb-captcha", app.handleAuthRequestCode)
 	mux.HandleFunc("/api/auth/v2/auth", app.handleAuthConfirmCode)
 
@@ -207,6 +208,13 @@ func main() {
 
 func migrate(db *sql.DB) error {
 	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS users (
+			id BIGSERIAL PRIMARY KEY,
+			user_key TEXT NOT NULL UNIQUE,
+			user_name TEXT NOT NULL DEFAULT '',
+			wb_band TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (now()::text)
+		);`,
 		`CREATE TABLE IF NOT EXISTS office_buildings (
 			id BIGSERIAL PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -311,7 +319,44 @@ func migrate(db *sql.DB) error {
 	if err := migrateBookingsTable(db); err != nil {
 		return err
 	}
+	if err := ensureColumn(db, "users", "wb_band", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (a *app) upsertUserWBBand(userKey, userName, wbBand string) error {
+	if strings.TrimSpace(userKey) == "" || strings.TrimSpace(wbBand) == "" {
+		return nil
+	}
+	_, err := a.db.Exec(
+		`INSERT INTO users (user_key, user_name, wb_band)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (user_key)
+		 DO UPDATE SET user_name = EXCLUDED.user_name, wb_band = EXCLUDED.wb_band`,
+		strings.TrimSpace(userKey),
+		strings.TrimSpace(userName),
+		strings.TrimSpace(wbBand),
+	)
+	return err
+}
+
+func (a *app) getUserWBBand(userKey string) (string, error) {
+	if strings.TrimSpace(userKey) == "" {
+		return "", nil
+	}
+	var wbBand string
+	err := a.db.QueryRow(
+		`SELECT COALESCE(wb_band, '') FROM users WHERE user_key = $1`,
+		strings.TrimSpace(userKey),
+	).Scan(&wbBand)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(wbBand), nil
 }
 
 func ensureColumn(db *sql.DB, table, column, definition string) error {

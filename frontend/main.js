@@ -490,6 +490,54 @@ const getDisplayNameFromUser = (user) =>
   user?.phone ||
   "Пользователь";
 
+const getUserProfileId = (user) => {
+  const directId = String(
+    user?.profile_id ||
+      user?.profileId ||
+      user?.employee_id ||
+      user?.employeeId ||
+      user?.employeeID ||
+      user?.id ||
+      ""
+  ).trim();
+  if (directId) {
+    return directId;
+  }
+  const profile =
+    user?.profile || user?.data?.profile || user?.payload?.profile || null;
+  const profileId = String(
+    profile?.id ||
+      profile?.profile_id ||
+      profile?.employee_id ||
+      profile?.employeeId ||
+      ""
+  ).trim();
+  if (profileId) {
+    return profileId;
+  }
+  const nestedUser =
+    user?.user || user?.data?.user || user?.payload?.user || null;
+  const nestedId = String(
+    nestedUser?.profile_id ||
+      nestedUser?.profileId ||
+      nestedUser?.employee_id ||
+      nestedUser?.employeeId ||
+      nestedUser?.id ||
+      ""
+  ).trim();
+  if (nestedId) {
+    return nestedId;
+  }
+  const nestedProfile = nestedUser?.profile || null;
+  return String(
+    nestedProfile?.id ||
+      nestedProfile?.profile_id ||
+      nestedProfile?.employee_id ||
+      nestedProfile?.employeeId ||
+      ""
+  ).trim();
+};
+
 const closeBreadcrumbMenus = (exceptMenu = null) => {
   const menus = document.querySelectorAll('[data-role="breadcrumb-menu"]');
   menus.forEach((menu) => {
@@ -783,6 +831,59 @@ const fetchAuthUserInfo = async (accessToken) => {
   }
 };
 
+const fetchAndStoreWBBand = async (accessToken, user) => {
+  try {
+    if (!accessToken || !user) {
+      return null;
+    }
+    const profileId = getUserProfileId(user);
+    if (!profileId) {
+      return null;
+    }
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json, text/plain, */*",
+      "Content-Type": "application/json",
+      deviceid: getDeviceId(),
+      devicename: getDeviceName(),
+    };
+    const cookies = getAuthCookies();
+    if (cookies) {
+      headers["X-Cookie"] = cookies;
+    }
+    const userKey = String(
+      user?.id ||
+        user?.employee_id ||
+        user?.employeeId ||
+        user?.employeeID ||
+        user?.wbUserID ||
+        user?.email ||
+        user?.phone ||
+        ""
+    ).trim();
+    if (userKey) {
+      headers["X-User-Key"] = userKey;
+    }
+    const response = await fetch(`/api/auth/user/wb-band?profile_id=${encodeURIComponent(profileId)}`, {
+      headers,
+      credentials: "include",
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data) {
+      return null;
+    }
+    const wbBand = data?.data?.wb_band || data?.wb_band;
+    if (wbBand) {
+      const nextUser = { ...user, wb_band: wbBand };
+      setUserInfo(nextUser);
+      updateAuthUserBlock(nextUser);
+    }
+    return wbBand || null;
+  } catch (error) {
+    return null;
+  }
+};
+
 const runAppInit = async () => {
   if (appInitialized) {
     return;
@@ -978,6 +1079,8 @@ const getBookingUserKey = (user) =>
     user?.id ||
       user?.employee_id ||
       user?.employeeId ||
+      user?.employeeID ||
+      user?.wbUserID ||
       user?.email ||
       user?.phone ||
       ""
