@@ -789,13 +789,29 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 				if payload.Capacity != nil {
 					capacity = *payload.Capacity
 				}
-				if payload.Capacity != nil && capacity <= 0 {
-					respondError(w, http.StatusBadRequest, "capacity must be greater than 0")
-					return
+				effectiveKind := payload.Kind
+				if effectiveKind == "" && payload.Capacity != nil {
+					row := a.db.QueryRow(`SELECT kind FROM spaces WHERE id = ?`, id)
+					if err := row.Scan(&effectiveKind); err != nil {
+						if errors.Is(err, sql.ErrNoRows) {
+							respondError(w, http.StatusNotFound, "space not found")
+							return
+						}
+						respondError(w, http.StatusInternalServerError, err.Error())
+						return
+					}
 				}
-				if payload.Kind == "meeting" && payload.Capacity == nil {
-					respondError(w, http.StatusBadRequest, "capacity is required for meeting rooms")
-					return
+				if effectiveKind == "meeting" {
+					if payload.Capacity == nil {
+						respondError(w, http.StatusBadRequest, "capacity is required for meeting rooms")
+						return
+					}
+					if capacity <= 0 {
+						respondError(w, http.StatusBadRequest, "capacity must be greater than 0")
+						return
+					}
+				} else {
+					capacity = 0
 				}
 				result, err = a.updateSpaceDetails(id, payload.Name, payload.Kind, capacity, payload.Capacity != nil, payload.Color)
 			}
@@ -1022,7 +1038,7 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			payload.Label = &trimmed
 		}
-		if payload.Label == nil && payload.X == nil && payload.Y == nil {
+		if payload.Label == nil && payload.X == nil && payload.Y == nil && payload.Width == nil && payload.Height == nil && payload.Rotation == nil {
 			respondError(w, http.StatusBadRequest, "no fields to update")
 			return
 		}

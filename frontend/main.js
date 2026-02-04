@@ -1268,6 +1268,48 @@ const ensureBookingDate = () => {
   setBookingSelectedDate(formatPickerDate(today));
 };
 
+const getDeskBookingTitle = (desk) => {
+  if (desk.bookingStatus === "booked") {
+    return `Занято: ${desk.bookingUserName || "сотрудник"}`;
+  }
+  if (desk.bookingStatus === "my") {
+    return "Ваше место";
+  }
+  return "Свободно. Нажмите для бронирования";
+};
+
+const updateDeskBookingIndicators = (desks = []) => {
+  const svg = getSnapshotSvg();
+  if (!svg) {
+    return false;
+  }
+  const layer = svg.querySelector("#spaceDesksLayer");
+  if (!layer) {
+    return false;
+  }
+  let missingDeskNode = false;
+  desks.forEach((desk) => {
+    if (!desk?.id) {
+      return;
+    }
+    const deskId = String(desk.id);
+    const group = layer.querySelector(`.space-desk[data-desk-id="${deskId}"]`);
+    if (!group) {
+      missingDeskNode = true;
+      return;
+    }
+    group.classList.toggle("is-booked", desk.bookingStatus === "booked");
+    group.classList.toggle("is-my-booking", desk.bookingStatus === "my");
+    let title = group.querySelector("title");
+    if (!title) {
+      title = document.createElementNS(svgNamespace, "title");
+      group.insertBefore(title, group.firstChild);
+    }
+    title.textContent = getDeskBookingTitle(desk);
+  });
+  return !missingDeskNode;
+};
+
 const applyBookingsToDesks = (bookings = []) => {
   const byDesk = new Map();
   bookings.forEach((booking) => {
@@ -1293,7 +1335,9 @@ const applyBookingsToDesks = (bookings = []) => {
       desk.bookingStatus = "booked";
     }
   });
-  renderSpaceDesks(currentDesks);
+  if (!updateDeskBookingIndicators(currentDesks)) {
+    renderSpaceDesks(currentDesks);
+  }
 };
 
 const loadSpaceBookings = async (spaceId, date) => {
@@ -3470,7 +3514,10 @@ const getDeskDimensions = (desk) => {
   return { width, height };
 };
 
-const getDeskRotation = (desk) => (Number.isFinite(desk?.rotation) ? desk.rotation : 0);
+const getDeskRotation = (desk) => {
+  const rotation = Number(desk?.rotation);
+  return Number.isFinite(rotation) ? rotation : 0;
+};
 
 const getRotatedDeskHalfExtents = (width, height, rotationDeg = 0) => {
   const radians = (rotationDeg * Math.PI) / 180;
@@ -3757,7 +3804,7 @@ const updateDeskElementPosition = (group, desk, metrics) => {
   const label = group.querySelector(".space-desk-label");
   const width = metrics.width;
   const height = metrics.height;
-  const rotation = Number.isFinite(desk.rotation) ? desk.rotation : 0;
+  const rotation = getDeskRotation(desk);
   if (rect) {
     rect.setAttribute("x", String(desk.x - width / 2));
     rect.setAttribute("y", String(desk.y - height / 2));
@@ -3772,6 +3819,7 @@ const updateDeskElementPosition = (group, desk, metrics) => {
     label.setAttribute("dominant-baseline", "middle");
     label.setAttribute("transform", `rotate(${-rotation} ${desk.x} ${desk.y})`);
   }
+  const rotator = group.querySelector(".space-desk-rotator") || group;
   const handlesGroup = group.querySelector(".desk-handles");
   if (handlesGroup) {
     const handleSize = 10 * ((metrics.scaleX + metrics.scaleY) / 2);
@@ -3832,7 +3880,7 @@ const updateDeskElementPosition = (group, desk, metrics) => {
       rotateHandle.setAttribute("ry", String(handleRadius));
     }
   }
-  group.setAttribute("transform", `rotate(${rotation} ${desk.x} ${desk.y})`);
+  rotator.setAttribute("transform", `rotate(${rotation} ${desk.x} ${desk.y})`);
 };
 
 const getDeskRotationRadians = (desk) => (getDeskRotation(desk) * Math.PI) / 180;
@@ -4125,7 +4173,7 @@ const renderSpaceDesks = (desks = []) => {
       return;
     }
     const deskMetrics = getDeskMetrics(svg, desk);
-    const rotation = Number.isFinite(desk.rotation) ? desk.rotation : 0;
+    const rotation = getDeskRotation(desk);
     const group = document.createElementNS(svgNamespace, "g");
     group.classList.add("space-desk");
     group.setAttribute("data-desk-id", String(desk.id));
@@ -4135,6 +4183,8 @@ const renderSpaceDesks = (desks = []) => {
     } else if (desk.bookingStatus === "my") {
       group.classList.add("is-my-booking");
     }
+    const rotator = document.createElementNS(svgNamespace, "g");
+    rotator.classList.add("space-desk-rotator");
 
     const shape = document.createElementNS(svgNamespace, "rect");
     shape.classList.add("space-desk-shape");
@@ -4163,9 +4213,9 @@ const renderSpaceDesks = (desks = []) => {
     }
 
     group.appendChild(title);
-    group.appendChild(shape);
-    group.appendChild(label);
-    group.setAttribute("transform", `rotate(${rotation} ${desk.x} ${desk.y})`);
+    rotator.appendChild(shape);
+    rotator.appendChild(label);
+    rotator.setAttribute("transform", `rotate(${rotation} ${desk.x} ${desk.y})`);
     if (isSpaceEditing && hasSingleSelection && isDeskSelected(desk.id)) {
       const handles = document.createElementNS(svgNamespace, "g");
       handles.classList.add("desk-handles");
@@ -4235,7 +4285,7 @@ const renderSpaceDesks = (desks = []) => {
           deskEditState.transformStartY = point.y;
           deskEditState.transformStartWidth = desk.width || deskPixelWidth;
           deskEditState.transformStartHeight = desk.height || deskPixelHeight;
-          deskEditState.transformStartRotation = desk.rotation || 0;
+          deskEditState.transformStartRotation = getDeskRotation(desk);
           deskEditState.startX = desk.x;
           deskEditState.startY = desk.y;
           if (resizeHandle.setPointerCapture) {
@@ -4277,7 +4327,7 @@ const renderSpaceDesks = (desks = []) => {
         deskEditState.transformStartY = point.y;
         deskEditState.transformStartWidth = desk.width || deskPixelWidth;
         deskEditState.transformStartHeight = desk.height || deskPixelHeight;
-        deskEditState.transformStartRotation = desk.rotation || 0;
+        deskEditState.transformStartRotation = getDeskRotation(desk);
         deskEditState.startX = desk.x;
         deskEditState.startY = desk.y;
         if (rotateHandle.setPointerCapture) {
@@ -4288,8 +4338,9 @@ const renderSpaceDesks = (desks = []) => {
       rotateHandle.addEventListener("pointercancel", handleDeskPointerEnd);
 
       handles.appendChild(rotateHandle);
-      group.appendChild(handles);
+      rotator.appendChild(handles);
     }
+    group.appendChild(rotator);
     group.addEventListener("pointerdown", (event) => {
       if (!isSpaceEditing) {
         startDeskLongPress(desk, event);
@@ -4342,7 +4393,7 @@ const renderSpaceDesks = (desks = []) => {
       deskEditState.hasMoved = false;
       deskEditState.transformStartWidth = desk.width || deskPixelWidth;
       deskEditState.transformStartHeight = desk.height || deskPixelHeight;
-      deskEditState.transformStartRotation = desk.rotation || 0;
+      deskEditState.transformStartRotation = getDeskRotation(desk);
       group.classList.add("is-dragging");
       }
       if (group.setPointerCapture) {
@@ -4434,9 +4485,8 @@ const normalizeDeskSizeForBounds = (width, height, bounds) => {
   return { width: nextWidth, height: nextHeight };
 };
 
-const isDeskAreaFree = (x, y, width, height, excludeDeskId = null) => {
-  const halfWidth = width / 2;
-  const halfHeight = height / 2;
+const isDeskAreaFree = (x, y, width, height, excludeDeskId = null, rotationDeg = 0) => {
+  const { halfWidth, halfHeight } = getRotatedDeskHalfExtents(width, height, rotationDeg);
   const left = x - halfWidth;
   const right = x + halfWidth;
   const top = y - halfHeight;
@@ -4458,12 +4508,16 @@ const isDeskAreaFree = (x, y, width, height, excludeDeskId = null) => {
       return false;
     }
     const dimensions = getDeskDimensions(desk);
-    const deskWidth = dimensions.width;
-    const deskHeight = dimensions.height;
-    const deskLeft = desk.x - deskWidth / 2;
-    const deskRight = desk.x + deskWidth / 2;
-    const deskTop = desk.y - deskHeight / 2;
-    const deskBottom = desk.y + deskHeight / 2;
+    const deskRotation = getDeskRotation(desk);
+    const extents = getRotatedDeskHalfExtents(
+      dimensions.width,
+      dimensions.height,
+      deskRotation
+    );
+    const deskLeft = desk.x - extents.halfWidth;
+    const deskRight = desk.x + extents.halfWidth;
+    const deskTop = desk.y - extents.halfHeight;
+    const deskBottom = desk.y + extents.halfHeight;
     const overlaps = left < deskRight && right > deskLeft && top < deskBottom && bottom > deskTop;
     return overlaps;
   });
@@ -4648,7 +4702,8 @@ const canPlaceCopiedGroup = (bounds, group, centerX, centerY) => {
     if (x < minX || x > maxX || y < minY || y > maxY) {
       return false;
     }
-    if (!isDeskAreaFree(x, y, width, height)) {
+    const rotation = Number.isFinite(desk.rotation) ? desk.rotation : 0;
+    if (!isDeskAreaFree(x, y, width, height, null, rotation)) {
       return false;
     }
   }
@@ -4771,7 +4826,8 @@ const findFreeGroupPosition = (bounds, desks = [], preferredPoint = null, exclud
           desk.y + deltaY,
           dimensions.width,
           dimensions.height,
-          excludeDeskIds
+          excludeDeskIds,
+          getDeskRotation(desk)
         );
       });
       if (!fits) {
@@ -5274,7 +5330,14 @@ const finishDeskDrag = async () => {
   let hasOverlap = false;
   desks.forEach((desk) => {
     const dimensions = getDeskDimensions(desk);
-    if (!isDeskAreaFree(desk.x, desk.y, dimensions.width, dimensions.height, excludeIds)) {
+    if (!isDeskAreaFree(
+      desk.x,
+      desk.y,
+      dimensions.width,
+      dimensions.height,
+      excludeIds,
+      getDeskRotation(desk)
+    )) {
       hasOverlap = true;
     }
   });
@@ -5518,7 +5581,8 @@ const persistDeskUpdate = async (deskId, payload, onRollback) => {
     if (updated) {
       const index = currentDesks.findIndex((item) => String(item.id) === String(deskId));
       if (index >= 0) {
-        currentDesks[index] = mergeDeskBookingState(updated, currentDesks[index]);
+        const merged = { ...currentDesks[index], ...updated };
+        currentDesks[index] = mergeDeskBookingState(merged, currentDesks[index]);
         renderSpaceDesks(currentDesks);
         setSelectedDesk(deskId);
       }
@@ -5596,7 +5660,8 @@ const flushPendingDeskChanges = async () => {
       if (updated) {
         const index = currentDesks.findIndex((item) => String(item.id) === String(deskId));
         if (index >= 0) {
-          currentDesks[index] = mergeDeskBookingState(updated, currentDesks[index]);
+          const merged = { ...currentDesks[index], ...updated };
+          currentDesks[index] = mergeDeskBookingState(merged, currentDesks[index]);
         }
       }
       pendingDeskUpdates.delete(deskId);
@@ -5649,8 +5714,10 @@ const rotateSelectedDesk = () => {
   if (!desk) {
     return;
   }
-  const previousRotation = desk.rotation;
-  const baseRotation = Number.isFinite(desk.rotation) ? desk.rotation : 0;
+  const previousRotation = getDeskRotation(desk);
+  const previousX = desk.x;
+  const previousY = desk.y;
+  const baseRotation = getDeskRotation(desk);
   const nextRotation = (baseRotation + deskRotateStep) % 360;
   desk.rotation = nextRotation;
   const svg = getSnapshotSvg();
@@ -5662,7 +5729,14 @@ const rotateSelectedDesk = () => {
   }
   renderSpaceDesks(currentDesks);
   setSelectedDesk(deskId);
-  queueDeskUpdate(deskId, { rotation: nextRotation });
+  const payload = { rotation: nextRotation };
+  if (desk.x !== previousX) {
+    payload.x = desk.x;
+  }
+  if (desk.y !== previousY) {
+    payload.y = desk.y;
+  }
+  queueDeskUpdate(deskId, payload);
 };
 
 const renderFloorPlan = (svgMarkup) => {
