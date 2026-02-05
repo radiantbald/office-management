@@ -101,6 +101,8 @@ const spaceDesksEmpty = document.getElementById("spaceDesksEmpty");
 const spaceBookingPanel = document.getElementById("spaceBookingPanel");
 const spaceBookingStatus = document.getElementById("spaceBookingStatus");
 const spaceDatePicker = document.getElementById("spaceDatePicker");
+const spaceAttendeesList = document.getElementById("spaceAttendeesList");
+const spaceAttendeesEmpty = document.getElementById("spaceAttendeesEmpty");
 const spaceBookingsToggleBtn = document.getElementById("spaceBookingsToggleBtn");
 const spaceMapDateTitle = document.getElementById("spaceMapDateTitle");
 const spaceBookingsModal = document.getElementById("spaceBookingsModal");
@@ -285,6 +287,8 @@ const AUTH_COOKIES_KEY = "auth_cookies";
 const AVATAR_CACHE_URL_KEY = "avatar_cache_url";
 const AVATAR_CACHE_DATA_KEY = "avatar_cache_data";
 const AVATAR_CACHE_AT_KEY = "avatar_cache_at";
+const AVATAR_CACHE_STORE_KEY = "avatar_cache_store";
+const AVATAR_CACHE_MAX_ENTRIES = 40;
 const avatarInFlight = new Map();
 const imagePreloadCache = new Map();
 
@@ -348,13 +352,44 @@ const setAuthCookies = (cookies) => {
 
 const getAuthCookies = () => localStorage.getItem(AUTH_COOKIES_KEY);
 
+const getAvatarCacheStore = () => {
+  try {
+    const raw = localStorage.getItem(AVATAR_CACHE_STORE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+};
+
+const setAvatarCacheStore = (store) => {
+  try {
+    localStorage.setItem(AVATAR_CACHE_STORE_KEY, JSON.stringify(store));
+  } catch (error) {
+    // Ignore storage errors (quota exceeded or private mode)
+  }
+};
+
 const getCachedAvatar = (avatarUrl) => {
   if (!avatarUrl) {
     return null;
   }
+  const store = getAvatarCacheStore();
+  const cachedEntry = store?.[avatarUrl];
+  if (cachedEntry && typeof cachedEntry.dataUrl === "string") {
+    return cachedEntry.dataUrl;
+  }
   const cachedUrl = localStorage.getItem(AVATAR_CACHE_URL_KEY);
   const cachedData = localStorage.getItem(AVATAR_CACHE_DATA_KEY);
   if (cachedUrl && cachedData && cachedUrl === avatarUrl) {
+    store[avatarUrl] = {
+      dataUrl: cachedData,
+      at: Number(localStorage.getItem(AVATAR_CACHE_AT_KEY)) || Date.now(),
+    };
+    setAvatarCacheStore(store);
     return cachedData;
   }
   return null;
@@ -365,6 +400,16 @@ const cacheAvatarData = (avatarUrl, dataUrl) => {
     return;
   }
   try {
+    const store = getAvatarCacheStore();
+    store[avatarUrl] = { dataUrl, at: Date.now() };
+    const entries = Object.entries(store);
+    if (entries.length > AVATAR_CACHE_MAX_ENTRIES) {
+      entries
+        .sort((a, b) => (a[1]?.at || 0) - (b[1]?.at || 0))
+        .slice(0, entries.length - AVATAR_CACHE_MAX_ENTRIES)
+        .forEach(([key]) => delete store[key]);
+    }
+    setAvatarCacheStore(store);
     localStorage.setItem(AVATAR_CACHE_URL_KEY, avatarUrl);
     localStorage.setItem(AVATAR_CACHE_DATA_KEY, dataUrl);
     localStorage.setItem(AVATAR_CACHE_AT_KEY, String(Date.now()));
@@ -1541,11 +1586,26 @@ const applyBookingsToDesks = (bookings = []) => {
       desk.bookingStatus = "free";
       desk.bookingUserName = "";
       desk.bookingUserKey = "";
+      desk.booking = null;
       return;
     }
-    desk.bookingUserName = booking.user_name || booking.user_key || "";
-    desk.bookingUserKey = booking.user_key || "";
-    if (userKey && booking.user_key === userKey) {
+    const bookingUserKey = String(booking.user_key || "").trim();
+    const bookingUserName = String(booking.user_name || booking.userName || bookingUserKey || "").trim();
+    const avatarUrl = String(booking.avatar_url || booking.avatarUrl || "").trim();
+    const wbBand = String(booking.wb_band || booking.wbBand || booking.wbband || "").trim();
+    desk.bookingUserName = formatUserNameInitials(bookingUserName);
+    desk.bookingUserKey = bookingUserKey;
+    desk.booking = {
+      is_booked: true,
+      user: {
+        wbteam_user_id: bookingUserKey,
+        user_key: bookingUserKey,
+        user_name: bookingUserName,
+        avatar_url: avatarUrl,
+        wb_band: wbBand,
+      },
+    };
+    if (userKey && bookingUserKey === userKey) {
       desk.bookingStatus = "my";
     } else {
       desk.bookingStatus = "booked";
@@ -1680,6 +1740,238 @@ const renderBookingsList = () => {
     item.appendChild(info);
     item.appendChild(cancelBtn);
     spaceBookingsList.appendChild(item);
+  });
+};
+
+const getDeskBookingWbBand = (desk) => {
+  const user = desk?.booking?.user || {};
+  const raw = user.wb_band || user.wbBand || user.wbband || "";
+  return String(raw).trim();
+};
+
+const getDeskBookingDisplayName = (desk) => {
+  const user = desk?.booking?.user || {};
+  const rawName = String(
+    user.user_name ||
+      user.userName ||
+      user.full_name ||
+      user.fullName ||
+      desk.bookingUserName ||
+      ""
+  ).trim();
+  return formatUserNameInitials(rawName) || desk.bookingUserName || "Сотрудник";
+};
+
+const getDeskBookingAvatarUrl = (desk) => {
+  const user = desk?.booking?.user || {};
+  const raw = user.avatar_url || user.avatarUrl || "";
+  return String(raw).trim();
+};
+
+const getAttendeeInitials = (name) => {
+  if (typeof name !== "string") {
+    return "?";
+  }
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) {
+    return "?";
+  }
+  if (parts.length === 1) {
+    return parts[0][0]?.toUpperCase() || "?";
+  }
+  const first = parts[0][0]?.toUpperCase() || "";
+  const second = parts[1][0]?.toUpperCase() || "";
+  return `${first}${second}` || "?";
+};
+
+const collectSpaceAttendees = (desks = [], currentUserKey = "") => {
+  const list = Array.isArray(desks) ? desks : [];
+  const normalizedCurrentUserKey = String(currentUserKey || "").trim();
+  const attendeesMap = new Map();
+  list.forEach((desk) => {
+    if (!desk || (desk.bookingStatus !== "booked" && desk.bookingStatus !== "my")) {
+      return;
+    }
+    if (desk.bookingStatus === "my") {
+      return;
+    }
+    const wbBand = getDeskBookingWbBand(desk);
+    const userKey = String(desk.bookingUserKey || "").trim();
+    if (normalizedCurrentUserKey && userKey && userKey === normalizedCurrentUserKey) {
+      return;
+    }
+    const name = getDeskBookingDisplayName(desk);
+    const rawDeskLabel = typeof desk?.label === "string" ? desk.label.trim() : "";
+    const deskLabel = rawDeskLabel || (desk?.id ? `Стол ${desk.id}` : "Стол");
+    const deskId = desk?.id ? String(desk.id) : "";
+    const key = deskId
+      ? `desk:${deskId}`
+      : `desk-label:${deskLabel}:${userKey || name || wbBand || "unknown"}`;
+    if (attendeesMap.has(key)) {
+      return;
+    }
+    const avatarUrl = getDeskBookingAvatarUrl(desk);
+    attendeesMap.set(key, {
+      key,
+      name,
+      deskLabel,
+      wbBand,
+      avatarUrl,
+      deskId,
+      userKey,
+    });
+  });
+  return Array.from(attendeesMap.values()).sort((a, b) => a.name.localeCompare(b.name, "ru"));
+};
+
+const buildAttendeeAvatarUrl = (avatarUrl, cacheKey) => {
+  const trimmed = String(avatarUrl || "").trim();
+  if (!trimmed || !cacheKey) {
+    return trimmed;
+  }
+  if (trimmed.includes("?") || trimmed.includes("#")) {
+    return trimmed;
+  }
+  return `${trimmed}?v=${encodeURIComponent(cacheKey)}`;
+};
+
+const hasCurrentUserBookingInSpace = (desks = [], currentUserKey = "") => {
+  const list = Array.isArray(desks) ? desks : [];
+  const normalizedCurrentUserKey = String(currentUserKey || "").trim();
+  return list.some((desk) => {
+    if (!desk) {
+      return false;
+    }
+    if (desk.bookingStatus === "my") {
+      return true;
+    }
+    if (!normalizedCurrentUserKey) {
+      return false;
+    }
+    const userKey = String(desk.bookingUserKey || "").trim();
+    return desk.bookingStatus === "booked" && userKey && userKey === normalizedCurrentUserKey;
+  });
+};
+
+const clearAttendeeListDeskHover = () => {
+  const svg = getSnapshotSvg();
+  if (!svg) {
+    return;
+  }
+  svg.querySelectorAll(".space-desk.is-list-hover").forEach((group) => {
+    group.classList.remove("is-list-hover");
+  });
+};
+
+const setAttendeeDeskHover = (deskId, isHovered) => {
+  const normalizedId = String(deskId || "").trim();
+  if (!normalizedId) {
+    return;
+  }
+  const svg = getSnapshotSvg();
+  if (!svg) {
+    return;
+  }
+  const group = svg.querySelector(`.space-desk[data-desk-id="${normalizedId}"]`);
+  if (!group) {
+    return;
+  }
+  group.classList.toggle("is-list-hover", Boolean(isHovered));
+};
+
+const renderSpaceAttendeesList = (desks = []) => {
+  if (!spaceAttendeesList || !spaceAttendeesEmpty) {
+    return;
+  }
+  clearAttendeeListDeskHover();
+  spaceAttendeesList.innerHTML = "";
+  const { key: currentUserKey } = getBookingUserInfo();
+  const attendees = collectSpaceAttendees(desks, currentUserKey);
+  if (attendees.length === 0) {
+    const hasCurrentUserBooking = hasCurrentUserBookingInSpace(desks, currentUserKey);
+    spaceAttendeesEmpty.textContent = hasCurrentUserBooking
+      ? "Никто кроме тебя еще не забронировал место на эту дату🥲"
+      : "Никто еще не забронировал место на эту дату";
+    spaceAttendeesEmpty.classList.remove("is-hidden");
+    return;
+  }
+  spaceAttendeesEmpty.classList.add("is-hidden");
+  attendees.forEach((attendee) => {
+    const item = document.createElement("div");
+    item.className = "space-attendee-item";
+
+    const main = document.createElement("div");
+    main.className = "space-attendee-main";
+
+    const avatar = document.createElement("div");
+    avatar.className = "space-attendee-avatar";
+    const avatarUrl = buildAttendeeAvatarUrl(
+      attendee.avatarUrl,
+      attendee.userKey || attendee.deskId || attendee.key
+    );
+    if (avatarUrl) {
+      const avatarImg = document.createElement("img");
+      avatarImg.alt = attendee.name;
+      avatarImg.loading = "lazy";
+      const cachedAvatar = getCachedAvatar(avatarUrl);
+      if (cachedAvatar) {
+        avatarImg.src = cachedAvatar;
+      } else {
+        avatarImg.src = avatarUrl;
+        avatarImg.dataset.avatarUrl = avatarUrl;
+        cacheAvatarFromUrl(avatarUrl).then((cached) => {
+          if (!cached) {
+            return;
+          }
+          if (avatarImg.dataset.avatarUrl === avatarUrl) {
+            avatarImg.src = cached;
+          }
+        });
+      }
+      avatar.appendChild(avatarImg);
+    } else {
+      avatar.textContent = getAttendeeInitials(attendee.name);
+      avatar.setAttribute("aria-hidden", "true");
+      avatar.classList.add("is-fallback");
+    }
+
+    const info = document.createElement("div");
+    info.className = "space-attendee-info";
+
+    const name = document.createElement("div");
+    name.className = "space-attendee-name";
+    name.textContent = attendee.name;
+
+    const deskLabel = document.createElement("div");
+    deskLabel.className = "space-attendee-desk";
+    deskLabel.textContent = attendee.deskLabel;
+
+    info.appendChild(name);
+    info.appendChild(deskLabel);
+    main.appendChild(avatar);
+    main.appendChild(info);
+    item.appendChild(main);
+    if (attendee.deskId) {
+      item.addEventListener("mouseenter", () => setAttendeeDeskHover(attendee.deskId, true));
+      item.addEventListener("mouseleave", () => setAttendeeDeskHover(attendee.deskId, false));
+    }
+
+    if (attendee.wbBand) {
+      const bandLink = document.createElement("a");
+      bandLink.className = "space-attendee-band";
+      bandLink.href = `https://band.wb.ru/wb/messages/@${encodeURIComponent(attendee.wbBand)}`;
+      bandLink.target = "_blank";
+      bandLink.rel = "noopener noreferrer";
+      bandLink.title = "Написать в WB Band";
+      const bandIcon = document.createElement("img");
+      bandIcon.src = "/assets/band-logo.png";
+      bandIcon.alt = "WB Band";
+      bandIcon.className = "space-attendee-band-icon";
+      bandLink.appendChild(bandIcon);
+      item.appendChild(bandLink);
+    }
+
+    spaceAttendeesList.appendChild(item);
   });
 };
 
@@ -4651,6 +4943,7 @@ const loadSpaceDesks = async (spaceId) => {
     pendingDeskDeletes = new Set();
     setSelectedDesk(null);
     renderSpaceDesks([]);
+    renderSpaceAttendeesList([]);
     return;
   }
   const dateParam = bookingState.selectedDate
@@ -4670,6 +4963,7 @@ const loadSpaceDesks = async (spaceId) => {
   setSelectedDesk(null);
   renderSpaceDesks(currentDesks);
   renderSpaceDeskList(currentDesks);
+  renderSpaceAttendeesList(currentDesks);
   if (normalized.updates.length > 0) {
     await persistDeskNormalizationUpdates(normalized.updates);
   }
@@ -6641,6 +6935,12 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   }
   if (spaceBookingsEmpty) {
     spaceBookingsEmpty.classList.add("is-hidden");
+  }
+  if (spaceAttendeesList) {
+    spaceAttendeesList.innerHTML = "";
+  }
+  if (spaceAttendeesEmpty) {
+    spaceAttendeesEmpty.classList.add("is-hidden");
   }
   try {
     const space = await apiRequest(`/api/spaces/${spaceId}`);

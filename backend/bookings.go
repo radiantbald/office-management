@@ -19,6 +19,8 @@ type booking struct {
 	UserKey    string `json:"user_key"`
 	UserName   string `json:"user_name"`
 	EmployeeID string `json:"employeeID,omitempty"`
+	AvatarURL  string `json:"avatar_url,omitempty"`
+	WbBand     string `json:"wb_band,omitempty"`
 	Date       string `json:"date"`
 	CreatedAt  string `json:"created_at"`
 	DeskLabel  string `json:"desk_label,omitempty"`
@@ -103,10 +105,18 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 		`SELECT b.id, b.desk_id, b.user_key,
 		        COALESCE(NULLIF(u.user_name, ''), b.user_name),
 		        COALESCE(u.employee_id, ''),
+		        COALESCE(u.avatar_url, ''),
+		        COALESCE(u.wb_band, ''),
 		        b.date, b.created_at, d.label, d.space_id
 		   FROM bookings b
 		   JOIN desks d ON d.id = b.desk_id
-		   LEFT JOIN users u ON u.user_key = b.user_key
+		   LEFT JOIN LATERAL (
+		     SELECT user_name, employee_id, avatar_url, wb_band
+		       FROM users
+		      WHERE user_key = b.user_key OR profile_id = b.user_key
+		      ORDER BY (user_key = b.user_key) DESC
+		      LIMIT 1
+		   ) u ON true
 		  WHERE d.space_id = $1 AND b.date = $2
 		  ORDER BY b.created_at DESC`,
 		spaceIDValue,
@@ -127,6 +137,8 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 			&item.UserKey,
 			&item.UserName,
 			&item.EmployeeID,
+			&item.AvatarURL,
+			&item.WbBand,
 			&item.Date,
 			&item.CreatedAt,
 			&item.DeskLabel,

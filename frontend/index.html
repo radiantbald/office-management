@@ -233,8 +233,16 @@
               <h3 class="floor-actions-title"></h3>
               <button id="spaceBookingsToggleBtn" class="ghost" type="button">Мои бронирования</button>
             </div>
-            <div id="spaceBookingStatus" class="status" role="status" aria-live="polite"></div>
             <div id="spaceDatePicker" class="date-picker"></div>
+            <div class="space-attendees-section">
+              <h4 class="space-attendees-title">
+                В этот день ты сможешь поработать рядом с ребятами
+              </h4>
+              <div id="spaceAttendeesList" class="space-attendees-list"></div>
+              <div id="spaceAttendeesEmpty" class="placeholder app-empty is-hidden">
+                Пока никто не забронировал стол на выбранную дату.
+              </div>
+            </div>
           </aside>
           <div class="card space-map-card">
             <div class="card-header">
