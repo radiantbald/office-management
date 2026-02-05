@@ -42,6 +42,8 @@ const deleteBuildingBtn = document.getElementById("deleteBuildingBtn");
 const buildingsGrid = document.getElementById("buildingsGrid");
 const emptyState = document.getElementById("emptyState");
 const statusBox = document.getElementById("status");
+const topAlert = document.getElementById("topAlert");
+const appHeader = document.querySelector(".app-header");
 const pageTitle = document.getElementById("pageTitle");
 const pageSubtitle = document.getElementById("pageSubtitle");
 const buildingsPage = document.getElementById("buildingsPage");
@@ -1060,6 +1062,53 @@ const clearStatus = () => {
   statusBox.dataset.tone = "";
 };
 
+let topAlertTimer = null;
+let topAlertClearTimer = null;
+
+const hideTopAlert = () => {
+  if (!topAlert) {
+    return;
+  }
+  if (topAlertTimer) {
+    clearTimeout(topAlertTimer);
+    topAlertTimer = null;
+  }
+  topAlert.classList.remove("is-visible");
+  if (topAlertClearTimer) {
+    clearTimeout(topAlertClearTimer);
+  }
+  topAlertClearTimer = setTimeout(() => {
+    topAlert.textContent = "";
+    topAlert.dataset.tone = "";
+  }, 300);
+};
+
+const showTopAlert = (message, tone = "success") => {
+  if (!topAlert) {
+    return;
+  }
+  topAlert.textContent = message;
+  topAlert.dataset.tone = tone;
+  topAlert.classList.add("is-visible");
+  if (topAlertTimer) {
+    clearTimeout(topAlertTimer);
+  }
+  if (topAlertClearTimer) {
+    clearTimeout(topAlertClearTimer);
+  }
+  topAlertTimer = setTimeout(() => {
+    hideTopAlert();
+  }, 5000);
+};
+
+const updateTopAlertHeight = () => {
+  const headerHeight = appHeader?.offsetHeight;
+  if (!Number.isFinite(headerHeight) || headerHeight <= 0) {
+    return;
+  }
+  document.documentElement.style.setProperty("--app-header-height", `${headerHeight}px`);
+};
+
 const setBuildingStatus = (message, tone = "info") => {
   if (!buildingStatus) {
     return;
@@ -1612,6 +1661,26 @@ const formatMeetingSlotRangesLabel = (slots) =>
   buildMeetingSlotRanges(slots)
     .map((range) => `${formatMeetingMinutes(range.start)}–${formatMeetingMinutes(range.end)}`)
     .join(", ");
+
+const buildMeetingBookingAlertMessage = (space, date, slots) => {
+  const meetingName = typeof space?.name === "string" ? space.name.trim() : "";
+  const capacityLabel = getPeopleCountLabel(space?.capacity);
+  const dateLabel = formatBookingDate(date);
+  const timeLabel = formatMeetingSlotRangesLabel(slots);
+  const base = meetingName ? `Переговорка "${meetingName}"` : "Переговорка";
+  const capacityPart = capacityLabel ? ` на ${capacityLabel}` : "";
+  let whenLine = "";
+  if (dateLabel && timeLabel) {
+    whenLine = `Дата и время: ${dateLabel}, ${timeLabel}`;
+  } else if (dateLabel) {
+    whenLine = `Дата: ${dateLabel}`;
+  } else if (timeLabel) {
+    whenLine = `Время: ${timeLabel}`;
+  }
+  return whenLine
+    ? `${base}${capacityPart} забронирована.\n${whenLine}`
+    : `${base}${capacityPart} забронирована.`;
+};
 
 const updateMeetingBookingSelectionSummary = () => {
   const hasBookingSelection = meetingBookingState.selectedSlotStarts.size > 0;
@@ -2261,8 +2330,7 @@ const openMeetingBookingModal = (space) => {
   if (meetingBookingModalSubtitle) {
     const capacityValue = Number(space?.capacity);
     const capacityLabel = getPeopleCountLabel(capacityValue) || "не указано";
-    const roomLabel = meetingName || "Переговорка";
-    meetingBookingModalSubtitle.textContent = `Переговорная комната ${roomLabel} на ${capacityLabel}`;
+    meetingBookingModalSubtitle.textContent = `Переговорная комната на ${capacityLabel}`;
   }
   if (!meetingBookingModal.classList.contains("is-open")) {
     meetingBookingModal.classList.add("is-open");
@@ -3002,7 +3070,9 @@ const handleMeetingBookingSubmit = async () => {
       }
     }
     if (failedSlots.length === 0) {
+      const alertMessage = buildMeetingBookingAlertMessage(meetingBookingState.space, date, slots);
       setMeetingBookingStatus("Переговорка успешно забронирована.", "success");
+      showTopAlert(alertMessage, "success");
       resetMeetingBookingSelection();
       closeMeetingBookingModal();
     } else {
@@ -9580,5 +9650,12 @@ document.addEventListener("keydown", (event) => {
     finishLassoMode();
   }
 });
+
+if (topAlert) {
+  updateTopAlertHeight();
+  window.addEventListener("resize", () => {
+    updateTopAlertHeight();
+  });
+}
 
 initializeAuth();

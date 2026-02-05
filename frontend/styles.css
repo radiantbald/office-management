@@ -407,6 +407,51 @@ button:disabled {
   color: #047857;
 }
 
+.top-alert {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  background: #f8fafc;
+  color: #0f172a;
+  padding: 0 18px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  z-index: 1200;
+  max-width: min(720px, 92vw);
+  text-align: center;
+  height: calc(var(--app-header-height, 72px) - 20px);
+  width: calc((var(--app-header-height, 72px) - 20px) * 3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: pre-line;
+  line-height: 1.2;
+}
+
+.top-alert.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.top-alert[data-tone="success"] {
+  background: #ecfdf3;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
+.top-alert[data-tone="error"] {
+  background: #fef2f2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+
 .buildings-grid {
   display: grid;
   gap: 16px;
