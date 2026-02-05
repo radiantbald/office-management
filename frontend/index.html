@@ -488,6 +488,30 @@
         </div>
       </div>
     </div>
+    <div id="meetingBookingModal" class="modal meeting-booking-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="meetingBookingModalTitle">
+      <div class="modal-header">
+        <div class="modal-title">
+          <h2 id="meetingBookingModalTitle">Переговорка</h2>
+          <p id="meetingBookingModalSubtitle" class="modal-subtitle"></p>
+        </div>
+        <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">
+          ✕
+        </button>
+      </div>
+        <div class="meeting-booking-body">
+          <div id="meetingBookingStatus" class="status" role="status" aria-live="polite"></div>
+          <div id="meetingBookingDatePicker" class="date-picker"></div>
+          <div class="meeting-booking-time">
+            <div class="meeting-booking-time-header">
+              <h3>Время</h3>
+            </div>
+            <div id="meetingBookingTimeSlots" class="meeting-booking-time-grid"></div>
+          </div>
+        </div>
+      </div>
+    </div>
     <script src="/imagetracer.js"></script>
     <script src="/main.js"></script>
   </body>

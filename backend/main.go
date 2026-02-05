@@ -189,6 +189,7 @@ func main() {
 	mux.HandleFunc("/api/desks/bulk", app.handleDeskBulk)
 	mux.HandleFunc("/api/desks/", app.handleDeskSubroutes)
 	mux.HandleFunc("/api/meeting-rooms", app.handleMeetingRooms)
+	mux.HandleFunc("/api/meeting-room-bookings", app.handleMeetingRoomBookings)
 	mux.HandleFunc("/api/bookings", app.handleBookings)
 	mux.HandleFunc("/api/bookings/", app.handleBookingsSubroutes)
 	mux.HandleFunc("/api/auth/user/info", app.handleAuthUserInfo)
@@ -285,6 +286,17 @@ func migrate(db *sql.DB) error {
 			space_id BIGINT NOT NULL,
 			name TEXT NOT NULL,
 			capacity INTEGER NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (now()::text),
+			FOREIGN KEY(space_id) REFERENCES spaces(id) ON DELETE CASCADE
+		);`,
+		`CREATE TABLE IF NOT EXISTS meeting_room_bookings (
+			id BIGSERIAL PRIMARY KEY,
+			space_id BIGINT NOT NULL,
+			user_key TEXT NOT NULL,
+			user_name TEXT NOT NULL DEFAULT '',
+			date TEXT NOT NULL,
+			start_min INTEGER NOT NULL,
+			end_min INTEGER NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
 			FOREIGN KEY(space_id) REFERENCES spaces(id) ON DELETE CASCADE
 		);`,
