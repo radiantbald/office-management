@@ -488,6 +488,45 @@
         </div>
       </div>
     </div>
+    <div id="meetingSearchModal" class="modal meeting-search-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="meetingSearchModalTitle">
+        <div class="modal-header">
+          <div class="modal-title">
+            <h2 id="meetingSearchModalTitle">Поиск свободной переговорки</h2>
+            <p class="modal-subtitle"></p>
+          </div>
+          <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">
+            ✕
+          </button>
+        </div>
+        <div class="meeting-search-body">
+          <div id="meetingSearchStatus" class="status" role="status" aria-live="polite"></div>
+          <div class="meeting-search-content">
+            <div class="meeting-search-controls">
+              <div id="meetingSearchDatePicker" class="date-picker"></div>
+              <div class="meeting-search-time">
+                <div class="meeting-booking-time-header">
+                  <h3>Время</h3>
+                </div>
+                <div id="meetingSearchSlots" class="meeting-booking-time-grid"></div>
+              </div>
+            </div>
+            <div class="meeting-search-results">
+              <div class="meeting-search-results-header">
+                <h3 id="meetingSearchResultsTitle" class="floor-actions-title">
+                  Поиск свободной переговорки
+                </h3>
+              </div>
+              <div id="meetingSearchList" class="meeting-search-list"></div>
+              <div id="meetingSearchEmpty" class="placeholder app-empty is-hidden">
+                Свободных переговорок нет.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
     <div id="meetingBookingModal" class="modal meeting-booking-modal" aria-hidden="true">
       <div class="modal-backdrop" data-modal-close="true"></div>
       <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="meetingBookingModalTitle">
@@ -506,8 +545,22 @@
           <div class="meeting-booking-time">
             <div class="meeting-booking-time-header">
               <h3>Время</h3>
+              <span id="meetingBookingSelection" class="meeting-booking-selection">Выберите время</span>
             </div>
             <div id="meetingBookingTimeSlots" class="meeting-booking-time-grid"></div>
+          </div>
+          <div class="form-actions meeting-booking-actions">
+            <button
+              id="meetingBookingCancelBtn"
+              class="danger meeting-booking-cancel is-hidden"
+              type="button"
+              disabled
+            >
+              Отменить бронирование
+            </button>
+            <button id="meetingBookingSubmitBtn" class="primary" type="button" disabled>
+              Забронировать
+            </button>
           </div>
         </div>
       </div>

@@ -1298,6 +1298,114 @@ body.space-editing .space-booking-panel {
   max-width: 560px;
 }
 
+.meeting-search-modal .modal-dialog {
+  width: min(1180px, 84vw);
+  max-width: 1180px;
+}
+
+.meeting-search-body {
+  display: grid;
+  gap: 16px;
+}
+
+.meeting-search-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.meeting-search-controls {
+  display: grid;
+  gap: 16px;
+}
+
+.meeting-search-controls .date-picker {
+  width: 100%;
+  max-width: 520px;
+}
+
+.meeting-search-controls .meeting-search-time {
+  width: 100%;
+  max-width: 520px;
+}
+
+.meeting-search-time {
+  display: grid;
+  gap: 8px;
+}
+
+.meeting-search-modal .meeting-time-slot:disabled {
+  background: #e2e8f0;
+  color: #475569;
+  border-color: #cbd5f5;
+  cursor: not-allowed;
+}
+
+.meeting-search-list {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.meeting-search-results-header {
+  margin-bottom: 12px;
+}
+
+.meeting-search-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.meeting-search-item:hover {
+  border-color: #93c5fd;
+  box-shadow: 0 8px 18px rgba(59, 130, 246, 0.12);
+  background: #ffffff;
+}
+
+.meeting-search-item-main {
+  display: grid;
+  gap: 4px;
+}
+
+.meeting-search-item-title {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.meeting-search-item-meta {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.meeting-search-btn,
+.space-kind-heading .meeting-search-btn {
+  background: transparent;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  appearance: none;
+}
+
+.meeting-search-btn:hover,
+.meeting-search-btn:focus-visible,
+.space-kind-heading .meeting-search-btn:hover,
+.space-kind-heading .meeting-search-btn:focus-visible {
+  background: transparent;
+  background-color: transparent;
+}
+
 .meeting-booking-body {
   display: grid;
   gap: 16px;
@@ -1347,6 +1455,13 @@ body.space-editing .space-booking-panel {
   cursor: pointer;
 }
 
+.meeting-time-slot:disabled {
+  background: #f1f5f9;
+  color: #94a3b8;
+  border-color: #e2e8f0;
+  cursor: not-allowed;
+}
+
 .meeting-time-slot:hover {
   border-color: #3b82f6;
 }
@@ -1364,6 +1479,12 @@ body.space-editing .space-booking-panel {
   border-color: #86efac;
 }
 
+.meeting-time-slot.is-my.is-cancel-selected {
+  background: #16a34a;
+  color: #ffffff;
+  border-color: #16a34a;
+}
+
 .meeting-time-slot.is-selected {
   background: #2563eb;
   color: #ffffff;
@@ -1372,6 +1493,10 @@ body.space-editing .space-booking-panel {
 
 .meeting-booking-actions {
   justify-content: flex-end;
+}
+
+.meeting-booking-actions .meeting-booking-cancel {
+  margin-left: 0;
 }
 
 .meeting-booking-actions .primary:disabled {
@@ -1700,6 +1825,15 @@ body.space-editing .space-booking-panel {
   padding: 6px 6px 2px;
   margin-top: 10px;
   grid-column: 1 / -1;
+}
+
+.space-kind-heading.has-action {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.space-kind-label {
+  flex: 1 1 auto;
 }
 
 .space-kind-heading:first-child {
@@ -2298,5 +2432,9 @@ body.modal-open {
   .card-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .meeting-search-content {
+    grid-template-columns: 1fr;
   }
 }

@@ -111,12 +111,22 @@ const spaceBookingsSection = document.getElementById("spaceBookingsSection");
 const spaceBookingsList = document.getElementById("spaceBookingsList");
 const spaceBookingsEmpty = document.getElementById("spaceBookingsEmpty");
 const spaceBookingsCancelAllBtn = document.getElementById("spaceBookingsCancelAllBtn");
+const meetingSearchModal = document.getElementById("meetingSearchModal");
+const meetingSearchStatus = document.getElementById("meetingSearchStatus");
+const meetingSearchDatePicker = document.getElementById("meetingSearchDatePicker");
+const meetingSearchSlots = document.getElementById("meetingSearchSlots");
+const meetingSearchList = document.getElementById("meetingSearchList");
+const meetingSearchEmpty = document.getElementById("meetingSearchEmpty");
+const meetingSearchResultsTitle = document.getElementById("meetingSearchResultsTitle");
 const meetingBookingModal = document.getElementById("meetingBookingModal");
 const meetingBookingModalTitle = document.getElementById("meetingBookingModalTitle");
 const meetingBookingModalSubtitle = document.getElementById("meetingBookingModalSubtitle");
 const meetingBookingStatus = document.getElementById("meetingBookingStatus");
 const meetingBookingDatePicker = document.getElementById("meetingBookingDatePicker");
 const meetingBookingTimeSlots = document.getElementById("meetingBookingTimeSlots");
+const meetingBookingSelection = document.getElementById("meetingBookingSelection");
+const meetingBookingSubmitBtn = document.getElementById("meetingBookingSubmitBtn");
+const meetingBookingCancelBtn = document.getElementById("meetingBookingCancelBtn");
 const deskModal = document.getElementById("deskModal");
 const deskModalTitle = document.getElementById("deskModalTitle");
 const deskForm = document.getElementById("deskForm");
@@ -190,9 +200,17 @@ const meetingBookingState = {
   selectedDate: null,
   currentMonth: new Date(),
   selectedSlotStarts: new Set(),
+  selectedCancelSlotStarts: new Set(),
   bookings: [],
   space: null,
   isLoading: false,
+};
+const meetingSearchState = {
+  selectedDate: null,
+  currentMonth: new Date(),
+  selectedSlotStarts: new Set(),
+  isLoading: false,
+  bookingsCache: new Map(),
 };
 const meetingSlotMinutes = 30;
 const meetingSlotStartHour = 8;
@@ -1556,6 +1574,70 @@ const meetingSlotStarts = buildMeetingSlots();
 
 const resetMeetingBookingSelection = () => {
   meetingBookingState.selectedSlotStarts = new Set();
+  meetingBookingState.selectedCancelSlotStarts = new Set();
+  updateMeetingBookingSelectionSummary();
+};
+
+const buildMeetingSlotRanges = (slots) => {
+  const ranges = [];
+  let rangeStart = null;
+  let previous = null;
+  slots.forEach((slot) => {
+    if (rangeStart === null) {
+      rangeStart = slot;
+      previous = slot;
+      return;
+    }
+    if (slot === previous + meetingSlotMinutes) {
+      previous = slot;
+      return;
+    }
+    ranges.push({
+      start: rangeStart,
+      end: previous + meetingSlotMinutes,
+    });
+    rangeStart = slot;
+    previous = slot;
+  });
+  if (rangeStart !== null) {
+    ranges.push({
+      start: rangeStart,
+      end: (previous ?? rangeStart) + meetingSlotMinutes,
+    });
+  }
+  return ranges;
+};
+
+const formatMeetingSlotRangesLabel = (slots) =>
+  buildMeetingSlotRanges(slots)
+    .map((range) => `${formatMeetingMinutes(range.start)}–${formatMeetingMinutes(range.end)}`)
+    .join(", ");
+
+const updateMeetingBookingSelectionSummary = () => {
+  const hasBookingSelection = meetingBookingState.selectedSlotStarts.size > 0;
+  const hasCancelSelection = meetingBookingState.selectedCancelSlotStarts.size > 0;
+  if (meetingBookingSubmitBtn) {
+    meetingBookingSubmitBtn.disabled = !hasBookingSelection;
+    meetingBookingSubmitBtn.classList.toggle("is-hidden", hasCancelSelection);
+  }
+  if (meetingBookingCancelBtn) {
+    meetingBookingCancelBtn.disabled = !hasCancelSelection;
+    meetingBookingCancelBtn.classList.toggle("is-hidden", !hasCancelSelection);
+  }
+  if (!meetingBookingSelection) {
+    return;
+  }
+  if (!hasBookingSelection && !hasCancelSelection) {
+    meetingBookingSelection.textContent = "Выберите время";
+    return;
+  }
+  if (hasCancelSelection) {
+    const slots = Array.from(meetingBookingState.selectedCancelSlotStarts.values()).sort((a, b) => a - b);
+    meetingBookingSelection.textContent = `Отмена: ${formatMeetingSlotRangesLabel(slots)}`;
+    return;
+  }
+  const slots = Array.from(meetingBookingState.selectedSlotStarts.values()).sort((a, b) => a - b);
+  meetingBookingSelection.textContent = `Бронь: ${formatMeetingSlotRangesLabel(slots)}`;
 };
 
 const setMeetingBookingSelectedDate = (date) => {
@@ -1693,6 +1775,319 @@ const renderMeetingBookingDatePicker = () => {
   meetingBookingDatePicker.appendChild(footer);
 };
 
+const setMeetingSearchStatus = (message, tone = "") => {
+  if (!meetingSearchStatus) {
+    return;
+  }
+  meetingSearchStatus.textContent = message;
+  meetingSearchStatus.dataset.tone = tone;
+};
+
+const clearMeetingSearchStatus = () => {
+  if (!meetingSearchStatus) {
+    return;
+  }
+  meetingSearchStatus.textContent = "";
+  meetingSearchStatus.dataset.tone = "";
+};
+
+const ensureMeetingSearchSlots = () => {
+  const validSlots = new Set(meetingSlotStarts);
+  meetingSearchState.selectedSlotStarts = new Set(
+    Array.from(meetingSearchState.selectedSlotStarts).filter((slot) => validSlots.has(slot))
+  );
+};
+
+const setMeetingSearchSelectedDate = (date) => {
+  const normalized = normalizeBookingDate(date);
+  if (!normalized) {
+    return;
+  }
+  clearMeetingSearchStatus();
+  meetingSearchState.selectedDate = normalized;
+  const [year, month] = normalized.split("-").map(Number);
+  if (
+    meetingSearchState.currentMonth.getFullYear() !== year ||
+    meetingSearchState.currentMonth.getMonth() !== month - 1
+  ) {
+    meetingSearchState.currentMonth = new Date(year, month - 1, 1);
+  }
+  ensureMeetingSearchSlots();
+  renderMeetingSearchDatePicker();
+  void loadAvailableMeetingRooms();
+};
+
+const renderMeetingSearchDatePicker = () => {
+  if (!meetingSearchDatePicker) {
+    return;
+  }
+  const currentMonth = meetingSearchState.currentMonth;
+  const selectedDate = meetingSearchState.selectedDate;
+  const days = getDaysInMonth(currentMonth);
+
+  meetingSearchDatePicker.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.className = "date-picker-header";
+
+  const prevButton = document.createElement("button");
+  prevButton.className = "month-nav-button";
+  prevButton.type = "button";
+  prevButton.textContent = "‹";
+  prevButton.addEventListener("click", () => {
+    meetingSearchState.currentMonth = new Date(
+      currentMonth.getFullYear(),
+      currentMonth.getMonth() - 1,
+      1
+    );
+    renderMeetingSearchDatePicker();
+  });
+
+  const title = document.createElement("h2");
+  title.textContent = `${getMonthName(currentMonth)} ${currentMonth.getFullYear()}`;
+
+  const nextButton = document.createElement("button");
+  nextButton.className = "month-nav-button";
+  nextButton.type = "button";
+  nextButton.textContent = "›";
+  nextButton.addEventListener("click", () => {
+    meetingSearchState.currentMonth = new Date(
+      currentMonth.getFullYear(),
+      currentMonth.getMonth() + 1,
+      1
+    );
+    renderMeetingSearchDatePicker();
+  });
+
+  header.appendChild(prevButton);
+  header.appendChild(title);
+  header.appendChild(nextButton);
+
+  const grid = document.createElement("div");
+  grid.className = "date-picker-grid";
+  ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].forEach((weekday) => {
+    const cell = document.createElement("div");
+    cell.className = "weekday-header";
+    cell.textContent = weekday;
+    grid.appendChild(cell);
+  });
+
+  const normalizedSelected = selectedDate ? normalizeBookingDate(selectedDate) : null;
+
+  days.forEach((day, index) => {
+    if (!day) {
+      const cell = document.createElement("div");
+      cell.className = "date-cell empty";
+      cell.setAttribute("aria-hidden", "true");
+      cell.dataset.index = String(index);
+      grid.appendChild(cell);
+      return;
+    }
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = "date-cell";
+    const dayFormatted = formatPickerDate(day);
+    const isSelected = normalizedSelected === dayFormatted;
+    if (isSelected) {
+      cell.classList.add("selected");
+    }
+    if (!isDateNotPast(day)) {
+      cell.disabled = true;
+    }
+    cell.textContent = String(day.getDate());
+    cell.addEventListener("click", () => {
+      if (!cell.disabled) {
+        setMeetingSearchSelectedDate(dayFormatted);
+      }
+    });
+    grid.appendChild(cell);
+  });
+
+  const footer = document.createElement("div");
+  footer.className = "date-picker-footer";
+  const todayButton = document.createElement("button");
+  todayButton.className = "today-button";
+  todayButton.type = "button";
+  todayButton.textContent = "Сегодня";
+  todayButton.addEventListener("click", () => {
+    const today = new Date();
+    meetingSearchState.currentMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    setMeetingSearchSelectedDate(formatPickerDate(today));
+  });
+  footer.appendChild(todayButton);
+
+  meetingSearchDatePicker.appendChild(header);
+  meetingSearchDatePicker.appendChild(grid);
+  meetingSearchDatePicker.appendChild(footer);
+};
+
+const renderMeetingSearchTimeSelectors = () => {
+  if (!meetingSearchSlots) {
+    return;
+  }
+  ensureMeetingSearchSlots();
+  meetingSearchSlots.innerHTML = "";
+  meetingSlotStarts.forEach((startMin) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "meeting-time-slot";
+    button.textContent = formatMeetingMinutes(startMin);
+    if (meetingSearchState.selectedSlotStarts.has(startMin)) {
+      button.classList.add("is-selected");
+    }
+    button.addEventListener("click", () => {
+      const updated = new Set(meetingSearchState.selectedSlotStarts);
+      if (updated.has(startMin)) {
+        updated.delete(startMin);
+      } else {
+        updated.add(startMin);
+      }
+      meetingSearchState.selectedSlotStarts = updated;
+      renderMeetingSearchTimeSelectors();
+      void loadAvailableMeetingRooms();
+    });
+    meetingSearchSlots.appendChild(button);
+  });
+};
+
+const updateMeetingSearchTimeLabel = () => {
+  if (meetingSearchResultsTitle) {
+    if (meetingSearchState.selectedSlotStarts.size === 0) {
+      meetingSearchResultsTitle.textContent = "Свободные переговорки";
+    } else {
+      const slots = Array.from(meetingSearchState.selectedSlotStarts).sort((a, b) => a - b);
+      const label = buildMeetingSlotRanges(slots)
+        .map((range) => `${formatMeetingMinutes(range.start)}–${formatMeetingMinutes(range.end)}`)
+        .join(", ");
+      meetingSearchResultsTitle.textContent = `Свободные переговорки на ${label}`;
+    }
+  }
+  return;
+};
+
+const fetchMeetingSearchBookings = async (spaceId, date) => {
+  const key = `${spaceId}:${date}`;
+  if (meetingSearchState.bookingsCache.has(key)) {
+    return meetingSearchState.bookingsCache.get(key) || [];
+  }
+  const response = await apiRequest(
+    `/api/meeting-room-bookings?space_id=${encodeURIComponent(spaceId)}&date=${encodeURIComponent(date)}`
+  );
+  const items = Array.isArray(response?.items) ? response.items : [];
+  const bookings = items
+    .map((item) => {
+      const startMin = parseMeetingTimeToMinutes(item.start_time);
+      const endMin = parseMeetingTimeToMinutes(item.end_time);
+      if (startMin === null || endMin === null) {
+        return null;
+      }
+      return { startMin, endMin };
+    })
+    .filter(Boolean);
+  meetingSearchState.bookingsCache.set(key, bookings);
+  return bookings;
+};
+
+const openMeetingBookingFromSearch = (space) => {
+  openMeetingBookingModal(space);
+  closeMeetingSearchModal();
+  if (meetingSearchState.selectedDate) {
+    setMeetingBookingSelectedDate(meetingSearchState.selectedDate);
+  }
+  meetingBookingState.selectedSlotStarts = new Set(meetingSearchState.selectedSlotStarts);
+  renderMeetingTimeSlots();
+};
+
+const renderMeetingSearchResults = (rooms = []) => {
+  if (!meetingSearchList || !meetingSearchEmpty) {
+    return;
+  }
+  meetingSearchList.innerHTML = "";
+  if (!rooms.length) {
+    meetingSearchEmpty.classList.remove("is-hidden");
+    return;
+  }
+  meetingSearchEmpty.classList.add("is-hidden");
+  rooms.forEach((room) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "meeting-search-item";
+
+    const main = document.createElement("div");
+    main.className = "meeting-search-item-main";
+
+    const title = document.createElement("div");
+    title.className = "meeting-search-item-title";
+    title.textContent = room.name || "Переговорка";
+    main.appendChild(title);
+
+    const meta = document.createElement("div");
+    meta.className = "meeting-search-item-meta";
+    const capacityValue = Number(room?.capacity);
+    meta.textContent = capacityValue > 0 ? `До ${getPeopleCountLabel(capacityValue)}` : "Вместимость не указана";
+    main.appendChild(meta);
+
+    const capacityTag = document.createElement("span");
+    capacityTag.className = "space-capacity-tag";
+    capacityTag.textContent = capacityValue > 0 ? String(capacityValue) : "—";
+
+    item.appendChild(main);
+    item.appendChild(capacityTag);
+    item.addEventListener("click", () => openMeetingBookingFromSearch(room));
+    meetingSearchList.appendChild(item);
+  });
+};
+
+const loadAvailableMeetingRooms = async () => {
+  if (!meetingSearchList || !meetingSearchEmpty) {
+    return;
+  }
+  const date = meetingSearchState.selectedDate;
+  const slots = Array.from(meetingSearchState.selectedSlotStarts);
+  const rooms = Array.isArray(currentSpaces)
+    ? currentSpaces.filter((space) => space?.kind === "meeting" && space?.id)
+    : [];
+  updateMeetingSearchTimeLabel();
+  if (!date || slots.length === 0) {
+    meetingSearchEmpty.textContent = "Выберите дату и время для поиска.";
+    renderMeetingSearchResults([]);
+    clearMeetingSearchStatus();
+    return;
+  }
+  if (!rooms.length) {
+    renderMeetingSearchResults([]);
+    setMeetingSearchStatus("На этом этаже нет переговорок.", "info");
+    return;
+  }
+  meetingSearchState.isLoading = true;
+  clearMeetingSearchStatus();
+  try {
+    const results = await Promise.all(
+      rooms.map(async (room) => {
+        const bookings = await fetchMeetingSearchBookings(room.id, date);
+        const isFree = slots.every((slotStart) => {
+          const slotEnd = slotStart + meetingSlotMinutes;
+          return bookings.every(
+            (booking) => slotEnd <= booking.startMin || slotStart >= booking.endMin
+          );
+        });
+        return isFree ? room : null;
+      })
+    );
+    const freeRooms = results.filter(Boolean);
+    renderMeetingSearchResults(freeRooms);
+    if (!freeRooms.length) {
+      meetingSearchEmpty.textContent = "Свободных переговорок нет.";
+      clearMeetingSearchStatus();
+    }
+  } catch (error) {
+    renderMeetingSearchResults([]);
+    setMeetingSearchStatus(error.message, "error");
+  } finally {
+    meetingSearchState.isLoading = false;
+  }
+};
+
 const loadMeetingRoomBookings = async (spaceId, date) => {
   if (!spaceId || !date) {
     return;
@@ -1753,6 +2148,8 @@ const renderMeetingTimeSlots = () => {
     return;
   }
   meetingBookingTimeSlots.innerHTML = "";
+  const cancelMode = meetingBookingState.selectedCancelSlotStarts.size > 0;
+  const validCancelSlots = new Set();
   meetingSlotStarts.forEach((startMin) => {
     const endMin = startMin + meetingSlotMinutes;
     const button = document.createElement("button");
@@ -1760,30 +2157,96 @@ const renderMeetingTimeSlots = () => {
     button.className = "meeting-time-slot";
     button.textContent = formatMeetingMinutes(startMin);
     const status = getMeetingSlotStatus(startMin, endMin);
+    if (cancelMode && status !== "my") {
+      button.disabled = true;
+    }
     if (status === "booked") {
       button.classList.add("is-booked");
     }
     if (status === "my") {
       button.classList.add("is-my");
     }
-    if (status === "free" && meetingBookingState.selectedSlotStarts.has(startMin)) {
+    if (!cancelMode && status === "free" && meetingBookingState.selectedSlotStarts.has(startMin)) {
       button.classList.add("is-selected");
+    }
+    if (status === "my" && meetingBookingState.selectedCancelSlotStarts.has(startMin)) {
+      button.classList.add("is-cancel-selected");
+      validCancelSlots.add(startMin);
     }
     button.addEventListener("click", async () => {
       if (status === "booked") {
         return;
       }
-      if (status === "my") {
-        void handleCancelMeetingBooking(startMin, endMin);
+      if (cancelMode && status !== "my") {
         return;
       }
       clearMeetingBookingStatus();
-      meetingBookingState.selectedSlotStarts = new Set([startMin]);
+      if (status === "my") {
+        const updated = new Set(meetingBookingState.selectedCancelSlotStarts);
+        if (updated.has(startMin)) {
+          updated.delete(startMin);
+        } else {
+          if (updated.size === 0 && meetingBookingState.selectedSlotStarts.size > 0) {
+            meetingBookingState.selectedSlotStarts = new Set();
+          }
+          updated.add(startMin);
+        }
+        meetingBookingState.selectedCancelSlotStarts = updated;
+      } else {
+        if (cancelMode) {
+          return;
+        }
+        const updated = new Set(meetingBookingState.selectedSlotStarts);
+        if (updated.has(startMin)) {
+          updated.delete(startMin);
+        } else {
+          updated.add(startMin);
+        }
+        meetingBookingState.selectedSlotStarts = updated;
+      }
       renderMeetingTimeSlots();
-      await handleMeetingBookingSubmit();
     });
     meetingBookingTimeSlots.appendChild(button);
   });
+  meetingBookingState.selectedCancelSlotStarts = validCancelSlots;
+  updateMeetingBookingSelectionSummary();
+};
+
+const openMeetingSearchModal = () => {
+  if (!meetingSearchModal) {
+    return;
+  }
+  meetingSearchModal.classList.add("is-open");
+  meetingSearchModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  clearMeetingSearchStatus();
+  if (!meetingSearchState.selectedDate) {
+    setMeetingSearchSelectedDate(formatPickerDate(new Date()));
+  } else {
+    renderMeetingSearchDatePicker();
+  }
+  renderMeetingSearchTimeSelectors();
+  updateMeetingSearchTimeLabel();
+  void loadAvailableMeetingRooms();
+};
+
+const closeMeetingSearchModal = () => {
+  if (!meetingSearchModal) {
+    return;
+  }
+  meetingSearchModal.classList.remove("is-open");
+  meetingSearchModal.setAttribute("aria-hidden", "true");
+  if (
+    !(buildingModal && buildingModal.classList.contains("is-open")) &&
+    !(spaceModal && spaceModal.classList.contains("is-open")) &&
+    !(deskModal && deskModal.classList.contains("is-open")) &&
+    !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
+    !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) &&
+    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open"))
+  ) {
+    document.body.classList.remove("modal-open");
+  }
+  clearMeetingSearchStatus();
 };
 
 const openMeetingBookingModal = (space) => {
@@ -1808,6 +2271,7 @@ const openMeetingBookingModal = (space) => {
   document.body.classList.add("modal-open");
   clearMeetingBookingStatus();
   meetingBookingState.bookings = [];
+  resetMeetingBookingSelection();
   ensureMeetingBookingDate();
   renderMeetingBookingDatePicker();
   renderMeetingTimeSlots();
@@ -1824,12 +2288,16 @@ const closeMeetingBookingModal = () => {
   meetingBookingModal.setAttribute("aria-hidden", "true");
   meetingBookingState.space = null;
   resetMeetingBookingSelection();
+  meetingSearchState.selectedSlotStarts = new Set();
+  updateMeetingSearchTimeLabel();
+  renderMeetingSearchTimeSelectors();
   if (
     !(buildingModal && buildingModal.classList.contains("is-open")) &&
     !(spaceModal && spaceModal.classList.contains("is-open")) &&
     !(deskModal && deskModal.classList.contains("is-open")) &&
     !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
-    !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open"))
+    !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) &&
+    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -2369,7 +2837,8 @@ const closeBookingsModal = () => {
     !(spaceModal && spaceModal.classList.contains("is-open")) &&
     !(deskModal && deskModal.classList.contains("is-open")) &&
     !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
-    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open"))
+    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
+    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -2535,6 +3004,7 @@ const handleMeetingBookingSubmit = async () => {
     if (failedSlots.length === 0) {
       setMeetingBookingStatus("Переговорка успешно забронирована.", "success");
       resetMeetingBookingSelection();
+      closeMeetingBookingModal();
     } else {
       meetingBookingState.selectedSlotStarts = new Set(failedSlots.map((slot) => slot.startMin));
       renderMeetingTimeSlots();
@@ -2578,6 +3048,66 @@ const handleCancelMeetingBooking = async (startMin, endMin) => {
       }),
     });
     setMeetingBookingStatus("Бронирование отменено.", "success");
+    if (meetingBookingState.space?.id && meetingBookingState.selectedDate) {
+      await loadMeetingRoomBookings(meetingBookingState.space.id, meetingBookingState.selectedDate);
+    }
+  } catch (error) {
+    setMeetingBookingStatus(error.message, "error");
+  }
+};
+
+const handleCancelMeetingBookings = async () => {
+  const spaceId = meetingBookingState.space?.id;
+  const date = meetingBookingState.selectedDate;
+  const slots = Array.from(meetingBookingState.selectedCancelSlotStarts.values()).sort((a, b) => a - b);
+  if (!spaceId || !date) {
+    setMeetingBookingStatus("Выберите переговорную и дату.", "error");
+    return;
+  }
+  if (slots.length === 0) {
+    setMeetingBookingStatus("Выберите слоты для отмены.", "error");
+    return;
+  }
+  const headers = getMeetingBookingHeaders();
+  if (!headers["X-User-Key"]) {
+    setMeetingBookingStatus("Нужна информация о пользователе для отмены.", "error");
+    return;
+  }
+  const label = formatMeetingSlotRangesLabel(slots);
+  const confirmed = window.confirm(`Отменить бронирование на ${label}?`);
+  if (!confirmed) {
+    return;
+  }
+  try {
+    const failedSlots = [];
+    for (const startMin of slots) {
+      const endMin = startMin + meetingSlotMinutes;
+      try {
+        await apiRequest("/api/meeting-room-bookings", {
+          method: "DELETE",
+          headers,
+          body: JSON.stringify({
+            space_id: Number(spaceId),
+            date,
+            start_time: formatMeetingMinutes(startMin),
+            end_time: formatMeetingMinutes(endMin),
+          }),
+        });
+      } catch (error) {
+        failedSlots.push({ startMin, endMin, message: error.message });
+      }
+    }
+    if (failedSlots.length === 0) {
+      setMeetingBookingStatus("Бронирование отменено.", "success");
+      meetingBookingState.selectedCancelSlotStarts = new Set();
+      renderMeetingTimeSlots();
+    } else {
+      meetingBookingState.selectedCancelSlotStarts = new Set(
+        failedSlots.map((slot) => slot.startMin)
+      );
+      renderMeetingTimeSlots();
+      setMeetingBookingStatus("Часть слотов не удалось отменить, проверьте выделение.", "error");
+    }
     if (meetingBookingState.space?.id && meetingBookingState.selectedDate) {
       await loadMeetingRoomBookings(meetingBookingState.space.id, meetingBookingState.selectedDate);
     }
@@ -2855,7 +3385,8 @@ const closeSpaceModal = () => {
     !(deskModal && deskModal.classList.contains("is-open")) &&
     !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
     !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) &&
-    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open"))
+    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
+    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -2905,7 +3436,8 @@ const closeDeskModal = () => {
     !(spaceModal && spaceModal.classList.contains("is-open")) &&
     !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
     !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) &&
-    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open"))
+    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
+    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -3678,7 +4210,23 @@ const renderFloorSpaces = (spaces) => {
     if (kindGroup !== lastKind) {
       const heading = document.createElement("div");
       heading.className = "space-kind-heading";
-      heading.textContent = spaceKindPluralLabels[kindGroup] || "Без типов";
+      const label = document.createElement("span");
+      label.className = "space-kind-label";
+      label.textContent = spaceKindPluralLabels[kindGroup] || "Без типов";
+      heading.appendChild(label);
+      if (kindGroup === "meeting") {
+        heading.classList.add("has-action");
+        const searchButton = document.createElement("button");
+        searchButton.type = "button";
+        searchButton.className = "icon-button meeting-search-btn";
+        searchButton.setAttribute("aria-label", "Найти свободную переговорку");
+        searchButton.title = "Найти свободную переговорку";
+        searchButton.textContent = "🔍";
+        searchButton.addEventListener("click", () => {
+          openMeetingSearchModal();
+        });
+        heading.appendChild(searchButton);
+      }
       floorSpacesList.appendChild(heading);
       lastKind = kindGroup;
     }
@@ -3767,6 +4315,9 @@ const renderFloorSpaces = (spaces) => {
   );
   }
   void refreshCoworkingAvailability(currentSpaces);
+  if (meetingSearchModal && meetingSearchModal.classList.contains("is-open")) {
+    void loadAvailableMeetingRooms();
+  }
   updateFloorPlanSpacesVisibility();
 };
 
@@ -4387,7 +4938,8 @@ const closeFloorPlanModal = () => {
     !(spaceModal && spaceModal.classList.contains("is-open")) &&
     !(deskModal && deskModal.classList.contains("is-open")) &&
     !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) &&
-    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open"))
+    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
+    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -8965,11 +9517,38 @@ if (meetingBookingModal) {
   });
 }
 
+if (meetingSearchModal) {
+  meetingSearchModal.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (target.dataset.modalClose === "true") {
+      closeMeetingSearchModal();
+    }
+  });
+}
+
+if (meetingBookingSubmitBtn) {
+  meetingBookingSubmitBtn.addEventListener("click", () => {
+    void handleMeetingBookingSubmit();
+  });
+}
+if (meetingBookingCancelBtn) {
+  meetingBookingCancelBtn.addEventListener("click", () => {
+    void handleCancelMeetingBookings();
+  });
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeBreadcrumbMenus();
     if (lassoState.active) {
       cancelLassoMode("Выделение отменено.");
+      return;
+    }
+    if (meetingSearchModal && meetingSearchModal.classList.contains("is-open")) {
+      closeMeetingSearchModal();
       return;
     }
     if (meetingBookingModal && meetingBookingModal.classList.contains("is-open")) {
