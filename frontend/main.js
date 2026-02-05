@@ -1791,14 +1791,15 @@ const openMeetingBookingModal = (space) => {
     return;
   }
   meetingBookingState.space = space || null;
+  const meetingName = typeof space?.name === "string" ? space.name.trim() : "";
   if (meetingBookingModalTitle) {
-    const meetingName = typeof space?.name === "string" ? space.name.trim() : "";
     meetingBookingModalTitle.textContent = meetingName || "Переговорка";
   }
   if (meetingBookingModalSubtitle) {
     const capacityValue = Number(space?.capacity);
     const capacityLabel = getPeopleCountLabel(capacityValue) || "не указано";
-    meetingBookingModalSubtitle.textContent = `На ${capacityLabel}`;
+    const roomLabel = meetingName || "Переговорка";
+    meetingBookingModalSubtitle.textContent = `Переговорная комната ${roomLabel} на ${capacityLabel}`;
   }
   if (!meetingBookingModal.classList.contains("is-open")) {
     meetingBookingModal.classList.add("is-open");
@@ -3482,6 +3483,100 @@ const getSpaceColor = (space) => {
   return polygon.getAttribute("data-space-color") || polygon.getAttribute("fill");
 };
 
+const coworkingDeskSummaryCache = new Map();
+let coworkingDeskSummaryRequestId = 0;
+
+const getCoworkingDeskSummaryKey = (spaceId, date) => `${spaceId}:${date}`;
+
+const getAvailabilityColorPair = (freeCount, totalCount) => {
+  if (!Number.isFinite(totalCount) || totalCount <= 0) {
+    return { text: "#64748b", background: "#f1f5f9", border: "#e2e8f0" };
+  }
+  const ratio = Math.min(Math.max(freeCount / totalCount, 0), 1);
+  const hue = Math.round(120 * ratio);
+  return {
+    text: `hsl(${hue}, 70%, 30%)`,
+    background: `hsla(${hue}, 70%, 85%, 0.65)`,
+    border: `hsla(${hue}, 70%, 45%, 0.35)`,
+  };
+};
+
+const updateCoworkingAvailabilityTag = (tag, occupiedCount, totalCount, freeCount) => {
+  if (!tag) {
+    return;
+  }
+  tag.textContent = `${occupiedCount} / ${totalCount}`;
+  const colors = getAvailabilityColorPair(freeCount, totalCount);
+  tag.style.color = colors.text;
+  tag.style.backgroundColor = colors.background;
+  tag.style.borderColor = colors.border;
+};
+
+const loadCoworkingDeskSummary = async (spaceId, date) => {
+  const cacheKey = getCoworkingDeskSummaryKey(spaceId, date);
+  if (coworkingDeskSummaryCache.has(cacheKey)) {
+    return coworkingDeskSummaryCache.get(cacheKey);
+  }
+  const response = await apiRequest(
+    `/api/spaces/${encodeURIComponent(spaceId)}/desks?date=${encodeURIComponent(date)}`
+  );
+  const desks = Array.isArray(response?.items) ? response.items : [];
+  let freeCount = 0;
+  let occupiedCount = 0;
+  desks.forEach((desk) => {
+    applyDeskBookingPayload(desk);
+    if (desk.bookingStatus === "free") {
+      freeCount += 1;
+    } else {
+      occupiedCount += 1;
+    }
+  });
+  const summary = { freeCount, occupiedCount, totalCount: desks.length };
+  coworkingDeskSummaryCache.set(cacheKey, summary);
+  return summary;
+};
+
+const refreshCoworkingAvailability = async (spaces) => {
+  if (!floorSpacesList) {
+    return;
+  }
+  const currentRequestId = ++coworkingDeskSummaryRequestId;
+  const date = formatPickerDate(new Date());
+  const coworkings = Array.isArray(spaces)
+    ? spaces.filter((space) => space?.kind === "coworking" && space?.id)
+    : [];
+  await Promise.all(
+    coworkings.map(async (space) => {
+      const item = floorSpacesList.querySelector(
+        `.space-list-item[data-space-id="${String(space.id)}"]`
+      );
+      const tag = item ? item.querySelector(".space-availability-tag") : null;
+      if (tag) {
+        tag.textContent = "— / —";
+        tag.style.color = "";
+        tag.style.backgroundColor = "";
+        tag.style.borderColor = "";
+      }
+      try {
+        const summary = await loadCoworkingDeskSummary(space.id, date);
+        if (!summary || coworkingDeskSummaryRequestId !== currentRequestId) {
+          return;
+        }
+        updateCoworkingAvailabilityTag(
+          tag,
+          summary.occupiedCount,
+          summary.totalCount,
+          summary.freeCount
+        );
+      } catch (error) {
+        if (tag) {
+          tag.textContent = "— / —";
+        }
+      }
+    })
+  );
+};
+
 const highlightSpaceListItem = (spaceName, spaceId = null) => {
   if (!floorSpacesList) {
     return;
@@ -3591,6 +3686,7 @@ const renderFloorSpaces = (spaces) => {
     item.className = "space-list-item";
     item.dataset.spaceId = space.id ? String(space.id) : "";
     item.dataset.spaceName = space.name || "";
+    item.dataset.spaceKind = space.kind || "";
 
     const selectButton = document.createElement("button");
     selectButton.type = "button";
@@ -3605,6 +3701,13 @@ const renderFloorSpaces = (spaces) => {
     label.className = "space-name";
     label.textContent = space.name || "Без названия";
     selectButton.appendChild(label);
+
+    if (space.kind === "coworking") {
+      const availabilityTag = document.createElement("span");
+      availabilityTag.className = "space-availability-tag";
+      availabilityTag.textContent = "— / —";
+      selectButton.appendChild(availabilityTag);
+    }
 
     const kindLabel = getSpaceKindLabel(space.kind);
     if (kindLabel) {
@@ -3663,6 +3766,7 @@ const renderFloorSpaces = (spaces) => {
     spaceEditState.selectedPolygon.getAttribute("data-space-id") || null
   );
   }
+  void refreshCoworkingAvailability(currentSpaces);
   updateFloorPlanSpacesVisibility();
 };
 

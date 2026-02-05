@@ -1751,6 +1751,18 @@ body.space-editing .space-booking-panel {
   flex-shrink: 0;
 }
 
+.space-availability-tag {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
 .space-capacity-tag {
   font-size: 11px;
   line-height: 1;
