@@ -1913,21 +1913,7 @@ const renderSpaceAttendeesList = (desks = []) => {
       const avatarImg = document.createElement("img");
       avatarImg.alt = attendee.name;
       avatarImg.loading = "lazy";
-      const cachedAvatar = getCachedAvatar(avatarUrl);
-      if (cachedAvatar) {
-        avatarImg.src = cachedAvatar;
-      } else {
-        avatarImg.src = avatarUrl;
-        avatarImg.dataset.avatarUrl = avatarUrl;
-        cacheAvatarFromUrl(avatarUrl).then((cached) => {
-          if (!cached) {
-            return;
-          }
-          if (avatarImg.dataset.avatarUrl === avatarUrl) {
-            avatarImg.src = cached;
-          }
-        });
-      }
+      avatarImg.src = avatarUrl;
       avatar.appendChild(avatarImg);
     } else {
       avatar.textContent = getAttendeeInitials(attendee.name);
