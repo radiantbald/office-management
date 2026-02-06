@@ -1804,13 +1804,17 @@ const formatMeetingSlotRangesLabel = (slots) =>
     .map((range) => `${formatMeetingMinutes(range.start)}–${formatMeetingMinutes(range.end)}`)
     .join(", ");
 
-const buildMeetingBookingAlertMessage = (space, date, slots) => {
+const buildMeetingBookingAlertMessage = (space, date, slots, replacedCount = 0) => {
   const meetingName = typeof space?.name === "string" ? space.name.trim() : "";
   const capacityLabel = getPeopleCountLabel(space?.capacity);
   const dateLabel = formatBookingDate(date);
   const timeLabel = formatMeetingSlotRangesLabel(slots);
   const base = meetingName ? `Переговорка "${meetingName}"` : "Переговорка";
   const capacityPart = capacityLabel ? ` на ${capacityLabel}` : "";
+  const replacedLine =
+    replacedCount > 0
+      ? "Предыдущее бронирование на это время отменено."
+      : "";
   let whenLine = "";
   if (dateLabel && timeLabel) {
     whenLine = `Дата и время: ${dateLabel}, ${timeLabel}`;
@@ -1819,9 +1823,16 @@ const buildMeetingBookingAlertMessage = (space, date, slots) => {
   } else if (timeLabel) {
     whenLine = `Время: ${timeLabel}`;
   }
-  return whenLine
-    ? `${base}${capacityPart} забронирована.\n${whenLine}`
-    : `${base}${capacityPart} забронирована.`;
+  if (whenLine && replacedLine) {
+    return `${base}${capacityPart} забронирована.\n${whenLine}\n${replacedLine}`;
+  }
+  if (whenLine) {
+    return `${base}${capacityPart} забронирована.\n${whenLine}`;
+  }
+  if (replacedLine) {
+    return `${base}${capacityPart} забронирована.\n${replacedLine}`;
+  }
+  return `${base}${capacityPart} забронирована.`;
 };
 
 const updateMeetingBookingSelectionSummary = () => {
@@ -3409,10 +3420,11 @@ const handleMeetingBookingSubmit = async () => {
   }
   try {
     const failedSlots = [];
+    let replacedCount = 0;
     for (const startMin of slots) {
       const endMin = startMin + meetingSlotMinutes;
       try {
-        await apiRequest("/api/meeting-room-bookings", {
+        const response = await apiRequest("/api/meeting-room-bookings", {
           method: "POST",
           headers,
           body: JSON.stringify({
@@ -3422,12 +3434,20 @@ const handleMeetingBookingSubmit = async () => {
             end_time: formatMeetingMinutes(endMin),
           }),
         });
+        if (response?.replacedCount) {
+          replacedCount += Number(response.replacedCount) || 0;
+        }
       } catch (error) {
         failedSlots.push({ startMin, endMin, message: error.message });
       }
     }
     if (failedSlots.length === 0) {
-      const alertMessage = buildMeetingBookingAlertMessage(meetingBookingState.space, date, slots);
+      const alertMessage = buildMeetingBookingAlertMessage(
+        meetingBookingState.space,
+        date,
+        slots,
+        replacedCount
+      );
       setMeetingBookingStatus("Переговорка успешно забронирована.", "success");
       showTopAlert(alertMessage, "success");
       resetMeetingBookingSelection();

@@ -184,18 +184,54 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	tx, err := a.db.Begin()
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer tx.Rollback()
+
+	employeeID, err := getEmployeeIDByUserKey(tx, userKey)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	var existing int
-	err = a.db.QueryRow(
-		`SELECT 1
-		   FROM meeting_room_bookings
-		  WHERE space_id = $1 AND date = $2
-		    AND NOT (end_min <= $3 OR start_min >= $4)
-		  LIMIT 1`,
-		payload.SpaceID,
-		date,
-		startMin,
-		endMin,
-	).Scan(&existing)
+	if employeeID == "" {
+		err = tx.QueryRow(
+			`SELECT 1
+			   FROM meeting_room_bookings
+			  WHERE space_id = $1 AND date = $2 AND user_key <> $5
+			    AND NOT (end_min <= $3 OR start_min >= $4)
+			  LIMIT 1`,
+			payload.SpaceID,
+			date,
+			startMin,
+			endMin,
+			userKey,
+		).Scan(&existing)
+	} else {
+		err = tx.QueryRow(
+			`SELECT 1
+			   FROM meeting_room_bookings b
+			   LEFT JOIN users u
+			     ON u.user_key = b.user_key OR u.profile_id = b.user_key
+			  WHERE b.space_id = $1 AND b.date = $2
+			    AND NOT (b.end_min <= $3 OR b.start_min >= $4)
+			    AND NOT (
+			      (COALESCE(NULLIF(u.employee_id, ''), '') = $5)
+			      OR ((u.employee_id IS NULL OR u.employee_id = '') AND b.user_key = $6)
+			    )
+			  LIMIT 1`,
+			payload.SpaceID,
+			date,
+			startMin,
+			endMin,
+			employeeID,
+			userKey,
+		).Scan(&existing)
+	}
 	if err == nil {
 		respondError(w, http.StatusBadRequest, "Переговорка занята на выбранное время")
 		return
@@ -205,21 +241,114 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if _, err := a.db.Exec(
-		`INSERT INTO meeting_room_bookings (space_id, user_key, user_name, date, start_min, end_min)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		payload.SpaceID,
+	replacedCount := int64(0)
+	result, err := tx.Exec(
+		`DELETE FROM meeting_room_bookings
+		  WHERE user_key = $1 AND date = $2 AND space_id <> $5
+		    AND NOT (end_min <= $3 OR start_min >= $4)`,
 		userKey,
-		userName,
 		date,
 		startMin,
 		endMin,
-	); err != nil {
+		payload.SpaceID,
+	)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if result != nil {
+		replacedCount, _ = result.RowsAffected()
+	}
+	if employeeID != "" {
+		result, err = tx.Exec(
+			`DELETE FROM meeting_room_bookings b
+			  USING users u
+			  WHERE u.employee_id = $6 AND u.employee_id <> ''
+			    AND (u.user_key = b.user_key OR u.profile_id = b.user_key)
+			    AND b.user_key <> $1
+			    AND b.date = $2 AND b.space_id <> $5
+			    AND NOT (b.end_min <= $3 OR b.start_min >= $4)`,
+			userKey,
+			date,
+			startMin,
+			endMin,
+			payload.SpaceID,
+			employeeID,
+		)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if result != nil {
+			affected, _ := result.RowsAffected()
+			replacedCount += affected
+		}
+	}
+
+	var existingOwn int
+	if employeeID == "" {
+		err = tx.QueryRow(
+			`SELECT 1
+			   FROM meeting_room_bookings
+			  WHERE space_id = $1 AND user_key = $2 AND date = $3
+			    AND start_min = $4 AND end_min = $5
+			  LIMIT 1`,
+			payload.SpaceID,
+			userKey,
+			date,
+			startMin,
+			endMin,
+		).Scan(&existingOwn)
+	} else {
+		err = tx.QueryRow(
+			`SELECT 1
+			   FROM meeting_room_bookings b
+			   LEFT JOIN users u
+			     ON u.user_key = b.user_key OR u.profile_id = b.user_key
+			  WHERE b.space_id = $1 AND b.date = $2
+			    AND b.start_min = $3 AND b.end_min = $4
+			    AND (
+			      COALESCE(NULLIF(u.employee_id, ''), '') = $5
+			      OR ((u.employee_id IS NULL OR u.employee_id = '') AND b.user_key = $6)
+			    )
+			  LIMIT 1`,
+			payload.SpaceID,
+			date,
+			startMin,
+			endMin,
+			employeeID,
+			userKey,
+		).Scan(&existingOwn)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := tx.Exec(
+			`INSERT INTO meeting_room_bookings (space_id, user_key, user_name, date, start_min, end_min)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			payload.SpaceID,
+			userKey,
+			userName,
+			date,
+			startMin,
+			endMin,
+		); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	respondJSON(w, http.StatusCreated, map[string]any{"success": true})
+	respondJSON(w, http.StatusCreated, map[string]any{
+		"success":       true,
+		"replacedCount": replacedCount,
+	})
 }
 
 func (a *app) handleCancelMeetingRoomBooking(w http.ResponseWriter, r *http.Request) {
@@ -360,4 +489,26 @@ func formatMinutesToTime(minutes int) string {
 		minutes = 59
 	}
 	return time.Date(0, 1, 1, hours, minutes, 0, 0, time.UTC).Format("15:04")
+}
+
+func getEmployeeIDByUserKey(tx *sql.Tx, userKey string) (string, error) {
+	if tx == nil || strings.TrimSpace(userKey) == "" {
+		return "", nil
+	}
+	row := tx.QueryRow(
+		`SELECT COALESCE(NULLIF(employee_id, ''), '')
+		   FROM users
+		  WHERE user_key = $1 OR profile_id = $1
+		  ORDER BY (user_key = $1) DESC
+		  LIMIT 1`,
+		userKey,
+	)
+	var employeeID string
+	if err := row.Scan(&employeeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(employeeID), nil
 }
