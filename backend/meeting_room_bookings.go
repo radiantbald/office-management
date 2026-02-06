@@ -14,6 +14,7 @@ type meetingRoomBooking struct {
 	SpaceID   int64  `json:"space_id"`
 	UserKey   string `json:"user_key"`
 	UserName  string `json:"user_name"`
+	WbBand    string `json:"wb_band,omitempty"`
 	Date      string `json:"date"`
 	StartTime string `json:"start_time"`
 	EndTime   string `json:"end_time"`
@@ -59,10 +60,25 @@ func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Reque
 	}
 
 	rows, err := a.db.Query(
-		`SELECT id, space_id, user_key, user_name, date, start_min, end_min, created_at
-		   FROM meeting_room_bookings
-		  WHERE space_id = $1 AND date = $2
-		  ORDER BY start_min ASC`,
+		`SELECT b.id,
+		        b.space_id,
+		        b.user_key,
+		        COALESCE(NULLIF(u.full_name, ''), NULLIF(u.user_name, ''), b.user_name),
+		        COALESCE(u.wb_band, ''),
+		        b.date,
+		        b.start_min,
+		        b.end_min,
+		        b.created_at
+		   FROM meeting_room_bookings b
+		   LEFT JOIN LATERAL (
+		     SELECT user_name, full_name, wb_band
+		       FROM users
+		      WHERE user_key = b.user_key OR profile_id = b.user_key
+		      ORDER BY (user_key = b.user_key) DESC
+		      LIMIT 1
+		   ) u ON true
+		  WHERE b.space_id = $1 AND b.date = $2
+		  ORDER BY b.start_min ASC`,
 		spaceID,
 		date,
 	)
@@ -82,6 +98,7 @@ func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Reque
 			&item.SpaceID,
 			&item.UserKey,
 			&item.UserName,
+			&item.WbBand,
 			&item.Date,
 			&startMin,
 			&endMin,
@@ -150,6 +167,20 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 	}
 	if endMin <= startMin {
 		respondError(w, http.StatusBadRequest, "end_time must be later than start_time")
+		return
+	}
+
+	timezone, err := a.getSpaceTimezone(payload.SpaceID)
+	if err != nil {
+		if errors.Is(err, errNotFound) {
+			respondError(w, http.StatusNotFound, "meeting room not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := ensureMeetingRoomTimeNotPast(date, endMin, timezone); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -260,6 +291,48 @@ func (a *app) ensureMeetingSpace(spaceID int64) error {
 	}
 	if strings.TrimSpace(kind) != "meeting" {
 		return errors.New("space is not a meeting room")
+	}
+	return nil
+}
+
+func (a *app) getSpaceTimezone(spaceID int64) (string, error) {
+	row := a.db.QueryRow(
+		`SELECT COALESCE(ob.timezone, '')
+		   FROM spaces s
+		   JOIN floors f ON f.id = s.floor_id
+		   JOIN office_buildings ob ON ob.id = f.building_id
+		  WHERE s.id = $1`,
+		spaceID,
+	)
+	var timezone string
+	if err := row.Scan(&timezone); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errNotFound
+		}
+		return "", err
+	}
+	timezone = strings.TrimSpace(timezone)
+	if timezone == "" {
+		timezone = "Europe/Moscow"
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		timezone = "Europe/Moscow"
+	}
+	return timezone, nil
+}
+
+func ensureMeetingRoomTimeNotPast(date string, endMin int, timezone string) error {
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		location = time.Local
+	}
+	now := time.Now().In(location)
+	if now.Format("2006-01-02") != date {
+		return nil
+	}
+	nowMinutes := now.Hour()*60 + now.Minute()
+	if nowMinutes >= endMin {
+		return errors.New("Нельзя бронировать на прошедшее время")
 	}
 	return nil
 }

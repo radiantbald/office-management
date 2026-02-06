@@ -1,6 +1,7 @@
 const buildingForm = document.getElementById("buildingForm");
 const buildingNameInput = document.getElementById("buildingName");
 const buildingAddressInput = document.getElementById("buildingAddress");
+const buildingTimezoneInput = document.getElementById("buildingTimezone");
 const buildingImageInput = document.getElementById("buildingImage");
 const submitBtn = document.getElementById("submitBtn");
 const openAddModalBtn = document.getElementById("openAddModalBtn");
@@ -51,6 +52,8 @@ const buildingPage = document.getElementById("buildingPage");
 const floorsCount = document.getElementById("floorsCount");
 const floorsList = document.getElementById("floorsList");
 const floorsEmpty = document.getElementById("floorsEmpty");
+const buildingTitle = document.getElementById("buildingTitle");
+const buildingAddressText = document.getElementById("buildingAddressText");
 const buildingStatus = document.getElementById("buildingStatus");
 const floorPage = document.getElementById("floorPage");
 const floorTitle = document.getElementById("floorTitle");
@@ -68,12 +71,26 @@ const cancelFloorEditBtn = document.getElementById("cancelFloorEditBtn");
 const floorPlanSpaces = document.getElementById("floorPlanSpaces");
 const floorSpacesList = document.getElementById("floorSpacesList");
 const floorSpacesEmpty = document.getElementById("floorSpacesEmpty");
+const spaceKindFilter = document.getElementById("spaceKindFilter");
+const spaceKindFilterSlot = document.getElementById("spaceKindFilterSlot");
+const spaceKindFilterButtons = spaceKindFilter
+  ? Array.from(spaceKindFilter.querySelectorAll("[data-space-kind-filter]"))
+  : [];
 const addSpaceBtn = document.getElementById("addSpaceBtn");
 const spaceModal = document.getElementById("spaceModal");
 const spaceModalTitle = document.getElementById("spaceModalTitle");
 const spaceForm = document.getElementById("spaceForm");
 const spaceNameField = document.getElementById("spaceNameField");
+const spaceNameFieldLabel = spaceNameField
+  ? spaceNameField.closest(".field")?.querySelector("span")
+  : null;
+const spaceNameFieldDefaultPlaceholder = spaceNameField
+  ? spaceNameField.getAttribute("placeholder") || ""
+  : "";
 const spaceKindField = document.getElementById("spaceKindField");
+const spaceSubdivisionFields = document.getElementById("spaceSubdivisionFields");
+const spaceSubdivisionLevel1Field = document.getElementById("spaceSubdivisionLevel1Field");
+const spaceSubdivisionLevel2Field = document.getElementById("spaceSubdivisionLevel2Field");
 const spaceCapacityFieldRow = document.getElementById("spaceCapacityFieldRow");
 const spaceCapacityField = document.getElementById("spaceCapacityField");
 const spaceColorInput = document.getElementById("spaceColorInput");
@@ -120,9 +137,11 @@ const meetingSearchSlots = document.getElementById("meetingSearchSlots");
 const meetingSearchList = document.getElementById("meetingSearchList");
 const meetingSearchEmpty = document.getElementById("meetingSearchEmpty");
 const meetingSearchResultsTitle = document.getElementById("meetingSearchResultsTitle");
+const meetingSearchOfficeTime = document.getElementById("meetingSearchOfficeTime");
 const meetingBookingModal = document.getElementById("meetingBookingModal");
 const meetingBookingModalTitle = document.getElementById("meetingBookingModalTitle");
 const meetingBookingModalSubtitle = document.getElementById("meetingBookingModalSubtitle");
+const meetingBookingOfficeTime = document.getElementById("meetingBookingOfficeTime");
 const meetingBookingStatus = document.getElementById("meetingBookingStatus");
 const meetingBookingDatePicker = document.getElementById("meetingBookingDatePicker");
 const meetingBookingTimeSlots = document.getElementById("meetingBookingTimeSlots");
@@ -214,9 +233,16 @@ const meetingSearchState = {
   isLoading: false,
   bookingsCache: new Map(),
 };
+const meetingSlotTooltipState = {
+  element: null,
+  slotStart: null,
+};
 const meetingSlotMinutes = 30;
 const meetingSlotStartHour = 8;
 const meetingSlotEndHour = 21;
+const defaultBuildingTimezone = "Europe/Moscow";
+let meetingSearchOfficeTimeTimer = null;
+let meetingBookingOfficeTimeTimer = null;
 let hasFloorPlan = false;
 let removeImage = false;
 let previewObjectUrl = null;
@@ -241,6 +267,7 @@ const spaceTooltipState = {
   element: null,
   polygon: null,
 };
+const hoverSpaceLabels = new Map();
 const spaceEditDefaults = {
   handleRadius: 4,
   edgeSnapDistance: 8,
@@ -297,6 +324,8 @@ const spaceKindPluralLabels = {
   meeting: "Переговорки",
 };
 const defaultSpaceKind = "coworking";
+let currentSpaceKindFilter = defaultSpaceKind;
+let visibleSpaces = [];
 const fallbackBuildingImages = [
   "/assets/buildings/1.png",
   "/assets/buildings/2.png",
@@ -316,6 +345,12 @@ const spaceBreadcrumbActions = document.querySelector(
 );
 const headerActionsHome = headerActions
   ? { parent: headerActions.parentElement, nextSibling: headerActions.nextElementSibling }
+  : null;
+const spaceKindFilterHome = spaceKindFilter
+  ? { parent: spaceKindFilter.parentElement, nextSibling: spaceKindFilter.nextElementSibling }
+  : null;
+const addSpaceBtnHome = addSpaceBtn
+  ? { parent: addSpaceBtn.parentElement, nextSibling: addSpaceBtn.nextElementSibling }
   : null;
 
 const AUTH_TOKEN_KEY = "auth_access_token";
@@ -1609,6 +1644,98 @@ const formatMeetingMinutes = (minutes) => {
   return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
 };
 
+const formatOfficeTime = (timezone) => {
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: timezone || defaultBuildingTimezone,
+    }).format(new Date());
+  } catch (error) {
+    return new Intl.DateTimeFormat("ru-RU", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: defaultBuildingTimezone,
+    }).format(new Date());
+  }
+};
+
+const formatOfficeDate = (timezone) => {
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      timeZone: timezone || defaultBuildingTimezone,
+    }).format(new Date());
+  } catch (error) {
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      timeZone: defaultBuildingTimezone,
+    }).format(new Date());
+  }
+};
+
+const formatOfficeWeekday = (timezone) => {
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      weekday: "long",
+      timeZone: timezone || defaultBuildingTimezone,
+    }).format(new Date());
+  } catch (error) {
+    return new Intl.DateTimeFormat("ru-RU", {
+      weekday: "long",
+      timeZone: defaultBuildingTimezone,
+    }).format(new Date());
+  }
+};
+
+const getOfficeDateTimeParts = (timezone) => {
+  const safeTimezone = timezone || defaultBuildingTimezone;
+  try {
+    const formatter = new Intl.DateTimeFormat("ru-RU", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZone: safeTimezone,
+    });
+    const parts = formatter.formatToParts(new Date());
+    const values = {};
+    parts.forEach((part) => {
+      if (part.type !== "literal") {
+        values[part.type] = part.value;
+      }
+    });
+    if (!values.year || !values.month || !values.day || !values.hour || !values.minute) {
+      return null;
+    }
+    const hours = Number(values.hour);
+    const minutes = Number(values.minute);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+      return null;
+    }
+    return {
+      date: `${values.year}-${values.month}-${values.day}`,
+      minutes: hours * 60 + minutes,
+    };
+  } catch (error) {
+    return null;
+  }
+};
+
+const getOfficeDateTimeSnapshot = () => {
+  const timezone =
+    typeof currentBuilding?.timezone === "string" && currentBuilding.timezone.trim() !== ""
+      ? currentBuilding.timezone
+      : defaultBuildingTimezone;
+  return getOfficeDateTimeParts(timezone) || getOfficeDateTimeParts(defaultBuildingTimezone);
+};
+
 const buildMeetingSlots = () => {
   const slots = [];
   for (let hour = meetingSlotStartHour; hour < meetingSlotEndHour; hour += 1) {
@@ -1860,10 +1987,93 @@ const clearMeetingSearchStatus = () => {
   meetingSearchStatus.dataset.tone = "";
 };
 
+const getOfficeTimeLabel = () => {
+  const timezone =
+    typeof currentBuilding?.timezone === "string" && currentBuilding.timezone.trim() !== ""
+      ? currentBuilding.timezone
+      : defaultBuildingTimezone;
+  return `Время офиса: ${formatOfficeTime(timezone)}, ${formatOfficeWeekday(
+    timezone
+  )} ${formatOfficeDate(timezone)}`;
+};
+
+const updateMeetingSearchOfficeTime = () => {
+  if (!meetingSearchOfficeTime) {
+    return;
+  }
+  meetingSearchOfficeTime.textContent = getOfficeTimeLabel();
+  if (meetingSearchModal && meetingSearchModal.classList.contains("is-open")) {
+    const beforeSize = meetingSearchState.selectedSlotStarts.size;
+    ensureMeetingSearchSlots();
+    renderMeetingSearchTimeSelectors();
+    if (meetingSearchState.selectedSlotStarts.size !== beforeSize) {
+      void loadAvailableMeetingRooms();
+    }
+  }
+};
+
+const startMeetingSearchOfficeTimeTicker = () => {
+  updateMeetingSearchOfficeTime();
+  if (meetingSearchOfficeTimeTimer) {
+    clearInterval(meetingSearchOfficeTimeTimer);
+  }
+  meetingSearchOfficeTimeTimer = setInterval(updateMeetingSearchOfficeTime, 30000);
+};
+
+const stopMeetingSearchOfficeTimeTicker = () => {
+  if (meetingSearchOfficeTimeTimer) {
+    clearInterval(meetingSearchOfficeTimeTimer);
+    meetingSearchOfficeTimeTimer = null;
+  }
+  if (meetingSearchOfficeTime) {
+    meetingSearchOfficeTime.textContent = "";
+  }
+};
+
+const updateMeetingBookingOfficeTime = () => {
+  if (!meetingBookingOfficeTime) {
+    return;
+  }
+  meetingBookingOfficeTime.textContent = getOfficeTimeLabel();
+  if (meetingBookingModal && meetingBookingModal.classList.contains("is-open")) {
+    renderMeetingTimeSlots();
+  }
+};
+
+const startMeetingBookingOfficeTimeTicker = () => {
+  updateMeetingBookingOfficeTime();
+  if (meetingBookingOfficeTimeTimer) {
+    clearInterval(meetingBookingOfficeTimeTimer);
+  }
+  meetingBookingOfficeTimeTimer = setInterval(updateMeetingBookingOfficeTime, 30000);
+};
+
+const stopMeetingBookingOfficeTimeTicker = () => {
+  if (meetingBookingOfficeTimeTimer) {
+    clearInterval(meetingBookingOfficeTimeTimer);
+    meetingBookingOfficeTimeTimer = null;
+  }
+  if (meetingBookingOfficeTime) {
+    meetingBookingOfficeTime.textContent = "";
+  }
+};
+
 const ensureMeetingSearchSlots = () => {
   const validSlots = new Set(meetingSlotStarts);
+  const selectedDate = meetingSearchState.selectedDate;
+  const officeSnapshot = getOfficeDateTimeSnapshot();
+  const isOfficeToday = officeSnapshot && selectedDate === officeSnapshot.date;
+  const nowMinutes = officeSnapshot?.minutes ?? null;
   meetingSearchState.selectedSlotStarts = new Set(
-    Array.from(meetingSearchState.selectedSlotStarts).filter((slot) => validSlots.has(slot))
+    Array.from(meetingSearchState.selectedSlotStarts).filter((slot) => {
+      if (!validSlots.has(slot)) {
+        return false;
+      }
+      if (!isOfficeToday || nowMinutes === null) {
+        return true;
+      }
+      return slot + meetingSlotMinutes > nowMinutes;
+    })
   );
 };
 
@@ -1996,11 +2206,20 @@ const renderMeetingSearchTimeSelectors = () => {
   }
   ensureMeetingSearchSlots();
   meetingSearchSlots.innerHTML = "";
+  const officeSnapshot = getOfficeDateTimeSnapshot();
+  const selectedDate = meetingSearchState.selectedDate;
+  const isOfficeToday = officeSnapshot && selectedDate === officeSnapshot.date;
+  const nowMinutes = officeSnapshot?.minutes ?? null;
   meetingSlotStarts.forEach((startMin) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "meeting-time-slot";
     button.textContent = formatMeetingMinutes(startMin);
+    const endMin = startMin + meetingSlotMinutes;
+    const isPast = isOfficeToday && nowMinutes !== null && endMin <= nowMinutes;
+    if (isPast) {
+      button.disabled = true;
+    }
     if (meetingSearchState.selectedSlotStarts.has(startMin)) {
       button.classList.add("is-selected");
     }
@@ -2097,7 +2316,7 @@ const renderMeetingSearchResults = (rooms = []) => {
     main.appendChild(meta);
 
     const capacityTag = document.createElement("span");
-    capacityTag.className = "space-capacity-tag";
+    capacityTag.className = "space-capacity-tag pill number-pill";
     capacityTag.textContent = capacityValue > 0 ? String(capacityValue) : "—";
 
     item.appendChild(main);
@@ -2212,13 +2431,104 @@ const getMeetingSlotStatus = (startMin, endMin) => {
 
 const isMeetingRangeBooked = (startMin, endMin) => getMeetingSlotStatus(startMin, endMin) !== "free";
 
+const ensureMeetingSlotTooltip = () => {
+  if (!meetingBookingTimeSlots) {
+    return null;
+  }
+  if (!meetingSlotTooltipState.element) {
+    const tooltip = document.createElement("div");
+    tooltip.className = "meeting-slot-tooltip is-hidden";
+    meetingBookingTimeSlots.appendChild(tooltip);
+    meetingSlotTooltipState.element = tooltip;
+  }
+  return meetingSlotTooltipState.element;
+};
+
+const hideMeetingSlotTooltip = () => {
+  const tooltip = ensureMeetingSlotTooltip();
+  if (!tooltip) {
+    return;
+  }
+  tooltip.classList.add("is-hidden");
+  tooltip.style.left = "";
+  tooltip.style.top = "";
+  meetingSlotTooltipState.slotStart = null;
+};
+
+const getMeetingSlotBooking = (startMin, endMin) => {
+  const { key: currentUserKey } = getBookingUserInfo();
+  for (const booking of meetingBookingState.bookings) {
+    if (startMin >= booking.endMin || endMin <= booking.startMin) {
+      continue;
+    }
+    const bookingUserKey = String(booking.user_key || booking.userKey || "").trim();
+    if (currentUserKey && bookingUserKey && bookingUserKey === currentUserKey) {
+      continue;
+    }
+    return booking;
+  }
+  return null;
+};
+
+const updateMeetingSlotTooltipPosition = (button) => {
+  const tooltip = ensureMeetingSlotTooltip();
+  if (!tooltip || !meetingBookingTimeSlots) {
+    return;
+  }
+  const containerRect = meetingBookingTimeSlots.getBoundingClientRect();
+  const buttonRect = button.getBoundingClientRect();
+  tooltip.style.left = `${buttonRect.left - containerRect.left + buttonRect.width / 2}px`;
+  tooltip.style.top = `${buttonRect.top - containerRect.top}px`;
+};
+
+const showMeetingSlotTooltip = (button, booking, startMin) => {
+  const tooltip = ensureMeetingSlotTooltip();
+  if (!tooltip) {
+    return;
+  }
+  tooltip.innerHTML = "";
+  const rawName = String(
+    booking?.user_name || booking?.userName || booking?.full_name || booking?.fullName || ""
+  ).trim();
+  const name = formatUserNameInitials(rawName) || rawName;
+  const nameEl = document.createElement("span");
+  nameEl.className = "meeting-slot-tooltip-name";
+  nameEl.textContent = name || "Сотрудник";
+  tooltip.appendChild(nameEl);
+  const wbBand = String(booking?.wb_band || booking?.wbBand || booking?.wbband || "").trim();
+  if (wbBand) {
+    const bandLink = document.createElement("a");
+    bandLink.className = "meeting-slot-band";
+    bandLink.href = `https://band.wb.ru/wb/messages/@${encodeURIComponent(wbBand)}`;
+    bandLink.target = "_blank";
+    bandLink.rel = "noopener noreferrer";
+    bandLink.title = "Написать в WB Band";
+    const bandIcon = document.createElement("img");
+    bandIcon.src = "/assets/band-logo.png";
+    bandIcon.alt = "WB Band";
+    bandIcon.className = "meeting-slot-band-icon";
+    bandLink.appendChild(bandIcon);
+    tooltip.appendChild(bandLink);
+  }
+  updateMeetingSlotTooltipPosition(button);
+  tooltip.classList.remove("is-hidden");
+  meetingSlotTooltipState.slotStart = startMin;
+};
+
 const renderMeetingTimeSlots = () => {
   if (!meetingBookingTimeSlots) {
     return;
   }
   meetingBookingTimeSlots.innerHTML = "";
+  meetingSlotTooltipState.element = null;
+  meetingSlotTooltipState.slotStart = null;
   const cancelMode = meetingBookingState.selectedCancelSlotStarts.size > 0;
   const validCancelSlots = new Set();
+  const validSelectedSlots = new Set();
+  const officeSnapshot = getOfficeDateTimeSnapshot();
+  const selectedDate = meetingBookingState.selectedDate;
+  const isOfficeToday = officeSnapshot && selectedDate === officeSnapshot.date;
+  const nowMinutes = officeSnapshot?.minutes ?? null;
   meetingSlotStarts.forEach((startMin) => {
     const endMin = startMin + meetingSlotMinutes;
     const button = document.createElement("button");
@@ -2226,7 +2536,10 @@ const renderMeetingTimeSlots = () => {
     button.className = "meeting-time-slot";
     button.textContent = formatMeetingMinutes(startMin);
     const status = getMeetingSlotStatus(startMin, endMin);
-    if (cancelMode && status !== "my") {
+    const isPast = isOfficeToday && nowMinutes !== null && endMin <= nowMinutes;
+    if (isPast) {
+      button.disabled = true;
+    } else if (cancelMode && status !== "my") {
       button.disabled = true;
     }
     if (status === "booked") {
@@ -2235,21 +2548,43 @@ const renderMeetingTimeSlots = () => {
     if (status === "my") {
       button.classList.add("is-my");
     }
-    if (!cancelMode && status === "free" && meetingBookingState.selectedSlotStarts.has(startMin)) {
+    if (
+      !isPast &&
+      !cancelMode &&
+      status === "free" &&
+      meetingBookingState.selectedSlotStarts.has(startMin)
+    ) {
       button.classList.add("is-selected");
+      validSelectedSlots.add(startMin);
     }
-    if (status === "my" && meetingBookingState.selectedCancelSlotStarts.has(startMin)) {
+    if (!isPast && status === "my" && meetingBookingState.selectedCancelSlotStarts.has(startMin)) {
       button.classList.add("is-cancel-selected");
       validCancelSlots.add(startMin);
     }
     button.addEventListener("click", async () => {
+      if (isPast) {
+        hideMeetingSlotTooltip();
+        return;
+      }
       if (status === "booked") {
+        const booking = getMeetingSlotBooking(startMin, endMin);
+        if (meetingSlotTooltipState.slotStart === startMin) {
+          hideMeetingSlotTooltip();
+          return;
+        }
+        if (booking) {
+          showMeetingSlotTooltip(button, booking, startMin);
+        } else {
+          hideMeetingSlotTooltip();
+        }
         return;
       }
       if (cancelMode && status !== "my") {
+        hideMeetingSlotTooltip();
         return;
       }
       clearMeetingBookingStatus();
+      hideMeetingSlotTooltip();
       if (status === "my") {
         const updated = new Set(meetingBookingState.selectedCancelSlotStarts);
         if (updated.has(startMin)) {
@@ -2277,6 +2612,7 @@ const renderMeetingTimeSlots = () => {
     });
     meetingBookingTimeSlots.appendChild(button);
   });
+  meetingBookingState.selectedSlotStarts = validSelectedSlots;
   meetingBookingState.selectedCancelSlotStarts = validCancelSlots;
   updateMeetingBookingSelectionSummary();
 };
@@ -2289,6 +2625,7 @@ const openMeetingSearchModal = () => {
   meetingSearchModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("modal-open");
   clearMeetingSearchStatus();
+  startMeetingSearchOfficeTimeTicker();
   if (!meetingSearchState.selectedDate) {
     setMeetingSearchSelectedDate(formatPickerDate(new Date()));
   } else {
@@ -2316,6 +2653,7 @@ const closeMeetingSearchModal = () => {
     document.body.classList.remove("modal-open");
   }
   clearMeetingSearchStatus();
+  stopMeetingSearchOfficeTimeTicker();
 };
 
 const openMeetingBookingModal = (space) => {
@@ -2338,6 +2676,7 @@ const openMeetingBookingModal = (space) => {
   }
   document.body.classList.add("modal-open");
   clearMeetingBookingStatus();
+  startMeetingBookingOfficeTimeTicker();
   meetingBookingState.bookings = [];
   resetMeetingBookingSelection();
   ensureMeetingBookingDate();
@@ -2354,6 +2693,8 @@ const closeMeetingBookingModal = () => {
   }
   meetingBookingModal.classList.remove("is-open");
   meetingBookingModal.setAttribute("aria-hidden", "true");
+  stopMeetingBookingOfficeTimeTicker();
+  hideMeetingSlotTooltip();
   meetingBookingState.space = null;
   resetMeetingBookingSelection();
   meetingSearchState.selectedSlotStarts = new Set();
@@ -3391,6 +3732,44 @@ const updateSpaceColorPreview = (color) => {
 const normalizeSpaceKind = (kind) => (kind && spaceKindLabels[kind] ? kind : defaultSpaceKind);
 
 const getSpaceKindLabel = (kind) => (kind && spaceKindLabels[kind] ? spaceKindLabels[kind] : "");
+const getSpaceKindFieldRow = () =>
+  spaceKindField ? spaceKindField.closest(".field") : null;
+const getSpaceKindValueForModal = (space) =>
+  space?.kind ? normalizeSpaceKind(space.kind) : normalizeSpaceKindFilter(currentSpaceKindFilter);
+const spaceKindModalCopy = {
+  coworking: {
+    noun: "коворкинг",
+    accusative: "коворкинг",
+    genitive: "коворкинга",
+    newLabel: "Новый",
+    placeholder: "",
+  },
+  meeting: {
+    noun: "переговорка",
+    accusative: "переговорку",
+    genitive: "переговорки",
+    newLabel: "Новая",
+    placeholder: "Например, Переговорка 1",
+  },
+};
+const updateSpaceModalCopy = (kind, isEditing) => {
+  const copy = kind && spaceKindModalCopy[kind] ? spaceKindModalCopy[kind] : null;
+  if (!copy) {
+    return;
+  }
+  if (spaceModalTitle) {
+    spaceModalTitle.textContent = isEditing
+      ? `Редактировать ${copy.accusative}`
+      : `${copy.newLabel} ${copy.noun}`;
+  }
+  if (spaceNameFieldLabel) {
+    spaceNameFieldLabel.textContent = `Название ${copy.genitive}`;
+  }
+  if (spaceNameField) {
+    const nextPlaceholder = copy.placeholder || spaceNameFieldDefaultPlaceholder;
+    spaceNameField.setAttribute("placeholder", nextPlaceholder);
+  }
+};
 
 const updateSpaceCapacityVisibility = (kind) => {
   const isMeeting = kind === "meeting";
@@ -3406,6 +3785,24 @@ const updateSpaceCapacityVisibility = (kind) => {
   }
 };
 
+const updateSpaceSubdivisionVisibility = (kind) => {
+  const isCoworking = kind === "coworking";
+  if (spaceSubdivisionFields) {
+    spaceSubdivisionFields.classList.toggle("is-hidden", !isCoworking);
+    spaceSubdivisionFields.setAttribute("aria-hidden", String(!isCoworking));
+  }
+  const shouldDisable = !isCoworking;
+  [spaceSubdivisionLevel1Field, spaceSubdivisionLevel2Field].forEach((field) => {
+    if (!field) {
+      return;
+    }
+    field.disabled = shouldDisable;
+    if (shouldDisable) {
+      field.value = "";
+    }
+  });
+};
+
 const openSpaceModal = (space = null) => {
   if (!spaceModal) {
     return;
@@ -3415,9 +3812,6 @@ const openSpaceModal = (space = null) => {
   spaceModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("modal-open");
   clearSpaceStatus();
-  if (spaceModalTitle) {
-    spaceModalTitle.textContent = space ? "Редактировать пространство" : "Новое пространство";
-  }
   if (spaceDeleteBtn) {
     spaceDeleteBtn.classList.toggle("is-hidden", !space);
   }
@@ -3426,7 +3820,14 @@ const openSpaceModal = (space = null) => {
     spaceNameField.focus();
   }
   if (spaceKindField) {
-    spaceKindField.value = normalizeSpaceKind(space?.kind);
+    const nextKind = getSpaceKindValueForModal(space);
+    spaceKindField.value = nextKind;
+    spaceKindField.disabled = true;
+    const kindRow = getSpaceKindFieldRow();
+    if (kindRow) {
+      kindRow.classList.add("is-hidden");
+      kindRow.setAttribute("aria-hidden", "true");
+    }
   }
   if (spaceCapacityField) {
     const capacityValue =
@@ -3435,7 +3836,16 @@ const openSpaceModal = (space = null) => {
         : "";
     spaceCapacityField.value = capacityValue;
   }
-  updateSpaceCapacityVisibility(spaceKindField ? spaceKindField.value : defaultSpaceKind);
+  if (spaceSubdivisionLevel1Field) {
+    spaceSubdivisionLevel1Field.value = space?.subdivision_level_1 || "";
+  }
+  if (spaceSubdivisionLevel2Field) {
+    spaceSubdivisionLevel2Field.value = space?.subdivision_level_2 || "";
+  }
+  const currentKind = spaceKindField ? spaceKindField.value : defaultSpaceKind;
+  updateSpaceCapacityVisibility(currentKind);
+  updateSpaceSubdivisionVisibility(currentKind);
+  updateSpaceModalCopy(currentKind, Boolean(space));
   if (spaceColorInput) {
     const initialColor = space?.color || getSpaceColor(space) || "#60a5fa";
     spaceColorInput.value = initialColor;
@@ -3465,6 +3875,7 @@ const closeSpaceModal = () => {
     spaceForm.reset();
   }
   updateSpaceCapacityVisibility(defaultSpaceKind);
+  updateSpaceSubdivisionVisibility(defaultSpaceKind);
   if (spaceDeleteBtn) {
     spaceDeleteBtn.classList.add("is-hidden");
     spaceDeleteBtn.disabled = false;
@@ -3545,6 +3956,7 @@ if (spaceKindField) {
       return;
     }
     updateSpaceCapacityVisibility(event.target.value);
+    updateSpaceSubdivisionVisibility(event.target.value);
   });
 }
 
@@ -4243,49 +4655,37 @@ const selectSpaceFromList = (space) => {
   selectSpacePolygon(polygon, { showHandles: false });
 };
 
-const renderFloorSpaces = (spaces) => {
+const renderFloorSpacesList = (spaces) => {
   if (!floorSpacesList || !floorSpacesEmpty) {
     return;
   }
-  currentSpaces = Array.isArray(spaces) ? spaces : [];
+  if (!isFloorEditing) {
+    restoreAddSpaceBtnHome();
+  }
+  const spacesToRender = Array.isArray(spaces) ? spaces : [];
   floorSpacesList.innerHTML = "";
-  if (currentSpaces.length === 0) {
-    floorSpacesEmpty.classList.toggle("is-hidden", !isFloorEditing);
+  if (spacesToRender.length === 0) {
+    const hasAnySpaces = currentSpaces.length > 0;
+    floorSpacesEmpty.textContent = hasAnySpaces
+      ? "Пространств этого типа пока нет."
+      : "Пространств пока нет.";
+    floorSpacesEmpty.classList.remove("is-hidden");
     updateFloorPlanSpacesVisibility();
     return;
   }
   floorSpacesEmpty.classList.add("is-hidden");
-  const kindOrder = Object.keys(spaceKindLabels);
-  const kindRank = new Map(kindOrder.map((kind, index) => [kind, index]));
-  const getSpaceKindGroup = (space) =>
-    space?.kind && spaceKindLabels[space.kind] ? space.kind : "";
-  const sortedSpaces = [...currentSpaces].sort((left, right) => {
-    const leftKind = getSpaceKindGroup(left);
-    const rightKind = getSpaceKindGroup(right);
-    const leftRank = kindRank.has(leftKind) ? kindRank.get(leftKind) : kindOrder.length;
-    const rightRank = kindRank.has(rightKind) ? kindRank.get(rightKind) : kindOrder.length;
-    if (leftRank !== rightRank) {
-      return leftRank - rightRank;
-    }
-    const leftLabel = getSpaceKindLabel(leftKind);
-    const rightLabel = getSpaceKindLabel(rightKind);
-    if (leftLabel !== rightLabel) {
-      return leftLabel.localeCompare(rightLabel, "ru");
-    }
-    return (left?.name || "").localeCompare(right?.name || "", "ru", { sensitivity: "base" });
-  });
-  let lastKind = null;
-  sortedSpaces.forEach((space) => {
-    const kindGroup = getSpaceKindGroup(space);
-    if (kindGroup !== lastKind) {
+
+  const sortByName = (left, right) =>
+    (left?.name || "").localeCompare(right?.name || "", "ru", { sensitivity: "base" });
+  const createKindHeading = (kindGroup) => {
       const heading = document.createElement("div");
       heading.className = "space-kind-heading";
       const label = document.createElement("span");
       label.className = "space-kind-label";
       label.textContent = spaceKindPluralLabels[kindGroup] || "Без типов";
       heading.appendChild(label);
-      if (kindGroup === "meeting") {
-        heading.classList.add("has-action");
+      const actions = [];
+      if (kindGroup === "meeting" && !isFloorEditing) {
         const searchButton = document.createElement("button");
         searchButton.type = "button";
         searchButton.className = "icon-button meeting-search-btn";
@@ -4295,13 +4695,26 @@ const renderFloorSpaces = (spaces) => {
         searchButton.addEventListener("click", () => {
           openMeetingSearchModal();
         });
-        heading.appendChild(searchButton);
+        actions.push(searchButton);
+      }
+      if (isFloorEditing && addSpaceBtn) {
+        actions.push(addSpaceBtn);
+      }
+      if (actions.length) {
+        heading.classList.add("has-action");
+        const actionsWrap = document.createElement("div");
+        actionsWrap.className = "space-kind-actions";
+        actions.forEach((action) => actionsWrap.appendChild(action));
+        heading.appendChild(actionsWrap);
       }
       floorSpacesList.appendChild(heading);
-      lastKind = kindGroup;
-    }
+  };
+  const createSpaceListItem = (space, indentLevel = 0) => {
     const item = document.createElement("div");
     item.className = "space-list-item";
+    if (indentLevel > 0) {
+      item.classList.add(`subdivision-level-${indentLevel}`);
+    }
     item.dataset.spaceId = space.id ? String(space.id) : "";
     item.dataset.spaceName = space.name || "";
     item.dataset.spaceKind = space.kind || "";
@@ -4322,26 +4735,22 @@ const renderFloorSpaces = (spaces) => {
 
     if (space.kind === "coworking") {
       const availabilityTag = document.createElement("span");
-      availabilityTag.className = "space-availability-tag";
+      availabilityTag.className = "space-availability-tag pill number-pill";
       availabilityTag.textContent = "— / —";
       selectButton.appendChild(availabilityTag);
     }
 
-    const kindLabel = getSpaceKindLabel(space.kind);
-    if (kindLabel) {
-      const kindTag = document.createElement("span");
-      kindTag.className = "space-kind-tag";
-      kindTag.textContent = kindLabel;
-      selectButton.appendChild(kindTag);
-    }
+    let capacityTag = null;
     if (space.kind === "meeting") {
       const capacityValue = Number(space.capacity);
       if (Number.isFinite(capacityValue) && capacityValue > 0) {
-        const capacityTag = document.createElement("span");
-        capacityTag.className = "space-capacity-tag";
+        capacityTag = document.createElement("span");
+        capacityTag.className = "space-capacity-tag pill number-pill";
         capacityTag.textContent = String(capacityValue);
-        selectButton.appendChild(capacityTag);
       }
+    }
+    if (space.kind === "meeting" && capacityTag) {
+      selectButton.appendChild(capacityTag);
     }
 
     const editButton = document.createElement("button");
@@ -4376,19 +4785,304 @@ const renderFloorSpaces = (spaces) => {
 
     item.appendChild(selectButton);
     item.appendChild(editButton);
-    floorSpacesList.appendChild(item);
-  });
+    return item;
+  };
+  const getSubdivisionPath = (space) => {
+    const level1 = (space?.subdivision_level_1 || "").trim();
+    const level2 = (space?.subdivision_level_2 || "").trim();
+    if (!level1 && !level2) {
+      return ["Общие"];
+    }
+    const path = [];
+    if (level1) {
+      path.push(level1);
+    } else if (level2) {
+      path.push("Общие");
+    }
+    if (level2) {
+      path.push(level2);
+    }
+    return path;
+  };
+  const buildSubdivisionTree = (spacesToGroup) => {
+    const root = new Map();
+    spacesToGroup.forEach((space) => {
+      const path = getSubdivisionPath(space);
+      let currentNode = root;
+      path.forEach((label, index) => {
+        if (!currentNode.has(label)) {
+          currentNode.set(label, { children: new Map(), spaces: [] });
+        }
+        const node = currentNode.get(label);
+        if (index === path.length - 1) {
+          node.spaces.push(space);
+        }
+        currentNode = node.children;
+      });
+    });
+    return root;
+  };
+  const getHoverLabelKey = (space) =>
+    space?.id ? `id:${space.id}` : `name:${space?.name || ""}`;
+  const updateHoverLabelPosition = (label, polygon) => {
+    if (!floorPlanPreview || !label || !polygon) {
+      return;
+    }
+    const screenPoint = getPolygonTopScreenPoint(polygon);
+    if (!screenPoint) {
+      return;
+    }
+    const rect = floorPlanPreview.getBoundingClientRect();
+    label.style.left = `${screenPoint.x - rect.left}px`;
+    label.style.top = `${screenPoint.y - rect.top}px`;
+  };
+  const ensureHoverSpaceLabel = (space, polygon) => {
+    if (!floorPlanPreview || !space?.name || !polygon) {
+      return;
+    }
+    const key = getHoverLabelKey(space);
+    if (hoverSpaceLabels.has(key)) {
+      return;
+    }
+    const label = document.createElement("div");
+    label.className = "space-tooltip space-tooltip--static";
+    label.textContent = space.name;
+    floorPlanPreview.appendChild(label);
+    updateHoverLabelPosition(label, polygon);
+    hoverSpaceLabels.set(key, { label, polygon });
+  };
+  const removeHoverSpaceLabel = (space) => {
+    const key = getHoverLabelKey(space);
+    const entry = hoverSpaceLabels.get(key);
+    if (!entry) {
+      return;
+    }
+    entry.label.remove();
+    hoverSpaceLabels.delete(key);
+  };
+  const showHoverSpaceLabels = (spaces) => {
+    spaces.forEach((space) => {
+      const polygon = findSpacePolygon(space);
+      if (!polygon) {
+        return;
+      }
+      ensureHoverSpaceLabel(space, polygon);
+    });
+  };
+  const hideHoverSpaceLabels = (spaces) => {
+    spaces.forEach((space) => {
+      removeHoverSpaceLabel(space);
+    });
+  };
+  const collectSubdivisionSpaces = (node) => {
+    const collected = [...node.spaces];
+    node.children.forEach((childNode) => {
+      collected.push(...collectSubdivisionSpaces(childNode));
+    });
+    return collected;
+  };
+  const setSubdivisionHoverState = (spaces, shouldHover) => {
+    spaces.forEach((space) => {
+      const polygon = findSpacePolygon(space);
+      if (!polygon) {
+        return;
+      }
+      polygon.classList.toggle("is-hover", shouldHover);
+      if (shouldHover) {
+        updateSpaceTooltipPosition(polygon);
+      } else if (spaceTooltipState.polygon === polygon) {
+        hideSpaceTooltip();
+      }
+    });
+    if (shouldHover) {
+      showHoverSpaceLabels(spaces);
+    } else {
+      hideHoverSpaceLabels(spaces);
+    }
+  };
+  const renderSubdivisionTree = (tree, depth = 0) => {
+    const labels = Array.from(tree.keys()).sort((left, right) => {
+      if (left === "Общие") {
+        return right === "Общие" ? 0 : -1;
+      }
+      if (right === "Общие") {
+        return 1;
+      }
+      return left.localeCompare(right, "ru");
+    });
+    labels.forEach((label) => {
+      const node = tree.get(label);
+      const groupSpaces = collectSubdivisionSpaces(node);
+      const heading = document.createElement("div");
+      heading.className = "space-subdivision-heading";
+      heading.textContent = label;
+      heading.classList.add(`subdivision-level-${depth + 1}`);
+      heading.addEventListener("mouseenter", () => {
+        setSubdivisionHoverState(groupSpaces, true);
+      });
+      heading.addEventListener("mouseleave", () => {
+        setSubdivisionHoverState(groupSpaces, false);
+      });
+      floorSpacesList.appendChild(heading);
+      node.spaces.sort(sortByName).forEach((space) => {
+        floorSpacesList.appendChild(createSpaceListItem(space, depth + 1));
+      });
+      renderSubdivisionTree(node.children, depth + 1);
+    });
+  };
+
+  const coworkingSpaces = spacesToRender.filter((space) => space?.kind === "coworking");
+  const meetingSpaces = spacesToRender.filter((space) => space?.kind === "meeting");
+  const otherSpaces = spacesToRender.filter(
+    (space) => space?.kind !== "coworking" && space?.kind !== "meeting"
+  );
+
+  if (coworkingSpaces.length > 0) {
+    createKindHeading("coworking");
+    const tree = buildSubdivisionTree(coworkingSpaces);
+    renderSubdivisionTree(tree);
+  }
+  if (meetingSpaces.length > 0) {
+    createKindHeading("meeting");
+    meetingSpaces.sort(sortByName).forEach((space) => {
+      floorSpacesList.appendChild(createSpaceListItem(space));
+    });
+  }
+  if (otherSpaces.length > 0) {
+    const kinds = Array.from(
+      new Set(otherSpaces.map((space) => (space?.kind ? space.kind : "")))
+    ).filter((kind) => kind);
+    kinds.forEach((kind) => {
+      createKindHeading(kind);
+      otherSpaces
+        .filter((space) => space.kind === kind)
+        .sort(sortByName)
+        .forEach((space) => {
+          floorSpacesList.appendChild(createSpaceListItem(space));
+        });
+    });
+  }
+
   if (spaceEditState.selectedPolygon) {
   highlightSpaceListItem(
     spaceEditState.selectedPolygon.getAttribute("data-space-name") || "",
     spaceEditState.selectedPolygon.getAttribute("data-space-id") || null
   );
   }
-  void refreshCoworkingAvailability(currentSpaces);
+  void refreshCoworkingAvailability(spacesToRender);
   if (meetingSearchModal && meetingSearchModal.classList.contains("is-open")) {
     void loadAvailableMeetingRooms();
   }
   updateFloorPlanSpacesVisibility();
+};
+
+const normalizeSpaceKindFilter = (kind) =>
+  kind === "coworking" || kind === "meeting" ? kind : defaultSpaceKind;
+
+const getVisibleSpaces = (spaces) => {
+  if (!Array.isArray(spaces)) {
+    return [];
+  }
+  const filter = normalizeSpaceKindFilter(currentSpaceKindFilter);
+  return spaces.filter((space) => space?.kind === filter);
+};
+
+const updateSpaceKindFilterControls = () => {
+  if (!spaceKindFilterButtons.length) {
+    return;
+  }
+  const filter = normalizeSpaceKindFilter(currentSpaceKindFilter);
+  spaceKindFilterButtons.forEach((button) => {
+    const kind = button.dataset.spaceKindFilter || "";
+    const isActive = kind === filter;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+};
+
+const updateSpaceKindFilterPlacement = () => {
+  if (!spaceKindFilter || !spaceKindFilterSlot || !spaceKindFilterHome?.parent) {
+    return;
+  }
+  if (isFloorEditing) {
+    if (spaceKindFilter.parentElement !== spaceKindFilterHome.parent) {
+      if (spaceKindFilterHome.nextSibling) {
+        spaceKindFilterHome.parent.insertBefore(spaceKindFilter, spaceKindFilterHome.nextSibling);
+      } else {
+        spaceKindFilterHome.parent.appendChild(spaceKindFilter);
+      }
+    }
+  } else if (spaceKindFilter.parentElement !== spaceKindFilterSlot) {
+    spaceKindFilterSlot.appendChild(spaceKindFilter);
+  }
+};
+
+const restoreAddSpaceBtnHome = () => {
+  if (!addSpaceBtn || !addSpaceBtnHome?.parent) {
+    return;
+  }
+  if (addSpaceBtn.parentElement === addSpaceBtnHome.parent) {
+    return;
+  }
+  if (
+    addSpaceBtnHome.nextSibling &&
+    addSpaceBtnHome.nextSibling.parentElement === addSpaceBtnHome.parent
+  ) {
+    addSpaceBtnHome.parent.insertBefore(addSpaceBtn, addSpaceBtnHome.nextSibling);
+  } else {
+    addSpaceBtnHome.parent.appendChild(addSpaceBtn);
+  }
+};
+
+const placeAddSpaceBtnNextToKindLabel = () => {
+  if (!addSpaceBtn || !floorSpacesList) {
+    return;
+  }
+  const heading = floorSpacesList.querySelector(".space-kind-heading");
+  if (!heading) {
+    return;
+  }
+  let actions = heading.querySelector(".space-kind-actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "space-kind-actions";
+    heading.classList.add("has-action");
+    heading.appendChild(actions);
+  }
+  if (!actions.contains(addSpaceBtn)) {
+    actions.insertBefore(addSpaceBtn, actions.firstChild);
+  }
+};
+
+const applySpaceKindFilter = ({ syncPolygons = true, persistMissing = false } = {}) => {
+  visibleSpaces = getVisibleSpaces(currentSpaces);
+  renderFloorSpacesList(visibleSpaces);
+  if (syncPolygons && lassoState.svg && lassoState.spacesLayer) {
+    void syncSpacePolygons(visibleSpaces, { persistMissing });
+  }
+  if (spaceEditState.selectedPolygon) {
+    const selectedKind = spaceEditState.selectedPolygon.getAttribute("data-space-kind") || "";
+    const activeKind = normalizeSpaceKindFilter(currentSpaceKindFilter);
+    if (selectedKind && selectedKind !== activeKind) {
+      clearSpaceSelection();
+    }
+  }
+};
+
+const setSpaceKindFilter = (kind) => {
+  const normalized = normalizeSpaceKindFilter(kind);
+  if (normalized === currentSpaceKindFilter) {
+    return;
+  }
+  currentSpaceKindFilter = normalized;
+  updateSpaceKindFilterControls();
+  applySpaceKindFilter();
+};
+
+const renderFloorSpaces = (spaces) => {
+  currentSpaces = Array.isArray(spaces) ? spaces : [];
+  updateSpaceKindFilterControls();
+  applySpaceKindFilter({ syncPolygons: false });
 };
 
 const getDeskDisplayLabel = (desk) => {
@@ -4535,6 +5229,10 @@ const syncSpacePolygons = async (spaces, { persistMissing = false } = {}) => {
   clearSpaceSelection();
   lassoState.spacesLayer.querySelectorAll(".space-polygon").forEach((polygon) => polygon.remove());
   lassoState.spacesLayer.querySelectorAll(".space-label").forEach((label) => label.remove());
+  hoverSpaceLabels.forEach((entry) => {
+    entry.label.remove();
+  });
+  hoverSpaceLabels.clear();
 
   spaces.forEach((space) => {
     const points = normalizeSpacePoints(space.points);
@@ -5022,6 +5720,7 @@ const updateFloorPlanSpacesVisibility = () => {
     floorPlanLayout.classList.toggle("has-space-list", hasSpaces);
     floorPlanLayout.classList.toggle("is-viewing-spaces", hasSpaces && !isFloorEditing);
   }
+  updateSpaceKindFilterPlacement();
   const shouldShowSpaces = (isFloorEditing && hasFloorPlan) || (!isFloorEditing && hasSpaces);
   const shouldShowModal = isFloorEditing && (!hasFloorPlan || floorPlanModalRequested);
 
@@ -5052,7 +5751,14 @@ const setFloorEditMode = (editing) => {
   if (headerActions) {
     headerActions.classList.toggle("floor-edit-actions", editing);
   }
+  updateSpaceKindFilterPlacement();
   updateFloorPlanSpacesVisibility();
+  applySpaceKindFilter({ syncPolygons: false });
+  if (editing) {
+    placeAddSpaceBtnNextToKindLabel();
+  } else {
+    restoreAddSpaceBtnHome();
+  }
   if (cancelFloorEditBtn) {
     cancelFloorEditBtn.classList.toggle("is-hidden", !editing);
   }
@@ -7492,7 +8198,7 @@ const renderFloorPlan = (svgMarkup) => {
   resetFloorPlanTransform();
   updateSpaceListColors();
   if (currentSpaces.length > 0) {
-    void syncSpacePolygons(currentSpaces, { persistMissing: true });
+    void syncSpacePolygons(visibleSpaces, { persistMissing: true });
   }
 };
 
@@ -7734,7 +8440,7 @@ const renderFloors = (floors) => {
     title.textContent = floor.name;
 
     const badge = document.createElement("span");
-    badge.className = "badge";
+    badge.className = "badge pill number-pill";
     badge.textContent = `Этаж ${floor.level}`;
 
     header.append(title, badge);
@@ -7762,6 +8468,9 @@ const renderFloors = (floors) => {
 const resetForm = (mode = "create") => {
   buildingNameInput.value = "";
   buildingAddressInput.value = "";
+  if (buildingTimezoneInput) {
+    buildingTimezoneInput.value = defaultBuildingTimezone;
+  }
   if (buildingUndergroundFloorsInput) {
     buildingUndergroundFloorsInput.value = "0";
   }
@@ -7798,6 +8507,9 @@ const openEditModal = () => {
   clearStatus();
   buildingNameInput.value = currentBuilding.name || "";
   buildingAddressInput.value = currentBuilding.address || "";
+  if (buildingTimezoneInput) {
+    buildingTimezoneInput.value = currentBuilding.timezone || defaultBuildingTimezone;
+  }
   editingId = currentBuilding.id;
   removeImage = false;
   openModal("edit");
@@ -7990,7 +8702,7 @@ const loadFloorSpaces = async (floorID) => {
     const spacesResponse = await apiRequest(`/api/floors/${floorID}/spaces`);
     const spaces = Array.isArray(spacesResponse.items) ? spacesResponse.items : [];
     renderFloorSpaces(spaces);
-    await syncSpacePolygons(spaces, { persistMissing: true });
+    await syncSpacePolygons(visibleSpaces, { persistMissing: true });
   } catch (error) {
     renderFloorSpaces([]);
     setFloorStatus(error.message, "error");
@@ -8239,8 +8951,15 @@ buildingForm.addEventListener("submit", async (event) => {
   clearStatus();
   const name = buildingNameInput.value.trim();
   const address = buildingAddressInput.value.trim();
+  const timezone = buildingTimezoneInput
+    ? buildingTimezoneInput.value.trim()
+    : defaultBuildingTimezone;
   if (!name || !address) {
     setStatus("Заполните название и адрес здания.", "error");
+    return;
+  }
+  if (!timezone) {
+    setStatus("Выберите часовой пояс здания.", "error");
     return;
   }
 
@@ -8249,7 +8968,7 @@ buildingForm.addEventListener("submit", async (event) => {
     if (editingId) {
       await apiRequest(`/api/buildings/${editingId}`, {
         method: "PUT",
-        body: JSON.stringify({ name, address }),
+        body: JSON.stringify({ name, address, timezone }),
       });
       if (buildingImageInput && buildingImageInput.files[0]) {
         const formData = new FormData();
@@ -8290,6 +9009,7 @@ buildingForm.addEventListener("submit", async (event) => {
       const formData = new FormData();
       formData.append("name", name);
       formData.append("address", address);
+      formData.append("timezone", timezone);
       formData.append("underground_floors", String(undergroundFloors));
       formData.append("aboveground_floors", String(abovegroundFloors));
       if (buildingImageInput && buildingImageInput.files[0]) {
@@ -8304,8 +9024,8 @@ buildingForm.addEventListener("submit", async (event) => {
     }
     await refreshBuildings();
     renderBuildings();
-    resetForm();
     if (created) {
+      resetForm();
       closeModal();
       setStatus("Здание добавлено.", "success");
     } else {
@@ -8314,7 +9034,7 @@ buildingForm.addEventListener("submit", async (event) => {
         currentBuilding = updated;
       }
       if (currentBuilding) {
-        currentBuilding = { ...currentBuilding, name, address };
+        currentBuilding = { ...currentBuilding, name, address, timezone };
       }
       if (buildingTitle) {
         buildingTitle.textContent = name;
@@ -8329,6 +9049,7 @@ buildingForm.addEventListener("submit", async (event) => {
         pageSubtitle.textContent = address;
       }
       closeModal();
+      resetForm();
       setBuildingStatus("Здание обновлено.", "success");
     }
   } catch (error) {
@@ -8773,6 +9494,15 @@ if (addSpaceBtn) {
   });
 }
 
+if (spaceKindFilterButtons.length) {
+  spaceKindFilterButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      setSpaceKindFilter(button.dataset.spaceKindFilter || "");
+    });
+  });
+  updateSpaceKindFilterControls();
+}
+
 if (spaceForm) {
   spaceForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -8786,6 +9516,16 @@ if (spaceForm) {
       const capacityRaw = spaceCapacityField ? spaceCapacityField.value.trim() : "";
       const capacity = capacityRaw === "" ? 0 : Number(capacityRaw);
       const color = spaceColorInput && spaceColorInput.value ? spaceColorInput.value : "#60a5fa";
+      let subdivisionLevel1 = spaceSubdivisionLevel1Field
+        ? spaceSubdivisionLevel1Field.value.trim()
+        : "";
+      let subdivisionLevel2 = spaceSubdivisionLevel2Field
+        ? spaceSubdivisionLevel2Field.value.trim()
+        : "";
+      if (kind !== "coworking") {
+        subdivisionLevel1 = "";
+        subdivisionLevel2 = "";
+      }
       if (!name) {
         setSpaceStatus("Укажите название пространства.", "error");
         return;
@@ -8810,6 +9550,8 @@ if (spaceForm) {
             kind,
             capacity: kind === "meeting" ? capacity : 0,
             color,
+            subdivision_level_1: subdivisionLevel1,
+            subdivision_level_2: subdivisionLevel2,
           }),
         });
         await loadFloorSpaces(currentFloor.id);
@@ -8834,6 +9576,16 @@ if (spaceForm) {
     const capacityRaw = spaceCapacityField ? spaceCapacityField.value.trim() : "";
     const capacity = capacityRaw === "" ? 0 : Number(capacityRaw);
     const color = spaceColorInput && spaceColorInput.value ? spaceColorInput.value : "#60a5fa";
+    let subdivisionLevel1 = spaceSubdivisionLevel1Field
+      ? spaceSubdivisionLevel1Field.value.trim()
+      : "";
+    let subdivisionLevel2 = spaceSubdivisionLevel2Field
+      ? spaceSubdivisionLevel2Field.value.trim()
+      : "";
+    if (kind !== "coworking") {
+      subdivisionLevel1 = "";
+      subdivisionLevel2 = "";
+    }
     if (!name) {
       setSpaceStatus("Укажите название пространства.", "error");
       return;
@@ -8864,6 +9616,8 @@ if (spaceForm) {
           kind,
           capacity: kind === "meeting" ? capacity : 0,
           color,
+          subdivision_level_1: subdivisionLevel1,
+          subdivision_level_2: subdivisionLevel2,
           points,
         }),
       });
@@ -9586,6 +10340,27 @@ if (meetingBookingModal) {
     }
   });
 }
+
+document.addEventListener("click", (event) => {
+  if (!meetingBookingModal || !meetingBookingModal.classList.contains("is-open")) {
+    return;
+  }
+  const tooltip = meetingSlotTooltipState.element;
+  if (!tooltip || tooltip.classList.contains("is-hidden")) {
+    return;
+  }
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+  if (tooltip.contains(target)) {
+    return;
+  }
+  if (target.closest(".meeting-time-slot.is-booked")) {
+    return;
+  }
+  hideMeetingSlotTooltip();
+});
 
 if (meetingSearchModal) {
   meetingSearchModal.addEventListener("click", (event) => {

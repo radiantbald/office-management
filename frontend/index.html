@@ -117,7 +117,7 @@
         <div class="card">
           <div class="card-header">
             <h3>Этажи</h3>
-            <span id="floorsCount" class="tag">0</span>
+            <span id="floorsCount" class="tag pill number-pill">0</span>
           </div>
           <div id="buildingStatus" class="status" role="status" aria-live="polite"></div>
           <div id="floorsList" class="floors-list"></div>
@@ -143,22 +143,47 @@
           </aside>
           <aside id="floorPlanSpaces" class="floor-plan-spaces is-hidden" aria-hidden="true">
             <div class="floor-spaces-header">
-              <h3 class="floor-actions-title">Пространства</h3>
-              <button
-                id="addSpaceBtn"
-                class="icon-button add-space-btn"
-                type="button"
-                aria-label="Добавить пространство"
-                title="Добавить пространство"
-                data-label="Добавить пространство"
-                data-active-label="Отменить выделение"
-                data-icon="+"
-                data-active-icon="×"
-              >
-                +
-              </button>
+              <div class="floor-spaces-controls">
+                <div
+                  id="spaceKindFilter"
+                  class="space-kind-filter"
+                  role="group"
+                  aria-label="Фильтр по типу пространства"
+                >
+                  <button
+                    class="space-kind-filter-btn is-active"
+                    type="button"
+                    data-space-kind-filter="coworking"
+                    aria-pressed="true"
+                  >
+                    Коворкинги
+                  </button>
+                  <button
+                    class="space-kind-filter-btn"
+                    type="button"
+                    data-space-kind-filter="meeting"
+                    aria-pressed="false"
+                  >
+                    Переговорки
+                  </button>
+                </div>
+                <button
+                  id="addSpaceBtn"
+                  class="icon-button add-space-btn"
+                  type="button"
+                  aria-label="Добавить пространство"
+                  title="Добавить пространство"
+                  data-label="Добавить пространство"
+                  data-active-label="Отменить выделение"
+                  data-icon="+"
+                  data-active-icon="×"
+                >
+                  +
+                </button>
+              </div>
             </div>
             <div class="floor-actions-section">
+              <div id="spaceKindFilterSlot" class="space-kind-filter-slot"></div>
               <div id="floorSpacesList" class="floor-spaces-list"></div>
               <div id="floorSpacesEmpty" class="placeholder app-empty is-hidden">
                 Пространств пока нет.
@@ -353,6 +378,23 @@
             />
           </label>
           <label class="field">
+            <span>Часовой пояс</span>
+            <select id="buildingTimezone" required>
+              <option value="UTC">UTC (UTC+0)</option>
+              <option value="Europe/Kaliningrad">Europe/Kaliningrad (UTC+2)</option>
+              <option value="Europe/Moscow" selected>Europe/Moscow (UTC+3)</option>
+              <option value="Europe/Samara">Europe/Samara (UTC+4)</option>
+              <option value="Asia/Yekaterinburg">Asia/Yekaterinburg (UTC+5)</option>
+              <option value="Asia/Omsk">Asia/Omsk (UTC+6)</option>
+              <option value="Asia/Krasnoyarsk">Asia/Krasnoyarsk (UTC+7)</option>
+              <option value="Asia/Irkutsk">Asia/Irkutsk (UTC+8)</option>
+              <option value="Asia/Yakutsk">Asia/Yakutsk (UTC+9)</option>
+              <option value="Asia/Vladivostok">Asia/Vladivostok (UTC+10)</option>
+              <option value="Asia/Magadan">Asia/Magadan (UTC+11)</option>
+              <option value="Asia/Kamchatka">Asia/Kamchatka (UTC+12)</option>
+            </select>
+          </label>
+          <label class="field">
             <span>Изображение здания (необязательно)</span>
             <input id="buildingImage" type="file" accept="image/*" />
             <span id="imageHint" class="hint">Если не добавить, выберем случайную картинку.</span>
@@ -416,6 +458,16 @@
               <option value="meeting">Переговорка</option>
             </select>
           </label>
+          <div id="spaceSubdivisionFields" class="space-subdivision-fields is-hidden" aria-hidden="true">
+            <label class="field">
+              <span>Уровень подразделения 1</span>
+              <input id="spaceSubdivisionLevel1Field" type="text" placeholder="Например, Команда" />
+            </label>
+            <label class="field">
+              <span>Уровень подразделения 2</span>
+              <input id="spaceSubdivisionLevel2Field" type="text" placeholder="Например, Подразделение" />
+            </label>
+          </div>
           <label id="spaceCapacityFieldRow" class="field is-hidden">
             <span>Количество человек</span>
             <input
@@ -496,7 +548,7 @@
         <div class="modal-header">
           <div class="modal-title">
             <h2 id="meetingSearchModalTitle">Поиск свободной переговорки</h2>
-            <p class="modal-subtitle"></p>
+            <p id="meetingSearchOfficeTime" class="modal-subtitle"></p>
           </div>
           <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">
             ✕
@@ -536,6 +588,7 @@
         <div class="modal-title">
           <h2 id="meetingBookingModalTitle">Переговорка</h2>
           <p id="meetingBookingModalSubtitle" class="modal-subtitle"></p>
+            <p id="meetingBookingOfficeTime" class="modal-subtitle"></p>
         </div>
         <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">
           ✕

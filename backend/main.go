@@ -24,6 +24,7 @@ const uploadDirName = "uploads"
 const buildingUploadDirName = "buildings"
 const maxBuildingImageSize = 5 << 20
 const maxBuildingFormSize = maxBuildingImageSize + (1 << 20)
+const defaultBuildingTimezone = "Europe/Moscow"
 
 type app struct {
 	db                *sql.DB
@@ -35,6 +36,7 @@ type building struct {
 	ID        int64   `json:"id"`
 	Name      string  `json:"name"`
 	Address   string  `json:"address"`
+	Timezone  string  `json:"timezone"`
 	ImageURL  string  `json:"image_url,omitempty"`
 	Floors    []int64 `json:"floors"`
 	CreatedAt string  `json:"created_at"`
@@ -58,6 +60,8 @@ type space struct {
 	Capacity       int     `json:"capacity"`
 	Color          string  `json:"color,omitempty"`
 	SnapshotHidden bool    `json:"snapshot_hidden"`
+	SubdivisionL1  string  `json:"subdivision_level_1"`
+	SubdivisionL2  string  `json:"subdivision_level_2"`
 	Points         []point `json:"points"`
 	CreatedAt      string  `json:"created_at"`
 }
@@ -244,6 +248,7 @@ func migrate(db *sql.DB) error {
 			id BIGSERIAL PRIMARY KEY,
 			name TEXT NOT NULL,
 			address TEXT NOT NULL,
+			timezone TEXT NOT NULL DEFAULT 'Europe/Moscow',
 			image_url TEXT,
 			floors TEXT NOT NULL DEFAULT '[]',
 			created_at TEXT NOT NULL DEFAULT (now()::text)
@@ -263,6 +268,8 @@ func migrate(db *sql.DB) error {
 			name TEXT NOT NULL,
 			kind TEXT NOT NULL,
 			capacity INTEGER NOT NULL DEFAULT 0,
+			subdivision_level_1 TEXT NOT NULL DEFAULT '',
+			subdivision_level_2 TEXT NOT NULL DEFAULT '',
 			points_json TEXT NOT NULL DEFAULT '[]',
 			color TEXT NOT NULL DEFAULT '',
 			snapshot_hidden INTEGER NOT NULL DEFAULT 0,
@@ -325,6 +332,9 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "office_buildings", "floors", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
+	if err := ensureColumn(db, "office_buildings", "timezone", "TEXT NOT NULL DEFAULT 'Europe/Moscow'"); err != nil {
+		return err
+	}
 	if err := ensureColumn(db, "spaces", "points_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
@@ -332,6 +342,12 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "spaces", "capacity", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "spaces", "subdivision_level_1", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "spaces", "subdivision_level_2", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "spaces", "snapshot_hidden", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -459,6 +475,17 @@ func ensureColumn(db *sql.DB, table, column, definition string) error {
 	return err
 }
 
+func normalizeTimezone(raw string) (string, error) {
+	tz := strings.TrimSpace(raw)
+	if tz == "" {
+		return defaultBuildingTimezone, nil
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return "", err
+	}
+	return tz, nil
+}
+
 func encodePoints(points []point) (string, error) {
 	if len(points) == 0 {
 		return "[]", nil
@@ -503,6 +530,7 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
 			Name              string `json:"name"`
 			Address           string `json:"address"`
+			Timezone          string `json:"timezone"`
 			UndergroundFloors int    `json:"underground_floors"`
 			AbovegroundFloors int    `json:"aboveground_floors"`
 		}
@@ -520,7 +548,12 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "underground_floors and aboveground_floors must be non-negative")
 			return
 		}
-		result, err := a.createBuildingWithFloors(payload.Name, payload.Address, "", payload.UndergroundFloors, payload.AbovegroundFloors)
+		timezone, err := normalizeTimezone(payload.Timezone)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "invalid timezone")
+			return
+		}
+		result, err := a.createBuildingWithFloors(payload.Name, payload.Address, timezone, "", payload.UndergroundFloors, payload.AbovegroundFloors)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -541,6 +574,10 @@ func (a *app) createBuildingFromMultipart(w http.ResponseWriter, r *http.Request
 	if name == "" || address == "" {
 		return building{}, http.StatusBadRequest, errors.New("name and address are required")
 	}
+	timezone, err := normalizeTimezone(r.FormValue("timezone"))
+	if err != nil {
+		return building{}, http.StatusBadRequest, errors.New("invalid timezone")
+	}
 	undergroundFloors, err := parseOptionalInt(r.FormValue("underground_floors"))
 	if err != nil {
 		return building{}, http.StatusBadRequest, errors.New("invalid underground_floors")
@@ -556,7 +593,7 @@ func (a *app) createBuildingFromMultipart(w http.ResponseWriter, r *http.Request
 	file, header, err := r.FormFile("image")
 	if err != nil {
 		if errors.Is(err, http.ErrMissingFile) {
-			created, createErr := a.createBuildingWithFloors(name, address, "", undergroundFloors, abovegroundFloors)
+			created, createErr := a.createBuildingWithFloors(name, address, timezone, "", undergroundFloors, abovegroundFloors)
 			if createErr != nil {
 				return building{}, http.StatusInternalServerError, createErr
 			}
@@ -565,7 +602,7 @@ func (a *app) createBuildingFromMultipart(w http.ResponseWriter, r *http.Request
 		return building{}, http.StatusBadRequest, err
 	}
 
-	created, err := a.createBuildingWithFloors(name, address, "", undergroundFloors, abovegroundFloors)
+	created, err := a.createBuildingWithFloors(name, address, timezone, "", undergroundFloors, abovegroundFloors)
 	if err != nil {
 		return building{}, http.StatusInternalServerError, err
 	}
@@ -605,8 +642,9 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusOK, item)
 		case http.MethodPut:
 			var payload struct {
-				Name    string `json:"name"`
-				Address string `json:"address"`
+				Name     string  `json:"name"`
+				Address  string  `json:"address"`
+				Timezone *string `json:"timezone"`
 			}
 			if err := decodeJSON(r, &payload); err != nil {
 				respondError(w, http.StatusBadRequest, err.Error())
@@ -618,7 +656,27 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusBadRequest, "name and address are required")
 				return
 			}
-			result, err := a.updateBuilding(id, payload.Name, payload.Address)
+			timezone := ""
+			if payload.Timezone == nil {
+				existing, err := a.getBuilding(id)
+				if err != nil {
+					if errors.Is(err, errNotFound) {
+						respondError(w, http.StatusNotFound, "building not found")
+						return
+					}
+					respondError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				timezone = existing.Timezone
+			} else {
+				normalized, err := normalizeTimezone(*payload.Timezone)
+				if err != nil {
+					respondError(w, http.StatusBadRequest, "invalid timezone")
+					return
+				}
+				timezone = normalized
+			}
+			result, err := a.updateBuilding(id, payload.Name, payload.Address, timezone)
 			if err != nil {
 				if errors.Is(err, errNotFound) {
 					respondError(w, http.StatusNotFound, "building not found")
@@ -819,12 +877,14 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		FloorID  int64   `json:"floor_id"`
-		Name     string  `json:"name"`
-		Kind     string  `json:"kind"`
-		Capacity *int    `json:"capacity"`
-		Color    string  `json:"color"`
-		Points   []point `json:"points"`
+		FloorID           int64   `json:"floor_id"`
+		Name              string  `json:"name"`
+		Kind              string  `json:"kind"`
+		Capacity          *int    `json:"capacity"`
+		Color             string  `json:"color"`
+		SubdivisionLevel1 string  `json:"subdivision_level_1"`
+		SubdivisionLevel2 string  `json:"subdivision_level_2"`
+		Points            []point `json:"points"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
@@ -832,6 +892,9 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 	}
 	payload.Name = strings.TrimSpace(payload.Name)
 	payload.Kind = strings.TrimSpace(payload.Kind)
+	payload.Color = strings.TrimSpace(payload.Color)
+	payload.SubdivisionLevel1 = strings.TrimSpace(payload.SubdivisionLevel1)
+	payload.SubdivisionLevel2 = strings.TrimSpace(payload.SubdivisionLevel2)
 	if payload.FloorID == 0 || payload.Name == "" || payload.Kind == "" {
 		respondError(w, http.StatusBadRequest, "floor_id, name, and kind are required")
 		return
@@ -851,13 +914,19 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 	if payload.Kind != "meeting" {
 		capacity = 0
 	}
+	if payload.Kind != "coworking" {
+		payload.SubdivisionLevel1 = ""
+		payload.SubdivisionLevel2 = ""
+	}
 	result, err := a.createSpace(
 		payload.FloorID,
 		payload.Name,
 		payload.Kind,
 		capacity,
+		payload.SubdivisionLevel1,
+		payload.SubdivisionLevel2,
 		payload.Points,
-		strings.TrimSpace(payload.Color),
+		payload.Color,
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -888,12 +957,14 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusOK, item)
 		case http.MethodPut:
 			var payload struct {
-				Name           string  `json:"name"`
-				Kind           string  `json:"kind"`
-				Capacity       *int    `json:"capacity"`
-				Color          string  `json:"color"`
-				Points         []point `json:"points"`
-				SnapshotHidden *bool   `json:"snapshot_hidden"`
+				Name              string  `json:"name"`
+				Kind              string  `json:"kind"`
+				Capacity          *int    `json:"capacity"`
+				Color             string  `json:"color"`
+				SubdivisionLevel1 string  `json:"subdivision_level_1"`
+				SubdivisionLevel2 string  `json:"subdivision_level_2"`
+				Points            []point `json:"points"`
+				SnapshotHidden    *bool   `json:"snapshot_hidden"`
 			}
 			if err := decodeJSON(r, &payload); err != nil {
 				respondError(w, http.StatusBadRequest, err.Error())
@@ -902,6 +973,8 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			payload.Name = strings.TrimSpace(payload.Name)
 			payload.Kind = strings.TrimSpace(payload.Kind)
 			payload.Color = strings.TrimSpace(payload.Color)
+			payload.SubdivisionLevel1 = strings.TrimSpace(payload.SubdivisionLevel1)
+			payload.SubdivisionLevel2 = strings.TrimSpace(payload.SubdivisionLevel2)
 			var (
 				result space
 				err    error
@@ -951,7 +1024,20 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 				} else {
 					capacity = 0
 				}
-				result, err = a.updateSpaceDetails(id, payload.Name, payload.Kind, capacity, payload.Capacity != nil, payload.Color)
+				if effectiveKind != "coworking" {
+					payload.SubdivisionLevel1 = ""
+					payload.SubdivisionLevel2 = ""
+				}
+				result, err = a.updateSpaceDetails(
+					id,
+					payload.Name,
+					payload.Kind,
+					capacity,
+					payload.Capacity != nil,
+					payload.Color,
+					payload.SubdivisionLevel1,
+					payload.SubdivisionLevel2,
+				)
 			}
 			if err != nil {
 				if errors.Is(err, errNotFound) {
@@ -1254,7 +1340,7 @@ func (a *app) handleMeetingRooms(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) listBuildings() ([]building, error) {
 	rows, err := a.db.Query(
-		`SELECT id, name, address, COALESCE(image_url, ''), COALESCE(floors, '[]'), created_at
+		`SELECT id, name, address, COALESCE(timezone, ''), COALESCE(image_url, ''), COALESCE(floors, '[]'), created_at
 		FROM office_buildings
 		ORDER BY id DESC`,
 	)
@@ -1267,8 +1353,11 @@ func (a *app) listBuildings() ([]building, error) {
 	for rows.Next() {
 		var b building
 		var floorsJSON string
-		if err := rows.Scan(&b.ID, &b.Name, &b.Address, &b.ImageURL, &floorsJSON, &b.CreatedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Name, &b.Address, &b.Timezone, &b.ImageURL, &floorsJSON, &b.CreatedAt); err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(b.Timezone) == "" {
+			b.Timezone = defaultBuildingTimezone
 		}
 		b.Floors = decodeFloorIDs(floorsJSON)
 		items = append(items, b)
@@ -1279,10 +1368,10 @@ func (a *app) listBuildings() ([]building, error) {
 var errNotFound = errors.New("not found")
 
 func (a *app) createBuilding(name, address, imageURL string) (building, error) {
-	return a.createBuildingWithFloors(name, address, imageURL, 0, 0)
+	return a.createBuildingWithFloors(name, address, defaultBuildingTimezone, imageURL, 0, 0)
 }
 
-func (a *app) createBuildingWithFloors(name, address, imageURL string, undergroundFloors, abovegroundFloors int) (building, error) {
+func (a *app) createBuildingWithFloors(name, address, timezone, imageURL string, undergroundFloors, abovegroundFloors int) (building, error) {
 	tx, err := a.db.Begin()
 	if err != nil {
 		return building{}, err
@@ -1295,11 +1384,12 @@ func (a *app) createBuildingWithFloors(name, address, imageURL string, undergrou
 
 	var buildingID int64
 	if err = tx.QueryRow(
-		`INSERT INTO office_buildings (name, address, image_url, floors)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO office_buildings (name, address, timezone, image_url, floors)
+		 VALUES ($1, $2, $3, $4, $5)
 		 RETURNING id`,
 		name,
 		address,
+		timezone,
 		imageURL,
 		"[]",
 	).Scan(&buildingID); err != nil {
@@ -1340,6 +1430,7 @@ func (a *app) createBuildingWithFloors(name, address, imageURL string, undergrou
 		ID:        buildingID,
 		Name:      name,
 		Address:   address,
+		Timezone:  timezone,
 		ImageURL:  imageURL,
 		Floors:    floorIDs,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -1348,28 +1439,32 @@ func (a *app) createBuildingWithFloors(name, address, imageURL string, undergrou
 
 func (a *app) getBuilding(id int64) (building, error) {
 	row := a.db.QueryRow(
-		`SELECT id, name, address, COALESCE(image_url, ''), COALESCE(floors, '[]'), created_at
+		`SELECT id, name, address, COALESCE(timezone, ''), COALESCE(image_url, ''), COALESCE(floors, '[]'), created_at
 		FROM office_buildings
 		WHERE id = $1`,
 		id,
 	)
 	var b building
 	var floorsJSON string
-	if err := row.Scan(&b.ID, &b.Name, &b.Address, &b.ImageURL, &floorsJSON, &b.CreatedAt); err != nil {
+	if err := row.Scan(&b.ID, &b.Name, &b.Address, &b.Timezone, &b.ImageURL, &floorsJSON, &b.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return building{}, errNotFound
 		}
 		return building{}, err
 	}
+	if strings.TrimSpace(b.Timezone) == "" {
+		b.Timezone = defaultBuildingTimezone
+	}
 	b.Floors = decodeFloorIDs(floorsJSON)
 	return b, nil
 }
 
-func (a *app) updateBuilding(id int64, name, address string) (building, error) {
+func (a *app) updateBuilding(id int64, name, address, timezone string) (building, error) {
 	result, err := a.db.Exec(
-		`UPDATE office_buildings SET name = $1, address = $2 WHERE id = $3`,
+		`UPDATE office_buildings SET name = $1, address = $2, timezone = $3 WHERE id = $4`,
 		name,
 		address,
+		timezone,
 		id,
 	)
 	if err != nil {
@@ -1547,7 +1642,9 @@ func (a *app) createFloorInTx(tx *sql.Tx, buildingID int64, name string, level i
 
 func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 	rows, err := a.db.Query(
-		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
+		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0),
+        COALESCE(subdivision_level_1, ''), COALESCE(subdivision_level_2, ''),
+        COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
 		FROM spaces WHERE floor_id = $1 ORDER BY id DESC`,
 		floorID,
 	)
@@ -1567,6 +1664,8 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 			&s.Name,
 			&s.Kind,
 			&s.Capacity,
+			&s.SubdivisionL1,
+			&s.SubdivisionL2,
 			&pointsJSON,
 			&s.Color,
 			&snapshotHidden,
@@ -1583,7 +1682,9 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 
 func (a *app) getSpace(id int64) (space, error) {
 	row := a.db.QueryRow(
-		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
+		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0),
+        COALESCE(subdivision_level_1, ''), COALESCE(subdivision_level_2, ''),
+        COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
 		FROM spaces WHERE id = $1`,
 		id,
 	)
@@ -1596,6 +1697,8 @@ func (a *app) getSpace(id int64) (space, error) {
 		&s.Name,
 		&s.Kind,
 		&s.Capacity,
+		&s.SubdivisionL1,
+		&s.SubdivisionL2,
 		&pointsStored,
 		&s.Color,
 		&snapshotHidden,
@@ -1611,20 +1714,29 @@ func (a *app) getSpace(id int64) (space, error) {
 	return s, nil
 }
 
-func (a *app) createSpace(floorID int64, name, kind string, capacity int, points []point, color string) (space, error) {
+func (a *app) createSpace(
+	floorID int64,
+	name, kind string,
+	capacity int,
+	subdivisionLevel1, subdivisionLevel2 string,
+	points []point,
+	color string,
+) (space, error) {
 	pointsJSON, err := encodePoints(points)
 	if err != nil {
 		return space{}, err
 	}
 	var id int64
 	if err := a.db.QueryRow(
-		`INSERT INTO spaces (floor_id, name, kind, capacity, points_json, color)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO spaces (floor_id, name, kind, capacity, subdivision_level_1, subdivision_level_2, points_json, color)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING id`,
 		floorID,
 		name,
 		kind,
 		capacity,
+		subdivisionLevel1,
+		subdivisionLevel2,
 		pointsJSON,
 		color,
 	).Scan(&id); err != nil {
@@ -1638,6 +1750,8 @@ func (a *app) createSpace(floorID int64, name, kind string, capacity int, points
 		Capacity:       capacity,
 		Color:          color,
 		SnapshotHidden: false,
+		SubdivisionL1:  subdivisionLevel1,
+		SubdivisionL2:  subdivisionLevel2,
 		Points:         points,
 		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}, nil
@@ -1665,7 +1779,9 @@ func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space
 		return space{}, errNotFound
 	}
 	row := a.db.QueryRow(
-		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
+		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0),
+        COALESCE(subdivision_level_1, ''), COALESCE(subdivision_level_2, ''),
+        COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
 		FROM spaces WHERE id = $1`,
 		id,
 	)
@@ -1678,6 +1794,8 @@ func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space
 		&s.Name,
 		&s.Kind,
 		&s.Capacity,
+		&s.SubdivisionL1,
+		&s.SubdivisionL2,
 		&pointsStored,
 		&s.Color,
 		&snapshotHidden,
@@ -1693,7 +1811,14 @@ func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space
 	return s, nil
 }
 
-func (a *app) updateSpaceDetails(id int64, name, kind string, capacity int, capacityProvided bool, color string) (space, error) {
+func (a *app) updateSpaceDetails(
+	id int64,
+	name, kind string,
+	capacity int,
+	capacityProvided bool,
+	color string,
+	subdivisionLevel1, subdivisionLevel2 string,
+) (space, error) {
 	var storedKind string
 	var storedCapacity int
 	if kind == "" || !capacityProvided {
@@ -1715,11 +1840,16 @@ func (a *app) updateSpaceDetails(id int64, name, kind string, capacity int, capa
 		capacity = 0
 	}
 	result, err := a.db.Exec(
-		`UPDATE spaces SET name = $1, kind = $2, capacity = $3, color = $4 WHERE id = $5`,
+		`UPDATE spaces
+		 SET name = $1, kind = $2, capacity = $3, color = $4,
+		     subdivision_level_1 = $5, subdivision_level_2 = $6
+		 WHERE id = $7`,
 		name,
 		kind,
 		capacity,
 		color,
+		subdivisionLevel1,
+		subdivisionLevel2,
 		id,
 	)
 	if err != nil {
@@ -1733,7 +1863,9 @@ func (a *app) updateSpaceDetails(id int64, name, kind string, capacity int, capa
 		return space{}, errNotFound
 	}
 	row := a.db.QueryRow(
-		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0), COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
+		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0),
+        COALESCE(subdivision_level_1, ''), COALESCE(subdivision_level_2, ''),
+        COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
 		FROM spaces WHERE id = $1`,
 		id,
 	)
@@ -1746,6 +1878,8 @@ func (a *app) updateSpaceDetails(id int64, name, kind string, capacity int, capa
 		&s.Name,
 		&s.Kind,
 		&s.Capacity,
+		&s.SubdivisionL1,
+		&s.SubdivisionL2,
 		&pointsStored,
 		&s.Color,
 		&snapshotHidden,

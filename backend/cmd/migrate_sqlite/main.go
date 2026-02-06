@@ -12,6 +12,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const defaultBuildingTimezone = "Europe/Moscow"
+
 func postgresDSN() string {
 	if dsn := strings.TrimSpace(os.Getenv("DATABASE_URL")); dsn != "" {
 		return dsn
@@ -136,7 +138,15 @@ func main() {
 }
 
 func copyBuildings(sqliteDB *sql.DB, tx *sql.Tx) error {
-	rows, err := sqliteDB.Query(`SELECT id, name, address, image_url, floors, created_at FROM office_buildings ORDER BY id`)
+	hasTimezone, err := hasSQLiteColumn(sqliteDB, "office_buildings", "timezone")
+	if err != nil {
+		return err
+	}
+	query := `SELECT id, name, address, image_url, floors, created_at FROM office_buildings ORDER BY id`
+	if hasTimezone {
+		query = `SELECT id, name, address, image_url, floors, created_at, timezone FROM office_buildings ORDER BY id`
+	}
+	rows, err := sqliteDB.Query(query)
 	if err != nil {
 		return err
 	}
@@ -150,24 +160,61 @@ func copyBuildings(sqliteDB *sql.DB, tx *sql.Tx) error {
 			imageURL  sql.NullString
 			floors    string
 			createdAt string
+			timezone  sql.NullString
 		)
-		if err := rows.Scan(&id, &name, &address, &imageURL, &floors, &createdAt); err != nil {
-			return err
+		if hasTimezone {
+			if err := rows.Scan(&id, &name, &address, &imageURL, &floors, &createdAt, &timezone); err != nil {
+				return err
+			}
+		} else {
+			if err := rows.Scan(&id, &name, &address, &imageURL, &floors, &createdAt); err != nil {
+				return err
+			}
+		}
+		targetTimezone := strings.TrimSpace(timezone.String)
+		if targetTimezone == "" {
+			targetTimezone = defaultBuildingTimezone
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO office_buildings (id, name, address, image_url, floors, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			`INSERT INTO office_buildings (id, name, address, image_url, floors, created_at, timezone)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			id,
 			name,
 			address,
 			imageURL.String,
 			floors,
 			createdAt,
+			targetTimezone,
 		); err != nil {
 			return err
 		}
 	}
 	return rows.Err()
+}
+
+func hasSQLiteColumn(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			dataType  string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &dfltValue, &pk); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(name, column) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func copyFloors(sqliteDB *sql.DB, tx *sql.Tx) error {
