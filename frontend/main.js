@@ -4154,6 +4154,18 @@ const getSvgPoint = (event) => {
   return { x: svgPoint.x, y: svgPoint.y };
 };
 
+const getAxisAlignedPoint = (point, anchor) => {
+  if (!point || !anchor) {
+    return point;
+  }
+  const dx = point.x - anchor.x;
+  const dy = point.y - anchor.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return { x: point.x, y: anchor.y };
+  }
+  return { x: anchor.x, y: point.y };
+};
+
 const updateLassoPreview = (cursorPoint) => {
   if (!lassoState.previewPolygon) {
     return;
@@ -10008,7 +10020,9 @@ if (floorPlanPreview && floorPlanCanvas) {
       event.preventDefault();
       const point = getSvgPoint(event);
       if (point) {
-        lassoState.points.push(point);
+        const anchor = lassoState.points[lassoState.points.length - 1];
+        const nextPoint = event.shiftKey ? getAxisAlignedPoint(point, anchor) : point;
+        lassoState.points.push(nextPoint);
         updateLassoPreview();
       }
       return;
@@ -10091,7 +10105,13 @@ if (floorPlanPreview && floorPlanCanvas) {
     }
     if (lassoState.active) {
       const point = getSvgPoint(event);
-      updateLassoPreview(point);
+      if (!point) {
+        updateLassoPreview(null);
+        return;
+      }
+      const anchor = lassoState.points[lassoState.points.length - 1];
+      const previewPoint = event.shiftKey ? getAxisAlignedPoint(point, anchor) : point;
+      updateLassoPreview(previewPoint);
       return;
     }
     if (!floorPlanState.isDragging) {
