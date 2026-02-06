@@ -1877,8 +1877,13 @@ body.space-editing .space-booking-panel {
   display: none;
 }
 
+.floor-plan-layout.is-viewing-spaces .floor-spaces-header {
+  display: none;
+}
+
 .floor-plan-layout.is-editing .floor-plan-spaces {
   height: auto;
+  gap: 0;
 }
 
 .floor-spaces-header {
@@ -1903,6 +1908,10 @@ body.space-editing .space-booking-panel {
 }
 
 .space-kind-filter-slot .space-kind-filter {
+  margin-bottom: 6px;
+}
+
+.floor-plan-layout.is-editing .space-kind-filter {
   margin-bottom: 6px;
 }
 
@@ -1952,7 +1961,7 @@ body.space-editing .space-booking-panel {
 .floor-plan-spaces .floor-actions-section {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
   flex: 1 1 auto;
   min-height: 0;
 }
