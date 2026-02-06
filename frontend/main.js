@@ -1331,7 +1331,22 @@ const getPeopleCountLabel = (value) => {
   const mod10 = count % 10;
   const mod100 = count % 100;
   const noun =
-    mod10 >= 1 && mod10 <= 4 && !(mod100 >= 11 && mod100 <= 14) ? "человека" : "человек";
+    mod10 === 1 && mod100 !== 11
+      ? "человек"
+      : mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)
+        ? "человека"
+        : "человек";
+  return `${count} ${noun}`;
+};
+
+const getPeopleCountLimitLabel = (value) => {
+  const count = Number(value);
+  if (!Number.isFinite(count) || count <= 0) {
+    return "";
+  }
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  const noun = mod10 === 1 && mod100 !== 11 ? "человека" : "человек";
   return `${count} ${noun}`;
 };
 
@@ -2312,7 +2327,8 @@ const renderMeetingSearchResults = (rooms = []) => {
     const meta = document.createElement("div");
     meta.className = "meeting-search-item-meta";
     const capacityValue = Number(room?.capacity);
-    meta.textContent = capacityValue > 0 ? `До ${getPeopleCountLabel(capacityValue)}` : "Вместимость не указана";
+    meta.textContent =
+      capacityValue > 0 ? `До ${getPeopleCountLimitLabel(capacityValue)}` : "Вместимость не указана";
     main.appendChild(meta);
 
     const capacityTag = document.createElement("span");
