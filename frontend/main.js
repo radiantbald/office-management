@@ -4172,6 +4172,7 @@ const startLassoMode = () => {
   setLassoActive(true);
   clearSpaceSelection();
   ensureSpaceLayers(lassoState.svg);
+  applySpaceKindFilter({ syncPolygons: true });
   lassoState.points = [];
   lassoState.pendingPoints = null;
   resetLassoPreview();
@@ -4195,6 +4196,7 @@ const cancelLassoMode = (message = "") => {
   lassoState.points = [];
   lassoState.pendingPoints = null;
   resetLassoPreview();
+  applySpaceKindFilter({ syncPolygons: true });
   if (message) {
     setFloorStatus(message, "info");
   }
@@ -4205,9 +4207,24 @@ const finishLassoMode = () => {
     setFloorStatus("Нужно минимум 3 точки для пространства.", "error");
     return;
   }
-  lassoState.pendingPoints = [...lassoState.points];
+  const normalizedPoints = normalizeSpacePoints(lassoState.points);
+  const overlappingSpaces = getOverlappingSpaces(normalizedPoints);
+  if (overlappingSpaces.length > 0) {
+    lassoState.pendingPoints = null;
+    cancelLassoMode();
+    const uniqueNames = Array.from(new Set(overlappingSpaces));
+    const list = uniqueNames.join(", ");
+    const message =
+      uniqueNames.length === 1
+        ? `Пространство пересекается с другим пространством:\n${list}`
+        : `Пространство пересекается с другими пространствами:\n${list}`;
+    showTopAlert(message, "error");
+    return;
+  }
+  lassoState.pendingPoints = normalizedPoints;
   setLassoActive(false);
   resetLassoPreview();
+  applySpaceKindFilter({ syncPolygons: true });
   openSpaceModal();
 };
 
@@ -4277,6 +4294,105 @@ const normalizeSpacePoints = (points) => {
       return { x, y };
     })
     .filter(Boolean);
+};
+
+const arePointsClose = (left, right, epsilon = 0.0001) =>
+  Math.abs(left.x - right.x) <= epsilon && Math.abs(left.y - right.y) <= epsilon;
+
+const getPointOrientation = (a, b, c, epsilon = 0.0001) => {
+  const value = (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y);
+  if (Math.abs(value) <= epsilon) {
+    return 0;
+  }
+  return value > 0 ? 1 : 2;
+};
+
+const isPointOnSegment = (a, b, c, epsilon = 0.0001) =>
+  Math.min(a.x, c.x) - epsilon <= b.x &&
+  b.x <= Math.max(a.x, c.x) + epsilon &&
+  Math.min(a.y, c.y) - epsilon <= b.y &&
+  b.y <= Math.max(a.y, c.y) + epsilon;
+
+const segmentsIntersect = (p1, p2, q1, q2) => {
+  if (arePointsClose(p1, q1) || arePointsClose(p1, q2) || arePointsClose(p2, q1) || arePointsClose(p2, q2)) {
+    return true;
+  }
+  const o1 = getPointOrientation(p1, p2, q1);
+  const o2 = getPointOrientation(p1, p2, q2);
+  const o3 = getPointOrientation(q1, q2, p1);
+  const o4 = getPointOrientation(q1, q2, p2);
+
+  if (o1 !== o2 && o3 !== o4) {
+    return true;
+  }
+  if (o1 === 0 && isPointOnSegment(p1, q1, p2)) {
+    return true;
+  }
+  if (o2 === 0 && isPointOnSegment(p1, q2, p2)) {
+    return true;
+  }
+  if (o3 === 0 && isPointOnSegment(q1, p1, q2)) {
+    return true;
+  }
+  if (o4 === 0 && isPointOnSegment(q1, p2, q2)) {
+    return true;
+  }
+  return false;
+};
+
+const isPointInsidePolygon = (points, point) => {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const xi = points[i].x;
+    const yi = points[i].y;
+    const xj = points[j].x;
+    const yj = points[j].y;
+    const intersects = yi > point.y !== yj > point.y &&
+      point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi;
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+  return inside;
+};
+
+const polygonsIntersect = (left, right) => {
+  if (!Array.isArray(left) || !Array.isArray(right)) {
+    return false;
+  }
+  if (left.length < 3 || right.length < 3) {
+    return false;
+  }
+  for (let i = 0; i < left.length; i += 1) {
+    const nextI = (i + 1) % left.length;
+    for (let j = 0; j < right.length; j += 1) {
+      const nextJ = (j + 1) % right.length;
+      if (segmentsIntersect(left[i], left[nextI], right[j], right[nextJ])) {
+        return true;
+      }
+    }
+  }
+  if (isPointInsidePolygon(left, right[0])) {
+    return true;
+  }
+  if (isPointInsidePolygon(right, left[0])) {
+    return true;
+  }
+  return false;
+};
+
+const getOverlappingSpaces = (points) => {
+  if (!lassoState.spacesLayer || points.length < 3) {
+    return [];
+  }
+  const overlaps = [];
+  lassoState.spacesLayer.querySelectorAll(".space-polygon").forEach((polygon) => {
+    const polygonPoints = parsePolygonPoints(polygon);
+    if (polygonsIntersect(points, polygonPoints)) {
+      overlaps.push(polygon.getAttribute("data-space-name") || "Без названия");
+    }
+  });
+  return overlaps;
 };
 
 const stripEditorArtifacts = (svg) => {
@@ -5058,7 +5174,8 @@ const applySpaceKindFilter = ({ syncPolygons = true, persistMissing = false } = 
   visibleSpaces = getVisibleSpaces(currentSpaces);
   renderFloorSpacesList(visibleSpaces);
   if (syncPolygons && lassoState.svg && lassoState.spacesLayer) {
-    void syncSpacePolygons(visibleSpaces, { persistMissing });
+    const spacesToSync = lassoState.active ? currentSpaces : visibleSpaces;
+    void syncSpacePolygons(Array.isArray(spacesToSync) ? spacesToSync : [], { persistMissing });
   }
   if (spaceEditState.selectedPolygon) {
     const selectedKind = spaceEditState.selectedPolygon.getAttribute("data-space-kind") || "";

@@ -2419,6 +2419,21 @@ body.space-editing .space-booking-panel {
   fill-opacity: 0.35;
 }
 
+.floor-plan-preview.is-lasso .space-polygon {
+  stroke: #6b7280;
+  fill: #9ca3af;
+  fill-opacity: 0.4;
+  pointer-events: none;
+}
+
+.floor-plan-preview.is-lasso .space-polygon:hover,
+.floor-plan-preview.is-lasso .space-polygon.is-hover,
+.floor-plan-preview.is-lasso .space-polygon.is-selected {
+  stroke: #6b7280;
+  fill: #9ca3af;
+  fill-opacity: 0.4;
+}
+
 .space-polygon:hover,
 .space-polygon.is-hover {
   stroke: #2563eb;
