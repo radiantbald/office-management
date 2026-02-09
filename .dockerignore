@@ -1,0 +1,12 @@
+.git
+.DS_Store
+.idea
+.vscode
+.gocache
+.gomodcache
+node_modules
+dist
+uploads
+**/*.test
+**/*.out
+.env

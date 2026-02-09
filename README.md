@@ -4,6 +4,75 @@
 
 ## Как запустить
 
+### Docker (фронтенд + API + Postgres)
+
+#### Быстрый старт
+
+Скопируйте `env.example` в `.env` и задайте свои пароли:
+
+```
+cp env.example .env
+```
+
+Запуск:
+
+```
+docker compose up --build
+```
+
+- Веб: `http://localhost:8080`
+- API: `http://localhost:8081`
+
+#### Подготовка к продакшену
+
+1) Обновите `.env`:
+   - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
+   - `DATABASE_URL` (должен совпадать с Postgres)
+   - `WEB_PORT`, `API_PORT` (если меняете внешние порты)
+   - `API_IMAGE`, `WEB_IMAGE` (если используете `docker-compose.prod.yml`)
+
+2) Запускайте в фоне:
+
+```
+docker compose up -d --build
+```
+
+3) Бэкапы базы:
+
+```
+docker compose exec db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
+```
+
+#### Порты и сервисы
+
+- `web` — Nginx со статикой и прокси на API
+- `api` — Go сервер
+- `db` — Postgres
+- `migrate` — одноразовый контейнер для применения миграций
+
+#### Продовый запуск из образов
+
+1) Заполните `.env` и укажите `API_IMAGE`/`WEB_IMAGE`:
+
+```
+cp env.example .env
+```
+
+2) Запустите:
+
+```
+docker compose -f docker-compose.prod.yml up -d
+```
+
+### CI/CD (GitHub Actions)
+
+- `CI` — запускает `go test`, `go vet`, и сборку docker-образов.
+- `Publish Docker Images` — публикует образы в GHCR при пуше в `main` или теге `vX.Y.Z`.
+
+После публикации:
+- `API_IMAGE=ghcr.io/<owner>/office-management-api:latest`
+- `WEB_IMAGE=ghcr.io/<owner>/office-management-web:latest`
+
 ### 1) Только фронтенд (без API)
 
 Откройте `frontend/index.html` в браузере.
@@ -41,18 +110,14 @@ export DATABASE_URL="postgres://user:pass@localhost:5432/office?sslmode=disable"
 - `PGDATABASE` (по умолчанию `office`)
 - `PGSSLMODE` (по умолчанию `disable`)
 
-### Миграция данных из SQLite
+### Конфигурация через `.env`
 
-Перед миграцией запустите API один раз, чтобы создать схему в Postgres.
+Можно положить переменные в `.env` в корне проекта (он автоматически подхватывается при старте):
 
 ```
-go run ./backend/cmd/migrate_sqlite --sqlite backend/office.db
+DATABASE_URL=postgres://user:pass@localhost:5432/office?sslmode=disable
+PORT=8080
 ```
-
-Флаги:
-- `--sqlite` — путь к SQLite файлу
-- `--pg` — строка подключения Postgres (если не хотите использовать env)
-- `--truncate` — очистить таблицы перед импортом (по умолчанию `true`)
 
 ## Структура проекта
 

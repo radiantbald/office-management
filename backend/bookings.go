@@ -108,8 +108,8 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 		        COALESCE(u.avatar_url, ''),
 		        COALESCE(u.wb_band, ''),
 		        b.date, b.created_at, d.label, d.space_id
-		   FROM bookings b
-		   JOIN desks d ON d.id = b.desk_id
+		  FROM workplace_bookings b
+		  JOIN workplaces d ON d.id = b.desk_id
 		   LEFT JOIN LATERAL (
 		     SELECT user_name, employee_id, avatar_url, wb_band
 		       FROM users
@@ -203,28 +203,17 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	buildingID, err := getDeskBuildingID(tx, payload.DeskID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "desk not found")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
 	if _, err = tx.Exec(
-		`DELETE FROM bookings WHERE user_key = $1 AND date = $2 AND building_id = $3`,
+		`DELETE FROM workplace_bookings WHERE user_key = $1 AND date = $2`,
 		userKey,
 		date,
-		buildingID,
 	); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	var existing int
-	err = tx.QueryRow(`SELECT 1 FROM bookings WHERE desk_id = $1 AND date = $2 LIMIT 1`, payload.DeskID, date).
+	err = tx.QueryRow(`SELECT 1 FROM workplace_bookings WHERE desk_id = $1 AND date = $2 LIMIT 1`, payload.DeskID, date).
 		Scan(&existing)
 	if err == nil {
 		respondError(w, http.StatusBadRequest, "Стол уже занят")
@@ -236,10 +225,9 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO bookings (desk_id, building_id, user_key, user_name, date)
-		 VALUES ($1, $2, $3, $4, $5)`,
+		`INSERT INTO workplace_bookings (desk_id, user_key, user_name, date)
+		 VALUES ($1, $2, $3, $4)`,
 		payload.DeskID,
-		buildingID,
 		userKey,
 		userName,
 		date,
@@ -281,7 +269,7 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := a.db.Exec(
-		`DELETE FROM bookings WHERE user_key = $1 AND desk_id = $2 AND date = $3`,
+		`DELETE FROM workplace_bookings WHERE user_key = $1 AND desk_id = $2 AND date = $3`,
 		userKey,
 		payload.DeskID,
 		date,
@@ -312,9 +300,9 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 		        COALESCE(NULLIF(u.user_name, ''), b.user_name),
 		        COALESCE(u.employee_id, ''),
 		        d.label, d.space_id, s.name, f.building_id, f.level
-		   FROM bookings b
-		   JOIN desks d ON d.id = b.desk_id
-		   JOIN spaces s ON s.id = d.space_id
+		  FROM workplace_bookings b
+		  JOIN workplaces d ON d.id = b.desk_id
+		   JOIN coworkings s ON s.id = d.space_id
 		   JOIN floors f ON f.id = s.floor_id
 		   LEFT JOIN users u ON u.user_key = b.user_key
 		  WHERE b.user_key = $1 AND b.date >= CURRENT_DATE::text
@@ -364,7 +352,7 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := a.db.Exec(`DELETE FROM bookings WHERE user_key = $1`, userKey)
+	result, err := a.db.Exec(`DELETE FROM workplace_bookings WHERE user_key = $1`, userKey)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -419,16 +407,6 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	}
 	defer tx.Rollback()
 
-	buildingID, err := getDeskBuildingID(tx, payload.DeskID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "desk not found")
-			return
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
 	bookedByOthers, err := findBookedDates(tx, payload.DeskID, userKey, validDates)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -443,7 +421,7 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	}
 
 	if len(available) > 0 {
-		if err := deleteUserBookingsForDates(tx, userKey, buildingID, available); err != nil {
+		if err := deleteUserBookingsForDates(tx, userKey, available); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -453,10 +431,9 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	failed := make([]string, 0, len(validDates))
 	for _, date := range available {
 		if _, err := tx.Exec(
-			`INSERT INTO bookings (desk_id, building_id, user_key, user_name, date)
-			 VALUES ($1, $2, $3, $4, $5)`,
+			`INSERT INTO workplace_bookings (desk_id, user_key, user_name, date)
+			 VALUES ($1, $2, $3, $4)`,
 			payload.DeskID,
-			buildingID,
 			userKey,
 			userName,
 			date,
@@ -487,7 +464,7 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 }
 
 func (a *app) ensureDeskExists(deskID int64) error {
-	row := a.db.QueryRow(`SELECT id FROM desks WHERE id = $1`, deskID)
+	row := a.db.QueryRow(`SELECT id FROM workplaces WHERE id = $1`, deskID)
 	var id int64
 	if err := row.Scan(&id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -496,25 +473,6 @@ func (a *app) ensureDeskExists(deskID int64) error {
 		return err
 	}
 	return nil
-}
-
-func getDeskBuildingID(tx *sql.Tx, deskID int64) (int64, error) {
-	row := tx.QueryRow(
-		`SELECT f.building_id
-		   FROM desks d
-		   JOIN spaces s ON s.id = d.space_id
-		   JOIN floors f ON f.id = s.floor_id
-		  WHERE d.id = $1`,
-		deskID,
-	)
-	var buildingID int64
-	if err := row.Scan(&buildingID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, errNotFound
-		}
-		return 0, err
-	}
-	return buildingID, nil
 }
 
 func extractBookingUser(r *http.Request) (string, string) {
@@ -592,7 +550,7 @@ func findBookedDates(tx *sql.Tx, deskID int64, userKey string, dates []string) (
 		args = append(args, date)
 	}
 	query := fmt.Sprintf(
-		`SELECT date, user_key FROM bookings WHERE desk_id = $1 AND date IN (%s)`,
+		`SELECT date, user_key FROM workplace_bookings WHERE desk_id = $1 AND date IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 	rows, err := tx.Query(query, args...)
@@ -618,20 +576,19 @@ func findBookedDates(tx *sql.Tx, deskID int64, userKey string, dates []string) (
 	return bookedByOthers, nil
 }
 
-func deleteUserBookingsForDates(tx *sql.Tx, userKey string, buildingID int64, dates []string) error {
+func deleteUserBookingsForDates(tx *sql.Tx, userKey string, dates []string) error {
 	if len(dates) == 0 {
 		return nil
 	}
 	placeholders := make([]string, 0, len(dates))
-	args := make([]any, 0, len(dates)+2)
+	args := make([]any, 0, len(dates)+1)
 	args = append(args, userKey)
-	args = append(args, buildingID)
 	for i, date := range dates {
-		placeholders = append(placeholders, fmt.Sprintf("$%d", i+3))
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+2))
 		args = append(args, date)
 	}
 	query := fmt.Sprintf(
-		`DELETE FROM bookings WHERE user_key = $1 AND building_id = $2 AND date IN (%s)`,
+		`DELETE FROM workplace_bookings WHERE user_key = $1 AND date IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 	_, err := tx.Exec(query, args...)
@@ -645,13 +602,13 @@ func migrateBookingsTable(db *sql.DB) error {
 			SELECT 1
 			FROM information_schema.columns
 			WHERE table_schema = current_schema()
-			  AND table_name = 'bookings'
+			  AND table_name = 'workplace_bookings'
 			  AND column_name = 'building_id'
 		)`,
 	).Scan(&hasBuildingID); err != nil {
 		return err
 	}
-	if hasBuildingID {
+	if !hasBuildingID {
 		return nil
 	}
 
@@ -662,41 +619,39 @@ func migrateBookingsTable(db *sql.DB) error {
 	defer tx.Rollback()
 
 	if _, err := tx.Exec(
-		`CREATE TABLE IF NOT EXISTS bookings_new (
+		`CREATE TABLE IF NOT EXISTS workplace_bookings_new (
 			id BIGSERIAL PRIMARY KEY,
 			desk_id BIGINT NOT NULL,
-			building_id BIGINT NOT NULL,
 			user_key TEXT NOT NULL,
 			user_name TEXT NOT NULL DEFAULT '',
 			date TEXT NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
-			FOREIGN KEY(desk_id) REFERENCES desks(id) ON DELETE CASCADE,
+			FOREIGN KEY(desk_id) REFERENCES workplaces(id) ON DELETE CASCADE,
 			UNIQUE(desk_id, date),
-			UNIQUE(user_key, date, building_id)
+			UNIQUE(user_key, date)
 		);`,
 	); err != nil {
 		return err
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO bookings_new (id, desk_id, building_id, user_key, user_name, date, created_at)
-		 SELECT b.id, b.desk_id, f.building_id, b.user_key, b.user_name, b.date, b.created_at
-		   FROM bookings b
-		   JOIN desks d ON d.id = b.desk_id
-		   JOIN spaces s ON s.id = d.space_id
-		   JOIN floors f ON f.id = s.floor_id`,
+		`INSERT INTO workplace_bookings_new (id, desk_id, user_key, user_name, date, created_at)
+		 SELECT DISTINCT ON (b.user_key, b.date)
+		        b.id, b.desk_id, b.user_key, b.user_name, b.date, b.created_at
+		   FROM workplace_bookings b
+		  ORDER BY b.user_key, b.date, b.created_at DESC`,
 	); err != nil {
 		return err
 	}
 
-	if _, err := tx.Exec(`DROP TABLE bookings`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE workplace_bookings`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE bookings_new RENAME TO bookings`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE workplace_bookings_new RENAME TO workplace_bookings`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
-		`SELECT setval(pg_get_serial_sequence('bookings', 'id'), COALESCE((SELECT MAX(id) FROM bookings), 0))`,
+		`SELECT setval(pg_get_serial_sequence('workplace_bookings', 'id'), COALESCE((SELECT MAX(id) FROM workplace_bookings), 0))`,
 	); err != nil {
 		return err
 	}

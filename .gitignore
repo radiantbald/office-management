@@ -3,7 +3,6 @@
 .gomodcache/
 
 # Go
-backend/office.db
 backend/go.sum
 backend/**/*.exe
 backend/**/*.test
@@ -16,3 +15,6 @@ dist/
 # IDE
 .idea/
 .vscode/
+
+# Env
+.env

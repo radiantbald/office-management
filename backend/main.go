@@ -18,6 +18,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/joho/godotenv"
 )
 
 const uploadDirName = "uploads"
@@ -113,11 +114,14 @@ type deskCreateInput struct {
 }
 
 type meetingRoom struct {
-	ID        int64  `json:"id"`
-	SpaceID   int64  `json:"space_id"`
-	Name      string `json:"name"`
-	Capacity  int    `json:"capacity"`
-	CreatedAt string `json:"created_at"`
+	ID             int64   `json:"id"`
+	FloorID        int64   `json:"floor_id"`
+	Name           string  `json:"name"`
+	Capacity       int     `json:"capacity"`
+	Color          string  `json:"color,omitempty"`
+	SnapshotHidden bool    `json:"snapshot_hidden"`
+	Points         []point `json:"points"`
+	CreatedAt      string  `json:"created_at"`
 }
 
 func postgresDSN() string {
@@ -157,6 +161,8 @@ func postgresDSN() string {
 }
 
 func main() {
+	_ = godotenv.Load()
+
 	db, err := sql.Open("pgx", postgresDSN())
 	if err != nil {
 		log.Fatalf("open db: %v", err)
@@ -165,6 +171,10 @@ func main() {
 
 	if err := migrate(db); err != nil {
 		log.Fatalf("migrate: %v", err)
+	}
+	if isTrueEnv("MIGRATE_ONLY") {
+		log.Println("migrations applied; exiting because MIGRATE_ONLY=true")
+		return
 	}
 
 	uploadDir, err := filepath.Abs(uploadDirName)
@@ -196,6 +206,11 @@ func main() {
 	mux.HandleFunc("/api/meeting-room-bookings", app.handleMeetingRoomBookings)
 	mux.HandleFunc("/api/bookings", app.handleBookings)
 	mux.HandleFunc("/api/bookings/", app.handleBookingsSubroutes)
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
 	mux.HandleFunc("/api/auth/user/info", app.handleAuthUserInfo)
 	mux.HandleFunc("/api/auth/user/wb-band", app.handleAuthUserWbBand)
 	mux.HandleFunc("/api/auth/v2/code/wb-captcha", app.handleAuthRequestCode)
@@ -218,19 +233,42 @@ func main() {
 	handler = securityHeadersMiddleware(handler)
 	handler = loggingMiddleware(handler)
 
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		port = "8080"
+	}
 	server := &http.Server{
-		Addr:              ":8080",
+		Addr:              ":" + port,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("server listening on http://localhost%s", server.Addr)
+	log.Printf("server listening on %s", server.Addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server error: %v", err)
 	}
 }
 
+func isTrueEnv(name string) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return false
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func migrate(db *sql.DB) error {
+	if err := migrateSpaceStorage(db); err != nil {
+		return err
+	}
+	if err := migrateWorkplaceTables(db); err != nil {
+		return err
+	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS users (
 			id BIGSERIAL PRIMARY KEY,
@@ -262,11 +300,11 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL DEFAULT (now()::text),
 			FOREIGN KEY(building_id) REFERENCES office_buildings(id) ON DELETE CASCADE
 		);`,
-		`CREATE TABLE IF NOT EXISTS spaces (
-			id BIGSERIAL PRIMARY KEY,
+		`CREATE TABLE IF NOT EXISTS coworkings (
+			id BIGINT PRIMARY KEY DEFAULT nextval('spaces_id_seq'),
 			floor_id BIGINT NOT NULL,
 			name TEXT NOT NULL,
-			kind TEXT NOT NULL,
+			kind TEXT NOT NULL DEFAULT 'coworking',
 			capacity INTEGER NOT NULL DEFAULT 0,
 			subdivision_level_1 TEXT NOT NULL DEFAULT '',
 			subdivision_level_2 TEXT NOT NULL DEFAULT '',
@@ -276,7 +314,7 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL DEFAULT (now()::text),
 			FOREIGN KEY(floor_id) REFERENCES floors(id) ON DELETE CASCADE
 		);`,
-		`CREATE TABLE IF NOT EXISTS desks (
+		`CREATE TABLE IF NOT EXISTS workplaces (
 			id BIGSERIAL PRIMARY KEY,
 			space_id BIGINT NOT NULL,
 			label TEXT NOT NULL,
@@ -286,15 +324,18 @@ func migrate(db *sql.DB) error {
 			height DOUBLE PRECISION NOT NULL DEFAULT 100,
 			rotation DOUBLE PRECISION NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
-			FOREIGN KEY(space_id) REFERENCES spaces(id) ON DELETE CASCADE
+			FOREIGN KEY(space_id) REFERENCES coworkings(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS meeting_rooms (
-			id BIGSERIAL PRIMARY KEY,
-			space_id BIGINT NOT NULL,
+			id BIGINT PRIMARY KEY DEFAULT nextval('spaces_id_seq'),
+			floor_id BIGINT NOT NULL,
 			name TEXT NOT NULL,
-			capacity INTEGER NOT NULL,
+			capacity INTEGER NOT NULL DEFAULT 0,
+			points_json TEXT NOT NULL DEFAULT '[]',
+			color TEXT NOT NULL DEFAULT '',
+			snapshot_hidden INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
-			FOREIGN KEY(space_id) REFERENCES spaces(id) ON DELETE CASCADE
+			FOREIGN KEY(floor_id) REFERENCES floors(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS meeting_room_bookings (
 			id BIGSERIAL PRIMARY KEY,
@@ -305,19 +346,18 @@ func migrate(db *sql.DB) error {
 			start_min INTEGER NOT NULL,
 			end_min INTEGER NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
-			FOREIGN KEY(space_id) REFERENCES spaces(id) ON DELETE CASCADE
+			FOREIGN KEY(space_id) REFERENCES meeting_rooms(id) ON DELETE CASCADE
 		);`,
-		`CREATE TABLE IF NOT EXISTS bookings (
+		`CREATE TABLE IF NOT EXISTS workplace_bookings (
 			id BIGSERIAL PRIMARY KEY,
 			desk_id BIGINT NOT NULL,
-			building_id BIGINT NOT NULL,
 			user_key TEXT NOT NULL,
 			user_name TEXT NOT NULL DEFAULT '',
 			date TEXT NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
-			FOREIGN KEY(desk_id) REFERENCES desks(id) ON DELETE CASCADE,
+			FOREIGN KEY(desk_id) REFERENCES workplaces(id) ON DELETE CASCADE,
 			UNIQUE(desk_id, date),
-			UNIQUE(user_key, date, building_id)
+			UNIQUE(user_key, date)
 		);`,
 	}
 
@@ -335,37 +375,58 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "office_buildings", "timezone", "TEXT NOT NULL DEFAULT 'Europe/Moscow'"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "spaces", "points_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+	if err := ensureColumn(db, "coworkings", "points_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "spaces", "color", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := ensureColumn(db, "coworkings", "color", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "spaces", "capacity", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err := ensureColumn(db, "coworkings", "capacity", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "spaces", "subdivision_level_1", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := ensureColumn(db, "coworkings", "subdivision_level_1", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "spaces", "subdivision_level_2", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := ensureColumn(db, "coworkings", "subdivision_level_2", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "spaces", "snapshot_hidden", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err := ensureColumn(db, "coworkings", "snapshot_hidden", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "desks", "x", "REAL NOT NULL DEFAULT 0"); err != nil {
+	if err := ensureColumn(db, "coworkings", "kind", "TEXT NOT NULL DEFAULT 'coworking'"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "desks", "y", "REAL NOT NULL DEFAULT 0"); err != nil {
+	if err := ensureColumn(db, "meeting_rooms", "points_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "desks", "width", "REAL NOT NULL DEFAULT 200"); err != nil {
+	if err := ensureColumn(db, "meeting_rooms", "color", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "desks", "height", "REAL NOT NULL DEFAULT 100"); err != nil {
+	if err := ensureColumn(db, "meeting_rooms", "snapshot_hidden", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "desks", "rotation", "REAL NOT NULL DEFAULT 0"); err != nil {
+	if err := ensureColumn(db, "meeting_rooms", "floor_id", "BIGINT"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "meeting_rooms", "capacity", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "workplaces", "x", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "workplaces", "y", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "workplaces", "width", "REAL NOT NULL DEFAULT 200"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "workplaces", "height", "REAL NOT NULL DEFAULT 100"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "workplaces", "rotation", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := migrateMeetingRoomSpaces(db); err != nil {
 		return err
 	}
 	if err := migrateBookingsTable(db); err != nil {
@@ -390,6 +451,169 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	return nil
+}
+
+func migrateSpaceStorage(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE SEQUENCE IF NOT EXISTS spaces_id_seq`); err != nil {
+		return err
+	}
+
+	hasCoworkings, err := tableExists(db, "coworkings")
+	if err != nil {
+		return err
+	}
+	hasSpaces, err := tableExists(db, "spaces")
+	if err != nil {
+		return err
+	}
+	if !hasCoworkings && hasSpaces {
+		if _, err := db.Exec(`ALTER TABLE spaces RENAME TO coworkings`); err != nil {
+			return err
+		}
+		hasCoworkings = true
+	}
+
+	hasMeetingRooms, err := tableExists(db, "meeting_rooms")
+	if err != nil {
+		return err
+	}
+	if hasMeetingRooms {
+		hasSpaceID, err := columnExists(db, "meeting_rooms", "space_id")
+		if err != nil {
+			return err
+		}
+		if hasSpaceID {
+			if _, err := db.Exec(`DROP TABLE meeting_rooms`); err != nil {
+				return err
+			}
+			hasMeetingRooms = false
+		}
+	}
+
+	if hasCoworkings {
+		if _, err := db.Exec(`ALTER TABLE coworkings ALTER COLUMN id SET DEFAULT nextval('spaces_id_seq')`); err != nil {
+			return err
+		}
+	}
+	if hasMeetingRooms {
+		if _, err := db.Exec(`ALTER TABLE meeting_rooms ALTER COLUMN id SET DEFAULT nextval('spaces_id_seq')`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateWorkplaceTables(db *sql.DB) error {
+	hasWorkplaces, err := tableExists(db, "workplaces")
+	if err != nil {
+		return err
+	}
+	hasDesks, err := tableExists(db, "desks")
+	if err != nil {
+		return err
+	}
+	if !hasWorkplaces && hasDesks {
+		if _, err := db.Exec(`ALTER TABLE desks RENAME TO workplaces`); err != nil {
+			return err
+		}
+		hasWorkplaces = true
+	}
+
+	hasWorkplaceBookings, err := tableExists(db, "workplace_bookings")
+	if err != nil {
+		return err
+	}
+	hasBookings, err := tableExists(db, "bookings")
+	if err != nil {
+		return err
+	}
+	if !hasWorkplaceBookings && hasBookings {
+		if _, err := db.Exec(`ALTER TABLE bookings RENAME TO workplace_bookings`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateMeetingRoomSpaces(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE coworkings ALTER COLUMN id SET DEFAULT nextval('spaces_id_seq')`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE meeting_rooms ALTER COLUMN id SET DEFAULT nextval('spaces_id_seq')`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`INSERT INTO meeting_rooms (id, floor_id, name, capacity, points_json, color, snapshot_hidden, created_at)
+		 SELECT id,
+		        floor_id,
+		        name,
+		        COALESCE(capacity, 0),
+		        COALESCE(points_json, '[]'),
+		        COALESCE(color, ''),
+		        COALESCE(snapshot_hidden, 0),
+		        created_at
+		   FROM coworkings
+		  WHERE kind = 'meeting'
+		 ON CONFLICT (id) DO NOTHING`,
+	); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DELETE FROM coworkings WHERE kind = 'meeting'`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE meeting_room_bookings DROP CONSTRAINT IF EXISTS meeting_room_bookings_space_id_fkey`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`ALTER TABLE meeting_room_bookings
+		 ADD CONSTRAINT meeting_room_bookings_space_id_fkey
+		 FOREIGN KEY(space_id) REFERENCES meeting_rooms(id) ON DELETE CASCADE`,
+	); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`SELECT setval('spaces_id_seq', GREATEST(
+		    COALESCE((SELECT MAX(id) FROM coworkings), 0),
+		    COALESCE((SELECT MAX(id) FROM meeting_rooms), 0)
+		))`,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func tableExists(db *sql.DB, table string) (bool, error) {
+	var exists bool
+	if err := db.QueryRow(
+		`SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.tables
+			WHERE table_schema = current_schema()
+			  AND table_name = $1
+		)`,
+		table,
+	).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func columnExists(db *sql.DB, table, column string) (bool, error) {
+	var exists bool
+	if err := db.QueryRow(
+		`SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = current_schema()
+			  AND table_name = $1
+			  AND column_name = $2
+		)`,
+		table,
+		column,
+	).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (a *app) upsertUserInfo(userKey, userName, fullName, employeeID, profileID, wbUserID, avatarURL, wbBand string) error {
@@ -1002,15 +1226,16 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 				}
 				effectiveKind := payload.Kind
 				if effectiveKind == "" && payload.Capacity != nil {
-					row := a.db.QueryRow(`SELECT kind FROM spaces WHERE id = $1`, id)
-					if err := row.Scan(&effectiveKind); err != nil {
-						if errors.Is(err, sql.ErrNoRows) {
+					kind, err := a.getSpaceKind(id)
+					if err != nil {
+						if errors.Is(err, errNotFound) {
 							respondError(w, http.StatusNotFound, "space not found")
 							return
 						}
 						respondError(w, http.StatusInternalServerError, err.Error())
 						return
 					}
+					effectiveKind = kind
 				}
 				if effectiveKind == "meeting" {
 					if payload.Capacity == nil {
@@ -1330,7 +1555,25 @@ func (a *app) handleMeetingRooms(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "space_id, name, and capacity are required")
 		return
 	}
-	result, err := a.createMeetingRoom(payload.SpaceID, payload.Name, payload.Capacity)
+	floorID := payload.SpaceID
+	if _, err := a.getFloor(floorID); err != nil {
+		if errors.Is(err, errNotFound) {
+			resolvedFloorID, resolveErr := a.getSpaceFloorID(payload.SpaceID)
+			if resolveErr != nil {
+				if errors.Is(resolveErr, errNotFound) {
+					respondError(w, http.StatusNotFound, "floor not found")
+					return
+				}
+				respondError(w, http.StatusInternalServerError, resolveErr.Error())
+				return
+			}
+			floorID = resolvedFloorID
+		} else {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	result, err := a.createMeetingRoom(floorID, payload.Name, payload.Capacity)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1530,12 +1773,16 @@ func (a *app) updateBuildingImage(id int64, imageURL string) (building, error) {
 
 func (a *app) listFloorsByBuilding(buildingID int64) ([]floor, error) {
 	rows, err := a.db.Query(
-		`SELECT f.id, f.building_id, f.name, f.level, f.created_at, COUNT(s.id) AS spaces_count
-		FROM floors f
-		LEFT JOIN spaces s ON s.floor_id = f.id
-		WHERE f.building_id = $1
-		GROUP BY f.id
-		ORDER BY f.id DESC`,
+		`SELECT f.id,
+		        f.building_id,
+		        f.name,
+		        f.level,
+		        f.created_at,
+		        (SELECT COUNT(*) FROM coworkings c WHERE c.floor_id = f.id)
+		        + (SELECT COUNT(*) FROM meeting_rooms m WHERE m.floor_id = f.id) AS spaces_count
+		   FROM floors f
+		  WHERE f.building_id = $1
+		  ORDER BY f.id DESC`,
 		buildingID,
 	)
 	if err != nil {
@@ -1591,7 +1838,10 @@ func (a *app) updateFloorPlan(id int64, planSVG string) (floor, error) {
 		return floor{}, errNotFound
 	}
 	if planSVG == "" {
-		if _, err = tx.Exec(`DELETE FROM spaces WHERE floor_id = $1`, id); err != nil {
+		if _, err = tx.Exec(`DELETE FROM coworkings WHERE floor_id = $1`, id); err != nil {
+			return floor{}, err
+		}
+		if _, err = tx.Exec(`DELETE FROM meeting_rooms WHERE floor_id = $1`, id); err != nil {
 			return floor{}, err
 		}
 	}
@@ -1642,10 +1892,47 @@ func (a *app) createFloorInTx(tx *sql.Tx, buildingID int64, name string, level i
 
 func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 	rows, err := a.db.Query(
-		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0),
-        COALESCE(subdivision_level_1, ''), COALESCE(subdivision_level_2, ''),
-        COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
-		FROM spaces WHERE floor_id = $1 ORDER BY id DESC`,
+		`SELECT id,
+		        floor_id,
+		        name,
+		        kind,
+		        COALESCE(capacity, 0),
+		        COALESCE(subdivision_level_1, ''),
+		        COALESCE(subdivision_level_2, ''),
+		        COALESCE(points_json, '[]'),
+		        COALESCE(color, ''),
+		        COALESCE(snapshot_hidden, 0),
+		        created_at
+		   FROM (
+		     SELECT id,
+		            floor_id,
+		            name,
+		            COALESCE(NULLIF(kind, ''), 'coworking') AS kind,
+		            COALESCE(capacity, 0) AS capacity,
+		            COALESCE(subdivision_level_1, '') AS subdivision_level_1,
+		            COALESCE(subdivision_level_2, '') AS subdivision_level_2,
+		            COALESCE(points_json, '[]') AS points_json,
+		            COALESCE(color, '') AS color,
+		            COALESCE(snapshot_hidden, 0) AS snapshot_hidden,
+		            created_at
+		       FROM coworkings
+		      WHERE floor_id = $1
+		     UNION ALL
+		     SELECT id,
+		            floor_id,
+		            name,
+		            'meeting' AS kind,
+		            COALESCE(capacity, 0) AS capacity,
+		            '' AS subdivision_level_1,
+		            '' AS subdivision_level_2,
+		            COALESCE(points_json, '[]') AS points_json,
+		            COALESCE(color, '') AS color,
+		            COALESCE(snapshot_hidden, 0) AS snapshot_hidden,
+		            created_at
+		       FROM meeting_rooms
+		      WHERE floor_id = $1
+		   ) s
+		  ORDER BY id DESC`,
 		floorID,
 	)
 	if err != nil {
@@ -1682,10 +1969,47 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 
 func (a *app) getSpace(id int64) (space, error) {
 	row := a.db.QueryRow(
-		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0),
-        COALESCE(subdivision_level_1, ''), COALESCE(subdivision_level_2, ''),
-        COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
-		FROM spaces WHERE id = $1`,
+		`SELECT id,
+		        floor_id,
+		        name,
+		        kind,
+		        COALESCE(capacity, 0),
+		        COALESCE(subdivision_level_1, ''),
+		        COALESCE(subdivision_level_2, ''),
+		        COALESCE(points_json, '[]'),
+		        COALESCE(color, ''),
+		        COALESCE(snapshot_hidden, 0),
+		        created_at
+		   FROM (
+		     SELECT id,
+		            floor_id,
+		            name,
+		            COALESCE(NULLIF(kind, ''), 'coworking') AS kind,
+		            COALESCE(capacity, 0) AS capacity,
+		            COALESCE(subdivision_level_1, '') AS subdivision_level_1,
+		            COALESCE(subdivision_level_2, '') AS subdivision_level_2,
+		            COALESCE(points_json, '[]') AS points_json,
+		            COALESCE(color, '') AS color,
+		            COALESCE(snapshot_hidden, 0) AS snapshot_hidden,
+		            created_at
+		       FROM coworkings
+		      WHERE id = $1
+		     UNION ALL
+		     SELECT id,
+		            floor_id,
+		            name,
+		            'meeting' AS kind,
+		            COALESCE(capacity, 0) AS capacity,
+		            '' AS subdivision_level_1,
+		            '' AS subdivision_level_2,
+		            COALESCE(points_json, '[]') AS points_json,
+		            COALESCE(color, '') AS color,
+		            COALESCE(snapshot_hidden, 0) AS snapshot_hidden,
+		            created_at
+		       FROM meeting_rooms
+		      WHERE id = $1
+		   ) s
+		  LIMIT 1`,
 		id,
 	)
 	var s space
@@ -1714,6 +2038,43 @@ func (a *app) getSpace(id int64) (space, error) {
 	return s, nil
 }
 
+func (a *app) getSpaceKind(id int64) (string, error) {
+	row := a.db.QueryRow(`SELECT COALESCE(NULLIF(kind, ''), 'coworking') FROM coworkings WHERE id = $1`, id)
+	var kind string
+	if err := row.Scan(&kind); err == nil {
+		return kind, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	row = a.db.QueryRow(`SELECT id FROM meeting_rooms WHERE id = $1`, id)
+	var meetingID int64
+	if err := row.Scan(&meetingID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errNotFound
+		}
+		return "", err
+	}
+	return "meeting", nil
+}
+
+func (a *app) getSpaceFloorID(spaceID int64) (int64, error) {
+	row := a.db.QueryRow(`SELECT floor_id FROM coworkings WHERE id = $1`, spaceID)
+	var floorID int64
+	if err := row.Scan(&floorID); err == nil {
+		return floorID, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	row = a.db.QueryRow(`SELECT floor_id FROM meeting_rooms WHERE id = $1`, spaceID)
+	if err := row.Scan(&floorID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, errNotFound
+		}
+		return 0, err
+	}
+	return floorID, nil
+}
+
 func (a *app) createSpace(
 	floorID int64,
 	name, kind string,
@@ -1727,20 +2088,35 @@ func (a *app) createSpace(
 		return space{}, err
 	}
 	var id int64
-	if err := a.db.QueryRow(
-		`INSERT INTO spaces (floor_id, name, kind, capacity, subdivision_level_1, subdivision_level_2, points_json, color)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 RETURNING id`,
-		floorID,
-		name,
-		kind,
-		capacity,
-		subdivisionLevel1,
-		subdivisionLevel2,
-		pointsJSON,
-		color,
-	).Scan(&id); err != nil {
-		return space{}, err
+	if kind == "meeting" {
+		if err := a.db.QueryRow(
+			`INSERT INTO meeting_rooms (floor_id, name, capacity, points_json, color)
+			 VALUES ($1, $2, $3, $4, $5)
+			 RETURNING id`,
+			floorID,
+			name,
+			capacity,
+			pointsJSON,
+			color,
+		).Scan(&id); err != nil {
+			return space{}, err
+		}
+	} else {
+		if err := a.db.QueryRow(
+			`INSERT INTO coworkings (floor_id, name, kind, capacity, subdivision_level_1, subdivision_level_2, points_json, color)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			 RETURNING id`,
+			floorID,
+			name,
+			kind,
+			capacity,
+			subdivisionLevel1,
+			subdivisionLevel2,
+			pointsJSON,
+			color,
+		).Scan(&id); err != nil {
+			return space{}, err
+		}
 	}
 	return space{
 		ID:             id,
@@ -1763,7 +2139,7 @@ func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space
 		return space{}, err
 	}
 	result, err := a.db.Exec(
-		`UPDATE spaces SET points_json = $1, color = $2 WHERE id = $3`,
+		`UPDATE coworkings SET points_json = $1, color = $2 WHERE id = $3`,
 		pointsJSON,
 		color,
 		id,
@@ -1776,39 +2152,24 @@ func (a *app) updateSpaceGeometry(id int64, points []point, color string) (space
 		return space{}, err
 	}
 	if rows == 0 {
-		return space{}, errNotFound
-	}
-	row := a.db.QueryRow(
-		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0),
-        COALESCE(subdivision_level_1, ''), COALESCE(subdivision_level_2, ''),
-        COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
-		FROM spaces WHERE id = $1`,
-		id,
-	)
-	var s space
-	var pointsStored string
-	var snapshotHidden int
-	if err := row.Scan(
-		&s.ID,
-		&s.FloorID,
-		&s.Name,
-		&s.Kind,
-		&s.Capacity,
-		&s.SubdivisionL1,
-		&s.SubdivisionL2,
-		&pointsStored,
-		&s.Color,
-		&snapshotHidden,
-		&s.CreatedAt,
-	); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		result, err = a.db.Exec(
+			`UPDATE meeting_rooms SET points_json = $1, color = $2 WHERE id = $3`,
+			pointsJSON,
+			color,
+			id,
+		)
+		if err != nil {
+			return space{}, err
+		}
+		rows, err = result.RowsAffected()
+		if err != nil {
+			return space{}, err
+		}
+		if rows == 0 {
 			return space{}, errNotFound
 		}
-		return space{}, err
 	}
-	s.Points = decodePoints(pointsStored)
-	s.SnapshotHidden = snapshotHidden != 0
-	return s, nil
+	return a.getSpace(id)
 }
 
 func (a *app) updateSpaceDetails(
@@ -1819,80 +2180,147 @@ func (a *app) updateSpaceDetails(
 	color string,
 	subdivisionLevel1, subdivisionLevel2 string,
 ) (space, error) {
-	var storedKind string
-	var storedCapacity int
-	if kind == "" || !capacityProvided {
-		row := a.db.QueryRow(`SELECT kind, COALESCE(capacity, 0) FROM spaces WHERE id = $1`, id)
-		if err := row.Scan(&storedKind, &storedCapacity); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return space{}, errNotFound
-			}
-			return space{}, err
-		}
+	current, err := a.getSpace(id)
+	if err != nil {
+		return space{}, err
 	}
 	if kind == "" {
-		kind = storedKind
+		kind = current.Kind
 	}
 	if !capacityProvided {
-		capacity = storedCapacity
+		capacity = current.Capacity
 	}
 	if kind != "meeting" {
 		capacity = 0
 	}
-	result, err := a.db.Exec(
-		`UPDATE spaces
-		 SET name = $1, kind = $2, capacity = $3, color = $4,
-		     subdivision_level_1 = $5, subdivision_level_2 = $6
-		 WHERE id = $7`,
-		name,
-		kind,
-		capacity,
-		color,
-		subdivisionLevel1,
-		subdivisionLevel2,
-		id,
-	)
-	if err != nil {
-		return space{}, err
+	if kind != "coworking" {
+		subdivisionLevel1 = ""
+		subdivisionLevel2 = ""
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return space{}, err
+	if current.Kind == "meeting" {
+		if kind == "meeting" {
+			result, err := a.db.Exec(
+				`UPDATE meeting_rooms
+				 SET name = $1, capacity = $2, color = $3
+				 WHERE id = $4`,
+				name,
+				capacity,
+				color,
+				id,
+			)
+			if err != nil {
+				return space{}, err
+			}
+			rows, err := result.RowsAffected()
+			if err != nil {
+				return space{}, err
+			}
+			if rows == 0 {
+				return space{}, errNotFound
+			}
+			return a.getSpace(id)
+		}
+
+		pointsJSON, err := encodePoints(current.Points)
+		if err != nil {
+			return space{}, err
+		}
+		snapshotHidden := 0
+		if current.SnapshotHidden {
+			snapshotHidden = 1
+		}
+		tx, err := a.db.Begin()
+		if err != nil {
+			return space{}, err
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(
+			`INSERT INTO coworkings (id, floor_id, name, kind, capacity, subdivision_level_1, subdivision_level_2, points_json, color, snapshot_hidden, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			id,
+			current.FloorID,
+			name,
+			kind,
+			capacity,
+			subdivisionLevel1,
+			subdivisionLevel2,
+			pointsJSON,
+			color,
+			snapshotHidden,
+			current.CreatedAt,
+		); err != nil {
+			return space{}, err
+		}
+		if _, err := tx.Exec(`DELETE FROM meeting_rooms WHERE id = $1`, id); err != nil {
+			return space{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return space{}, err
+		}
+		return a.getSpace(id)
 	}
-	if rows == 0 {
-		return space{}, errNotFound
-	}
-	row := a.db.QueryRow(
-		`SELECT id, floor_id, name, kind, COALESCE(capacity, 0),
-        COALESCE(subdivision_level_1, ''), COALESCE(subdivision_level_2, ''),
-        COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
-		FROM spaces WHERE id = $1`,
-		id,
-	)
-	var s space
-	var pointsStored string
-	var snapshotHidden int
-	if err := row.Scan(
-		&s.ID,
-		&s.FloorID,
-		&s.Name,
-		&s.Kind,
-		&s.Capacity,
-		&s.SubdivisionL1,
-		&s.SubdivisionL2,
-		&pointsStored,
-		&s.Color,
-		&snapshotHidden,
-		&s.CreatedAt,
-	); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+
+	if kind != "meeting" {
+		result, err := a.db.Exec(
+			`UPDATE coworkings
+			 SET name = $1, kind = $2, capacity = $3, color = $4,
+			     subdivision_level_1 = $5, subdivision_level_2 = $6
+			 WHERE id = $7`,
+			name,
+			kind,
+			capacity,
+			color,
+			subdivisionLevel1,
+			subdivisionLevel2,
+			id,
+		)
+		if err != nil {
+			return space{}, err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return space{}, err
+		}
+		if rows == 0 {
 			return space{}, errNotFound
 		}
+		return a.getSpace(id)
+	}
+
+	pointsJSON, err := encodePoints(current.Points)
+	if err != nil {
 		return space{}, err
 	}
-	s.Points = decodePoints(pointsStored)
-	s.SnapshotHidden = snapshotHidden != 0
-	return s, nil
+	snapshotHidden := 0
+	if current.SnapshotHidden {
+		snapshotHidden = 1
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return space{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
+		`INSERT INTO meeting_rooms (id, floor_id, name, capacity, points_json, color, snapshot_hidden, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		id,
+		current.FloorID,
+		name,
+		capacity,
+		pointsJSON,
+		color,
+		snapshotHidden,
+		current.CreatedAt,
+	); err != nil {
+		return space{}, err
+	}
+	if _, err := tx.Exec(`DELETE FROM coworkings WHERE id = $1`, id); err != nil {
+		return space{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return space{}, err
+	}
+	return a.getSpace(id)
 }
 
 func (a *app) updateSpaceSnapshotHidden(id int64, hidden bool) (space, error) {
@@ -1900,7 +2328,7 @@ func (a *app) updateSpaceSnapshotHidden(id int64, hidden bool) (space, error) {
 	if hidden {
 		value = 1
 	}
-	result, err := a.db.Exec(`UPDATE spaces SET snapshot_hidden = $1 WHERE id = $2`, value, id)
+	result, err := a.db.Exec(`UPDATE coworkings SET snapshot_hidden = $1 WHERE id = $2`, value, id)
 	if err != nil {
 		return space{}, err
 	}
@@ -1909,13 +2337,23 @@ func (a *app) updateSpaceSnapshotHidden(id int64, hidden bool) (space, error) {
 		return space{}, err
 	}
 	if rows == 0 {
-		return space{}, errNotFound
+		result, err = a.db.Exec(`UPDATE meeting_rooms SET snapshot_hidden = $1 WHERE id = $2`, value, id)
+		if err != nil {
+			return space{}, err
+		}
+		rows, err = result.RowsAffected()
+		if err != nil {
+			return space{}, err
+		}
+		if rows == 0 {
+			return space{}, errNotFound
+		}
 	}
 	return a.getSpace(id)
 }
 
 func (a *app) deleteSpace(id int64) error {
-	result, err := a.db.Exec(`DELETE FROM spaces WHERE id = $1`, id)
+	result, err := a.db.Exec(`DELETE FROM coworkings WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -1924,14 +2362,24 @@ func (a *app) deleteSpace(id int64) error {
 		return err
 	}
 	if rows == 0 {
-		return errNotFound
+		result, err = a.db.Exec(`DELETE FROM meeting_rooms WHERE id = $1`, id)
+		if err != nil {
+			return err
+		}
+		rows, err = result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return errNotFound
+		}
 	}
 	return nil
 }
 
 func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 	rows, err := a.db.Query(
-		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM desks WHERE space_id = $1 ORDER BY id DESC`,
+		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM workplaces WHERE space_id = $1 ORDER BY id DESC`,
 		spaceID,
 	)
 	if err != nil {
@@ -1959,8 +2407,8 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 		        COALESCE(u.wb_user_id, ''),
 		        COALESCE(u.avatar_url, ''),
 		        COALESCE(u.wb_band, '')
-		   FROM desks d
-		   LEFT JOIN bookings b ON b.desk_id = d.id AND b.date = $2
+		   FROM workplaces d
+		   LEFT JOIN workplace_bookings b ON b.desk_id = d.id AND b.date = $2
 		   LEFT JOIN LATERAL (
 		     SELECT user_name, full_name, employee_id, profile_id, wb_user_id, avatar_url, wb_band
 		       FROM users
@@ -2030,7 +2478,7 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 func (a *app) createDesk(spaceID int64, label string, x, y, width, height, rotation float64) (desk, error) {
 	var id int64
 	if err := a.db.QueryRow(
-		`INSERT INTO desks (space_id, label, x, y, width, height, rotation)
+		`INSERT INTO workplaces (space_id, label, x, y, width, height, rotation)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id`,
 		spaceID,
@@ -2070,7 +2518,7 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 		}
 	}()
 	stmt, err := tx.Prepare(
-		`INSERT INTO desks (space_id, label, x, y, width, height, rotation)
+		`INSERT INTO workplaces (space_id, label, x, y, width, height, rotation)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id`,
 	)
@@ -2118,7 +2566,7 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 func (a *app) getDesk(id int64) (desk, error) {
 	var d desk
 	row := a.db.QueryRow(
-		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM desks WHERE id = $1`,
+		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM workplaces WHERE id = $1`,
 		id,
 	)
 	if err := row.Scan(&d.ID, &d.SpaceID, &d.Label, &d.X, &d.Y, &d.Width, &d.Height, &d.Rotation, &d.CreatedAt); err != nil {
@@ -2160,7 +2608,7 @@ func (a *app) updateDesk(id int64, label *string, x *float64, y *float64, width 
 		return desk{}, errors.New("width and height must be greater than 0")
 	}
 	result, err := a.db.Exec(
-		`UPDATE desks SET label = $1, x = $2, y = $3, width = $4, height = $5, rotation = $6 WHERE id = $7`,
+		`UPDATE workplaces SET label = $1, x = $2, y = $3, width = $4, height = $5, rotation = $6 WHERE id = $7`,
 		current.Label,
 		current.X,
 		current.Y,
@@ -2183,7 +2631,7 @@ func (a *app) updateDesk(id int64, label *string, x *float64, y *float64, width 
 }
 
 func (a *app) deleteDesk(id int64) error {
-	result, err := a.db.Exec(`DELETE FROM desks WHERE id = $1`, id)
+	result, err := a.db.Exec(`DELETE FROM workplaces WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -2210,7 +2658,7 @@ func (a *app) deleteDesksBulk(ids []int64) error {
 			_ = tx.Rollback()
 		}
 	}()
-	stmt, err := tx.Prepare(`DELETE FROM desks WHERE id = $1`)
+	stmt, err := tx.Prepare(`DELETE FROM workplaces WHERE id = $1`)
 	if err != nil {
 		return err
 	}
@@ -2239,9 +2687,16 @@ func (a *app) deleteDesksBulk(ids []int64) error {
 }
 
 func (a *app) listMeetingRoomsBySpace(spaceID int64) ([]meetingRoom, error) {
+	floorID, err := a.getSpaceFloorID(spaceID)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := a.db.Query(
-		`SELECT id, space_id, name, capacity, created_at FROM meeting_rooms WHERE space_id = $1 ORDER BY id DESC`,
-		spaceID,
+		`SELECT id, floor_id, name, capacity, COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
+		   FROM meeting_rooms
+		  WHERE floor_id = $1
+		  ORDER BY id DESC`,
+		floorID,
 	)
 	if err != nil {
 		return nil, err
@@ -2251,21 +2706,35 @@ func (a *app) listMeetingRoomsBySpace(spaceID int64) ([]meetingRoom, error) {
 	var items []meetingRoom
 	for rows.Next() {
 		var m meetingRoom
-		if err := rows.Scan(&m.ID, &m.SpaceID, &m.Name, &m.Capacity, &m.CreatedAt); err != nil {
+		var pointsJSON string
+		var snapshotHidden int
+		if err := rows.Scan(
+			&m.ID,
+			&m.FloorID,
+			&m.Name,
+			&m.Capacity,
+			&pointsJSON,
+			&m.Color,
+			&snapshotHidden,
+			&m.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
+		m.Points = decodePoints(pointsJSON)
+		m.SnapshotHidden = snapshotHidden != 0
+		m.Color = strings.TrimSpace(m.Color)
 		items = append(items, m)
 	}
 	return items, rows.Err()
 }
 
-func (a *app) createMeetingRoom(spaceID int64, name string, capacity int) (meetingRoom, error) {
+func (a *app) createMeetingRoom(floorID int64, name string, capacity int) (meetingRoom, error) {
 	var id int64
 	if err := a.db.QueryRow(
-		`INSERT INTO meeting_rooms (space_id, name, capacity)
+		`INSERT INTO meeting_rooms (floor_id, name, capacity)
 		 VALUES ($1, $2, $3)
 		 RETURNING id`,
-		spaceID,
+		floorID,
 		name,
 		capacity,
 	).Scan(&id); err != nil {
@@ -2273,9 +2742,11 @@ func (a *app) createMeetingRoom(spaceID int64, name string, capacity int) (meeti
 	}
 	return meetingRoom{
 		ID:        id,
-		SpaceID:   spaceID,
+		FloorID:   floorID,
 		Name:      name,
 		Capacity:  capacity,
+		Points:    []point{},
+		Color:     "",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }

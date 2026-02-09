@@ -410,16 +410,13 @@ func (a *app) handleCancelMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 }
 
 func (a *app) ensureMeetingSpace(spaceID int64) error {
-	row := a.db.QueryRow(`SELECT kind FROM spaces WHERE id = $1`, spaceID)
-	var kind string
-	if err := row.Scan(&kind); err != nil {
+	row := a.db.QueryRow(`SELECT id FROM meeting_rooms WHERE id = $1`, spaceID)
+	var id int64
+	if err := row.Scan(&id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errNotFound
 		}
 		return err
-	}
-	if strings.TrimSpace(kind) != "meeting" {
-		return errors.New("space is not a meeting room")
 	}
 	return nil
 }
@@ -427,7 +424,7 @@ func (a *app) ensureMeetingSpace(spaceID int64) error {
 func (a *app) getSpaceTimezone(spaceID int64) (string, error) {
 	row := a.db.QueryRow(
 		`SELECT COALESCE(ob.timezone, '')
-		   FROM spaces s
+		   FROM meeting_rooms s
 		   JOIN floors f ON f.id = s.floor_id
 		   JOIN office_buildings ob ON ob.id = f.building_id
 		  WHERE s.id = $1`,
