@@ -976,10 +976,6 @@ const fetchAndStoreWBBand = async (accessToken, user) => {
     if (cookies) {
       headers["X-Cookie"] = cookies;
     }
-    const wbUserId = getBookingUserKey(user);
-    if (wbUserId) {
-      headers["X-Wb-User-Id"] = wbUserId;
-    }
     const response = await fetch(
       `/api/auth/user/wb-band?wb_team_profile_id=${encodeURIComponent(profileId)}`,
       {
@@ -1307,13 +1303,7 @@ const getBookingUserInfo = () => {
 };
 
 const getBookingHeaders = () => {
-  const info = getBookingUserInfo();
-  if (!info.key) {
-    return {};
-  }
-  return {
-    "X-Wb-User-Id": info.key,
-  };
+  return {};
 };
 
 const normalizeBookingDate = (raw) => {
@@ -1653,18 +1643,7 @@ const ensureBookingDate = () => {
 };
 
 const getMeetingBookingHeaders = () => {
-  const info = getBookingUserInfo();
-  if (!info.employeeId && !info.key) {
-    return {};
-  }
-  const headers = {};
-  if (info.employeeId) {
-    headers["X-Employee-Id"] = info.employeeId;
-  }
-  if (info.key) {
-    headers["X-Wb-User-Id"] = info.key;
-  }
-  return headers;
+  return {};
 };
 
 const setMeetingBookingStatus = (message, tone = "") => {
@@ -2996,10 +2975,6 @@ const loadMyBookings = async () => {
     return;
   }
   const headers = getBookingHeaders();
-  if (!headers["X-Wb-User-Id"]) {
-    setBookingStatus("Нужна информация о пользователе для бронирований.", "error");
-    return;
-  }
   try {
     const response = await apiRequest("/api/bookings/me", { headers });
     const bookings = Array.isArray(response?.bookings) ? response.bookings : [];
@@ -3371,10 +3346,6 @@ const toggleBookingsList = () => {
 
 const handleCancelBooking = async (booking) => {
   const headers = getBookingHeaders();
-  if (!headers["X-Wb-User-Id"]) {
-    setBookingStatus("Нужна информация о пользователе для отмены.", "error");
-    return;
-  }
   const confirmed = window.confirm(
     `Вы уверены, что хотите отменить бронирование стола "${
       booking.desk_label || "стол"
@@ -3403,10 +3374,6 @@ const handleCancelBooking = async (booking) => {
 
 const handleCancelAllBookings = async () => {
   const headers = getBookingHeaders();
-  if (!headers["X-Wb-User-Id"]) {
-    setBookingStatus("Нужна информация о пользователе для отмены.", "error");
-    return;
-  }
   const confirmed = window.confirm("Вы уверены, что хотите отменить все ваши бронирования?");
   if (!confirmed) {
     return;
@@ -3428,10 +3395,6 @@ const handleDeskBookingClick = async (desk) => {
     ensureBookingDate();
   }
   const headers = getBookingHeaders();
-  if (!headers["X-Wb-User-Id"]) {
-    setBookingStatus("Нужна информация о пользователе для бронирования.", "error");
-    return;
-  }
   const status = desk.bookingStatus || "free";
   try {
     if (status === "my") {
@@ -3492,10 +3455,6 @@ const handleMeetingBookingSubmit = async () => {
     return;
   }
   const headers = getMeetingBookingHeaders();
-  if (!headers["X-Wb-User-Id"]) {
-    setMeetingBookingStatus("Нужна информация о пользователе для бронирования.", "error");
-    return;
-  }
   try {
     const failedSlots = [];
     let replacedCount = 0;
@@ -3551,10 +3510,6 @@ const handleCancelMeetingBooking = async (startMin, endMin) => {
     return;
   }
   const headers = getMeetingBookingHeaders();
-  if (!headers["X-Wb-User-Id"]) {
-    setMeetingBookingStatus("Нужна информация о пользователе для отмены.", "error");
-    return;
-  }
   const confirmed = window.confirm(
     `Отменить бронирование на ${formatMeetingMinutes(startMin)}–${formatMeetingMinutes(endMin)}?`
   );
@@ -3594,10 +3549,6 @@ const handleCancelMeetingBookings = async () => {
     return;
   }
   const headers = getMeetingBookingHeaders();
-  if (!headers["X-Wb-User-Id"]) {
-    setMeetingBookingStatus("Нужна информация о пользователе для отмены.", "error");
-    return;
-  }
   const label = formatMeetingSlotRangesLabel(slots);
   const confirmed = window.confirm(`Отменить бронирование на ${label}?`);
   if (!confirmed) {
@@ -3769,10 +3720,6 @@ const openWeekCalendar = (desk) => {
 
 const handleWeekBooking = async (desk, selectedDays) => {
   const headers = getBookingHeaders();
-  if (!headers["X-Wb-User-Id"]) {
-    setBookingStatus("Нужна информация о пользователе для бронирования.", "error");
-    return;
-  }
   const dates = getWeekDatesForSelectedDays(selectedDays, bookingState.selectedDate);
   if (dates.length === 0) {
     setBookingStatus("Не удалось подобрать даты для бронирования.", "error");

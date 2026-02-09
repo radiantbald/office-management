@@ -166,11 +166,12 @@ func (a *app) handleAuthUserWbBand(w http.ResponseWriter, r *http.Request) {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &parsed); err == nil {
-		wbUserID := strings.TrimSpace(r.Header.Get("X-Wb-User-Id"))
+		claims := extractAuthClaims(r)
+		wbUserID := strings.TrimSpace(claims.WbUserID)
 		if wbUserID == "" {
 			wbUserID = strings.TrimSpace(r.Header.Get("x-wb-user-id"))
 		}
-		userName := strings.TrimSpace(r.Header.Get("X-User-Name"))
+		userName := strings.TrimSpace(claims.UserName)
 		if userName == "" {
 			userName = strings.TrimSpace(r.Header.Get("x-user-name"))
 		}

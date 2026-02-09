@@ -154,12 +154,6 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 }
 
 func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
-	wbUserID, _ := extractBookingUser(r)
-	if wbUserID == "" {
-		respondError(w, http.StatusBadRequest, "wb_user_id is required")
-		return
-	}
-
 	var payload bookingCreatePayload
 	if err := decodeJSON(r, &payload); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
@@ -198,7 +192,7 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	employeeID, err := getEmployeeIDByWbUserID(tx, wbUserID)
+	employeeID, err := extractEmployeeIDFromRequest(r, tx)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -248,12 +242,7 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
-	wbUserID, _ := extractBookingUser(r)
-	if wbUserID == "" {
-		respondError(w, http.StatusBadRequest, "wb_user_id is required")
-		return
-	}
-	employeeID, err := getEmployeeIDByWbUserID(a.db, wbUserID)
+	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -301,12 +290,7 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
-	wbUserID, _ := extractBookingUser(r)
-	if wbUserID == "" {
-		respondError(w, http.StatusBadRequest, "wb_user_id is required")
-		return
-	}
-	employeeID, err := getEmployeeIDByWbUserID(a.db, wbUserID)
+	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -368,12 +352,7 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
-	wbUserID, _ := extractBookingUser(r)
-	if wbUserID == "" {
-		respondError(w, http.StatusBadRequest, "wb_user_id is required")
-		return
-	}
-	employeeID, err := getEmployeeIDByWbUserID(a.db, wbUserID)
+	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -394,12 +373,6 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Request) {
-	wbUserID, _ := extractBookingUser(r)
-	if wbUserID == "" {
-		respondError(w, http.StatusBadRequest, "wb_user_id is required")
-		return
-	}
-
 	var payload bookingMultiPayload
 	if err := decodeJSON(r, &payload); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
@@ -438,7 +411,7 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	}
 	defer tx.Rollback()
 
-	employeeID, err := getEmployeeIDByWbUserID(tx, wbUserID)
+	employeeID, err := extractEmployeeIDFromRequest(r, tx)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -516,14 +489,21 @@ func (a *app) ensureWorkplaceExists(workplaceID int64) error {
 }
 
 func extractBookingUser(r *http.Request) (string, string) {
-	wbUserID := strings.TrimSpace(r.Header.Get("X-Wb-User-Id"))
+	claims := extractAuthClaims(r)
+	wbUserID := strings.TrimSpace(claims.WbUserID)
 	if wbUserID == "" {
 		wbUserID = strings.TrimSpace(r.Header.Get("X-User-Key"))
 	}
 	if wbUserID == "" {
 		wbUserID = strings.TrimSpace(r.Header.Get("X-User-Email"))
 	}
-	userName := strings.TrimSpace(r.Header.Get("X-User-Name"))
+	if wbUserID == "" {
+		wbUserID = strings.TrimSpace(r.Header.Get("X-Wb-User-Id"))
+	}
+	userName := strings.TrimSpace(claims.UserName)
+	if userName == "" {
+		userName = strings.TrimSpace(r.Header.Get("X-User-Name"))
+	}
 	return wbUserID, userName
 }
 

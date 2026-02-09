@@ -303,8 +303,6 @@ func migrate(db *sql.DB) error {
 			id BIGINT PRIMARY KEY DEFAULT nextval('spaces_id_seq'),
 			floor_id BIGINT NOT NULL,
 			name TEXT NOT NULL,
-			kind TEXT NOT NULL DEFAULT 'coworking',
-			capacity INTEGER NOT NULL DEFAULT 0,
 			subdivision_level_1 TEXT NOT NULL DEFAULT '',
 			subdivision_level_2 TEXT NOT NULL DEFAULT '',
 			points_json TEXT NOT NULL DEFAULT '[]',
@@ -390,8 +388,14 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "coworkings", "color", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "coworkings", "capacity", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	hasCoworkingCapacity, err := columnExists(db, "coworkings", "capacity")
+	if err != nil {
 		return err
+	}
+	if hasCoworkingCapacity {
+		if _, err := db.Exec(`ALTER TABLE coworkings DROP COLUMN capacity`); err != nil {
+			return err
+		}
 	}
 	if err := ensureColumn(db, "coworkings", "subdivision_level_1", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
@@ -402,8 +406,14 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "coworkings", "snapshot_hidden", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "coworkings", "kind", "TEXT NOT NULL DEFAULT 'coworking'"); err != nil {
+	hasCoworkingKind, err := columnExists(db, "coworkings", "kind")
+	if err != nil {
 		return err
+	}
+	if hasCoworkingKind {
+		if _, err := db.Exec(`ALTER TABLE coworkings DROP COLUMN kind`); err != nil {
+			return err
+		}
 	}
 	if err := ensureColumn(db, "meeting_rooms", "points_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
@@ -668,23 +678,39 @@ func migrateMeetingRoomSpaces(db *sql.DB) error {
 	if _, err := db.Exec(`ALTER TABLE meeting_rooms ALTER COLUMN id SET DEFAULT nextval('spaces_id_seq')`); err != nil {
 		return err
 	}
-	if _, err := db.Exec(
-		`INSERT INTO meeting_rooms (id, floor_id, name, capacity, points_json, color, created_at)
-		 SELECT id,
-		        floor_id,
-		        name,
-		        COALESCE(capacity, 0),
-		        COALESCE(points_json, '[]'),
-		        COALESCE(color, ''),
-		        created_at
-		   FROM coworkings
-		  WHERE kind = 'meeting'
-		 ON CONFLICT (id) DO NOTHING`,
-	); err != nil {
+	hasCoworkingKind, err := columnExists(db, "coworkings", "kind")
+	if err != nil {
 		return err
 	}
-	if _, err := db.Exec(`DELETE FROM coworkings WHERE kind = 'meeting'`); err != nil {
-		return err
+	if hasCoworkingKind {
+		hasCoworkingCapacity, err := columnExists(db, "coworkings", "capacity")
+		if err != nil {
+			return err
+		}
+		capacityExpr := "0"
+		if hasCoworkingCapacity {
+			capacityExpr = "COALESCE(capacity, 0)"
+		}
+		query := fmt.Sprintf(
+			`INSERT INTO meeting_rooms (id, floor_id, name, capacity, points_json, color, created_at)
+			 SELECT id,
+			        floor_id,
+			        name,
+			        %s,
+			        COALESCE(points_json, '[]'),
+			        COALESCE(color, ''),
+			        created_at
+			   FROM coworkings
+			  WHERE kind = 'meeting'
+			 ON CONFLICT (id) DO NOTHING`,
+			capacityExpr,
+		)
+		if _, err := db.Exec(query); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`DELETE FROM coworkings WHERE kind = 'meeting'`); err != nil {
+			return err
+		}
 	}
 	if _, err := db.Exec(
 		`SELECT setval('spaces_id_seq', GREATEST(
@@ -2425,8 +2451,8 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 		     SELECT id,
 		            floor_id,
 		            name,
-		            COALESCE(NULLIF(kind, ''), 'coworking') AS kind,
-		            COALESCE(capacity, 0) AS capacity,
+		            'coworking' AS kind,
+		            0 AS capacity,
 		            COALESCE(subdivision_level_1, '') AS subdivision_level_1,
 		            COALESCE(subdivision_level_2, '') AS subdivision_level_2,
 		            COALESCE(points_json, '[]') AS points_json,
@@ -2502,8 +2528,8 @@ func (a *app) getSpace(id int64) (space, error) {
 		     SELECT id,
 		            floor_id,
 		            name,
-		            COALESCE(NULLIF(kind, ''), 'coworking') AS kind,
-		            COALESCE(capacity, 0) AS capacity,
+		            'coworking' AS kind,
+		            0 AS capacity,
 		            COALESCE(subdivision_level_1, '') AS subdivision_level_1,
 		            COALESCE(subdivision_level_2, '') AS subdivision_level_2,
 		            COALESCE(points_json, '[]') AS points_json,
@@ -2557,10 +2583,10 @@ func (a *app) getSpace(id int64) (space, error) {
 }
 
 func (a *app) getSpaceKind(id int64) (string, error) {
-	row := a.db.QueryRow(`SELECT COALESCE(NULLIF(kind, ''), 'coworking') FROM coworkings WHERE id = $1`, id)
-	var kind string
-	if err := row.Scan(&kind); err == nil {
-		return kind, nil
+	row := a.db.QueryRow(`SELECT id FROM coworkings WHERE id = $1`, id)
+	var coworkingID int64
+	if err := row.Scan(&coworkingID); err == nil {
+		return "coworking", nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
@@ -2620,14 +2646,13 @@ func (a *app) createSpace(
 			return space{}, err
 		}
 	} else {
+		kind = "coworking"
 		if err := a.db.QueryRow(
-			`INSERT INTO coworkings (floor_id, name, kind, capacity, subdivision_level_1, subdivision_level_2, points_json, color)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			`INSERT INTO coworkings (floor_id, name, subdivision_level_1, subdivision_level_2, points_json, color)
+			 VALUES ($1, $2, $3, $4, $5, $6)
 			 RETURNING id`,
 			floorID,
 			name,
-			kind,
-			capacity,
 			subdivisionLevel1,
 			subdivisionLevel2,
 			pointsJSON,
@@ -2709,6 +2734,7 @@ func (a *app) updateSpaceDetails(
 		capacity = current.Capacity
 	}
 	if kind != "meeting" {
+		kind = "coworking"
 		capacity = 0
 	}
 	if kind != "coworking" {
@@ -2753,13 +2779,11 @@ func (a *app) updateSpaceDetails(
 		}
 		defer tx.Rollback()
 		if _, err := tx.Exec(
-			`INSERT INTO coworkings (id, floor_id, name, kind, capacity, subdivision_level_1, subdivision_level_2, points_json, color, snapshot_hidden, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			`INSERT INTO coworkings (id, floor_id, name, subdivision_level_1, subdivision_level_2, points_json, color, snapshot_hidden, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 			id,
 			current.FloorID,
 			name,
-			kind,
-			capacity,
 			subdivisionLevel1,
 			subdivisionLevel2,
 			pointsJSON,
@@ -2781,12 +2805,10 @@ func (a *app) updateSpaceDetails(
 	if kind != "meeting" {
 		result, err := a.db.Exec(
 			`UPDATE coworkings
-			 SET name = $1, kind = $2, capacity = $3, color = $4,
-			     subdivision_level_1 = $5, subdivision_level_2 = $6
-			 WHERE id = $7`,
+			 SET name = $1, color = $2,
+			     subdivision_level_1 = $3, subdivision_level_2 = $4
+			 WHERE id = $5`,
 			name,
-			kind,
-			capacity,
 			color,
 			subdivisionLevel1,
 			subdivisionLevel2,

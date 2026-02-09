@@ -421,15 +421,7 @@ func extractMeetingRoomBookingEmployeeID(r *http.Request, queryer rowQueryer) (s
 	if r == nil {
 		return "", nil
 	}
-	employeeID := strings.TrimSpace(r.Header.Get("X-Employee-Id"))
-	if employeeID != "" {
-		return employeeID, nil
-	}
-	wbUserID, _ := extractBookingUser(r)
-	if wbUserID == "" {
-		return "", nil
-	}
-	return getEmployeeIDByWbUserID(queryer, wbUserID)
+	return extractEmployeeIDFromRequest(r, queryer)
 }
 
 func getEmployeeIDByWbUserID(queryer rowQueryer, wbUserID string) (string, error) {
