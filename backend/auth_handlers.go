@@ -80,11 +80,7 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &jsonData); err == nil {
 		if dataMap, ok := jsonData["data"].(map[string]any); ok {
 			profileID := toInt64(dataMap["id"])
-			userKey := firstNonEmptyString(
-				normalizeIDString(dataMap["wbUserID"]),
-				normalizeIDString(dataMap["id"]),
-				normalizeIDString(dataMap["employeeID"]),
-			)
+			wbUserID := normalizeIDString(dataMap["wbUserID"])
 			fullName := normalizeIDString(dataMap["fullName"])
 			userName := firstNonEmptyString(
 				fullName,
@@ -92,41 +88,34 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 			)
 			employeeID := normalizeIDString(dataMap["employeeID"])
 			profileIDStr := normalizeIDString(dataMap["id"])
-			wbUserID := normalizeIDString(dataMap["wbUserID"])
 			avatarURL := normalizeIDString(dataMap["avatar_url"])
 
 			wbBand := ""
-			if cached, err := a.getUserWBBand(userKey); err == nil && cached != "" {
+			if cached, err := a.getUserWBBand(wbUserID); err == nil && cached != "" {
 				wbBand = cached
 			} else if profileID != 0 {
 				profileIDStr := fmt.Sprintf("%d", profileID)
-				tokenCopy := token
-				cookieCopy := cookie
-				userKeyCopy := userKey
-				userNameCopy := userName
-				go func() {
-					band, err := a.fetchWBBandFromTeam(tokenCopy, profileIDStr, cookieCopy)
-					if err != nil || band == "" {
-						return
-					}
-					if err := a.upsertUserWBBand(userKeyCopy, userNameCopy, band); err != nil {
+				band, err := a.fetchWBBandFromTeam(token, profileIDStr, cookie)
+				if err == nil && band != "" {
+					wbBand = band
+					if err := a.upsertUserWBBand(wbUserID, userName, band); err != nil {
 						log.Printf("handleAuthUserInfo: failed to save wb_band: %v", err)
 					}
-				}()
+				}
 			}
-			if err := a.upsertUserInfo(userKey, userName, fullName, employeeID, profileIDStr, wbUserID, avatarURL, wbBand); err != nil {
+			if err := a.upsertUserInfo(wbUserID, userName, fullName, employeeID, profileIDStr, avatarURL, wbBand); err != nil {
 				log.Printf("handleAuthUserInfo: failed to save user info: %v", err)
 			}
 
 			response := map[string]any{
 				"status": jsonData["status"],
 				"data": map[string]any{
-					"avatar_url":     dataMap["avatar_url"],
-					"employeeID":     dataMap["employeeID"],
-					"fullName":       dataMap["fullName"],
-					"wbteam_user_id": dataMap["id"],
-					"wbUserID":       dataMap["wbUserID"],
-					"wb_band":        wbBand,
+					"avatar_url":         dataMap["avatar_url"],
+					"employee_id":        dataMap["employeeID"],
+					"full_name":          dataMap["fullName"],
+					"wb_team_profile_id": dataMap["id"],
+					"wb_user_id":         dataMap["wbUserID"],
+					"wb_band":            wbBand,
 				},
 			}
 			_ = json.NewEncoder(w).Encode(response)
@@ -155,9 +144,12 @@ func (a *app) handleAuthUserWbBand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	profileID := strings.TrimSpace(r.URL.Query().Get("profile_id"))
+	profileID := strings.TrimSpace(r.URL.Query().Get("wb_team_profile_id"))
 	if profileID == "" {
-		respondError(w, http.StatusBadRequest, "profile_id is required")
+		profileID = strings.TrimSpace(r.URL.Query().Get("profile_id"))
+	}
+	if profileID == "" {
+		respondError(w, http.StatusBadRequest, "wb_team_profile_id is required")
 		return
 	}
 
@@ -174,16 +166,16 @@ func (a *app) handleAuthUserWbBand(w http.ResponseWriter, r *http.Request) {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &parsed); err == nil {
-		userKey := strings.TrimSpace(r.Header.Get("X-User-Key"))
-		if userKey == "" {
-			userKey = strings.TrimSpace(r.Header.Get("x-user-key"))
+		wbUserID := strings.TrimSpace(r.Header.Get("X-Wb-User-Id"))
+		if wbUserID == "" {
+			wbUserID = strings.TrimSpace(r.Header.Get("x-wb-user-id"))
 		}
 		userName := strings.TrimSpace(r.Header.Get("X-User-Name"))
 		if userName == "" {
 			userName = strings.TrimSpace(r.Header.Get("x-user-name"))
 		}
 		if parsed.Data.WBBand != "" {
-			if err := a.upsertUserWBBand(userKey, userName, parsed.Data.WBBand); err != nil {
+			if err := a.upsertUserWBBand(wbUserID, userName, parsed.Data.WBBand); err != nil {
 				log.Printf("handleAuthUserWbBand: failed to save wb_band: %v", err)
 			}
 		}

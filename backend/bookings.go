@@ -12,30 +12,30 @@ import (
 )
 
 type booking struct {
-	ID         int64  `json:"id"`
-	DeskID     int64  `json:"desk_id"`
-	BuildingID int64  `json:"building_id,omitempty"`
-	FloorLevel int    `json:"floor_level,omitempty"`
-	UserKey    string `json:"user_key"`
-	UserName   string `json:"user_name"`
-	EmployeeID string `json:"employeeID,omitempty"`
-	AvatarURL  string `json:"avatar_url,omitempty"`
-	WbBand     string `json:"wb_band,omitempty"`
-	Date       string `json:"date"`
-	CreatedAt  string `json:"created_at"`
-	DeskLabel  string `json:"desk_label,omitempty"`
-	SpaceID    int64  `json:"space_id,omitempty"`
-	SpaceName  string `json:"space_name,omitempty"`
+	ID          int64  `json:"id"`
+	WorkplaceID int64  `json:"workplace_id"`
+	BuildingID  int64  `json:"building_id,omitempty"`
+	FloorLevel  int    `json:"floor_level,omitempty"`
+	WbUserID    string `json:"wb_user_id"`
+	UserName    string `json:"user_name"`
+	EmployeeID  string `json:"employeeID,omitempty"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
+	WbBand      string `json:"wb_band,omitempty"`
+	Date        string `json:"date"`
+	CreatedAt   string `json:"created_at"`
+	DeskLabel   string `json:"desk_label,omitempty"`
+	SpaceID     int64  `json:"space_id,omitempty"`
+	SpaceName   string `json:"space_name,omitempty"`
 }
 
 type bookingCreatePayload struct {
-	Date   string `json:"date"`
-	DeskID int64  `json:"desk_id"`
+	Date        string `json:"date"`
+	WorkplaceID int64  `json:"workplace_id"`
 }
 
 type bookingMultiPayload struct {
-	Dates  []string `json:"dates"`
-	DeskID int64    `json:"desk_id"`
+	Dates       []string `json:"dates"`
+	WorkplaceID int64    `json:"workplace_id"`
 }
 
 func (a *app) handleBookings(w http.ResponseWriter, r *http.Request) {
@@ -102,22 +102,17 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 	}
 
 	rows, err := a.db.Query(
-		`SELECT b.id, b.desk_id, b.user_key,
-		        COALESCE(NULLIF(u.user_name, ''), b.user_name),
-		        COALESCE(u.employee_id, ''),
+		`SELECT b.id, b.workplace_id,
+		        COALESCE(NULLIF(u.wb_user_id, ''), b.employee_id),
+		        COALESCE(NULLIF(u.full_name, ''), ''),
+		        COALESCE(b.employee_id, ''),
 		        COALESCE(u.avatar_url, ''),
 		        COALESCE(u.wb_band, ''),
-		        b.date, b.created_at, d.label, d.space_id
+		        b.date, b.created_at, d.label, d.coworking_id
 		  FROM workplace_bookings b
-		  JOIN workplaces d ON d.id = b.desk_id
-		   LEFT JOIN LATERAL (
-		     SELECT user_name, employee_id, avatar_url, wb_band
-		       FROM users
-		      WHERE user_key = b.user_key OR profile_id = b.user_key
-		      ORDER BY (user_key = b.user_key) DESC
-		      LIMIT 1
-		   ) u ON true
-		  WHERE d.space_id = $1 AND b.date = $2
+		  JOIN workplaces d ON d.id = b.workplace_id
+		   LEFT JOIN users u ON u.employee_id = b.employee_id
+		  WHERE d.coworking_id = $1 AND b.date = $2
 		  ORDER BY b.created_at DESC`,
 		spaceIDValue,
 		date,
@@ -133,8 +128,8 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 		var item booking
 		if err := rows.Scan(
 			&item.ID,
-			&item.DeskID,
-			&item.UserKey,
+			&item.WorkplaceID,
+			&item.WbUserID,
 			&item.UserName,
 			&item.EmployeeID,
 			&item.AvatarURL,
@@ -159,9 +154,9 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 }
 
 func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
-	userKey, userName := extractBookingUser(r)
-	if userKey == "" {
-		respondError(w, http.StatusBadRequest, "user key is required")
+	wbUserID, _ := extractBookingUser(r)
+	if wbUserID == "" {
+		respondError(w, http.StatusBadRequest, "wb_user_id is required")
 		return
 	}
 
@@ -182,14 +177,14 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if payload.DeskID == 0 {
-		respondError(w, http.StatusBadRequest, "desk_id is required")
+	if payload.WorkplaceID == 0 {
+		respondError(w, http.StatusBadRequest, "workplace_id is required")
 		return
 	}
 
-	if err := a.ensureDeskExists(payload.DeskID); err != nil {
+	if err := a.ensureWorkplaceExists(payload.WorkplaceID); err != nil {
 		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "desk not found")
+			respondError(w, http.StatusNotFound, "workplace not found")
 			return
 		}
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -203,9 +198,18 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
+	employeeID, err := getEmployeeIDByWbUserID(tx, wbUserID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if employeeID == "" {
+		respondError(w, http.StatusBadRequest, "employee_id is required")
+		return
+	}
 	if _, err = tx.Exec(
-		`DELETE FROM workplace_bookings WHERE user_key = $1 AND date = $2`,
-		userKey,
+		`DELETE FROM workplace_bookings WHERE employee_id = $1 AND date = $2`,
+		employeeID,
 		date,
 	); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -213,23 +217,22 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var existing int
-	err = tx.QueryRow(`SELECT 1 FROM workplace_bookings WHERE desk_id = $1 AND date = $2 LIMIT 1`, payload.DeskID, date).
+	err = tx.QueryRow(`SELECT 1 FROM workplace_bookings WHERE workplace_id = $1 AND date = $2 LIMIT 1`, payload.WorkplaceID, date).
 		Scan(&existing)
 	if err == nil {
 		respondError(w, http.StatusBadRequest, "Стол уже занят")
 		return
 	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, sql.ErrNoRows) {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO workplace_bookings (desk_id, user_key, user_name, date)
-		 VALUES ($1, $2, $3, $4)`,
-		payload.DeskID,
-		userKey,
-		userName,
+		`INSERT INTO workplace_bookings (workplace_id, employee_id, date)
+		 VALUES ($1, $2, $3)`,
+		payload.WorkplaceID,
+		employeeID,
 		date,
 	); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -245,9 +248,18 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
-	userKey, _ := extractBookingUser(r)
-	if userKey == "" {
-		respondError(w, http.StatusBadRequest, "user key is required")
+	wbUserID, _ := extractBookingUser(r)
+	if wbUserID == "" {
+		respondError(w, http.StatusBadRequest, "wb_user_id is required")
+		return
+	}
+	employeeID, err := getEmployeeIDByWbUserID(a.db, wbUserID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if employeeID == "" {
+		respondError(w, http.StatusBadRequest, "employee_id is required")
 		return
 	}
 
@@ -263,15 +275,15 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if payload.DeskID == 0 {
-		respondError(w, http.StatusBadRequest, "desk_id is required")
+	if payload.WorkplaceID == 0 {
+		respondError(w, http.StatusBadRequest, "workplace_id is required")
 		return
 	}
 
 	result, err := a.db.Exec(
-		`DELETE FROM workplace_bookings WHERE user_key = $1 AND desk_id = $2 AND date = $3`,
-		userKey,
-		payload.DeskID,
+		`DELETE FROM workplace_bookings WHERE employee_id = $1 AND workplace_id = $2 AND date = $3`,
+		employeeID,
+		payload.WorkplaceID,
 		date,
 	)
 	if err != nil {
@@ -289,25 +301,35 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
-	userKey, _ := extractBookingUser(r)
-	if userKey == "" {
-		respondError(w, http.StatusBadRequest, "user key is required")
+	wbUserID, _ := extractBookingUser(r)
+	if wbUserID == "" {
+		respondError(w, http.StatusBadRequest, "wb_user_id is required")
+		return
+	}
+	employeeID, err := getEmployeeIDByWbUserID(a.db, wbUserID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if employeeID == "" {
+		respondError(w, http.StatusBadRequest, "employee_id is required")
 		return
 	}
 
 	rows, err := a.db.Query(
-		`SELECT b.id, b.date, b.created_at, b.desk_id, b.user_key,
-		        COALESCE(NULLIF(u.user_name, ''), b.user_name),
-		        COALESCE(u.employee_id, ''),
-		        d.label, d.space_id, s.name, f.building_id, f.level
+		`SELECT b.id, b.date, b.created_at, b.workplace_id,
+		        COALESCE(NULLIF(u.wb_user_id, ''), b.employee_id),
+		        COALESCE(NULLIF(u.full_name, ''), ''),
+		        COALESCE(b.employee_id, ''),
+		        d.label, d.coworking_id, s.name, f.building_id, f.level
 		  FROM workplace_bookings b
-		  JOIN workplaces d ON d.id = b.desk_id
-		   JOIN coworkings s ON s.id = d.space_id
+		  JOIN workplaces d ON d.id = b.workplace_id
+		   JOIN coworkings s ON s.id = d.coworking_id
 		   JOIN floors f ON f.id = s.floor_id
-		   LEFT JOIN users u ON u.user_key = b.user_key
-		  WHERE b.user_key = $1 AND b.date >= CURRENT_DATE::text
+		   LEFT JOIN users u ON u.employee_id = b.employee_id
+		  WHERE b.employee_id = $1 AND b.date >= CURRENT_DATE::text
 		  ORDER BY b.date DESC, b.created_at DESC`,
-		userKey,
+		employeeID,
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -322,8 +344,8 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 			&item.ID,
 			&item.Date,
 			&item.CreatedAt,
-			&item.DeskID,
-			&item.UserKey,
+			&item.WorkplaceID,
+			&item.WbUserID,
 			&item.UserName,
 			&item.EmployeeID,
 			&item.DeskLabel,
@@ -346,13 +368,22 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
-	userKey, _ := extractBookingUser(r)
-	if userKey == "" {
-		respondError(w, http.StatusBadRequest, "user key is required")
+	wbUserID, _ := extractBookingUser(r)
+	if wbUserID == "" {
+		respondError(w, http.StatusBadRequest, "wb_user_id is required")
+		return
+	}
+	employeeID, err := getEmployeeIDByWbUserID(a.db, wbUserID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if employeeID == "" {
+		respondError(w, http.StatusBadRequest, "employee_id is required")
 		return
 	}
 
-	result, err := a.db.Exec(`DELETE FROM workplace_bookings WHERE user_key = $1`, userKey)
+	result, err := a.db.Exec(`DELETE FROM workplace_bookings WHERE employee_id = $1`, employeeID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -363,9 +394,9 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Request) {
-	userKey, userName := extractBookingUser(r)
-	if userKey == "" {
-		respondError(w, http.StatusBadRequest, "user key is required")
+	wbUserID, _ := extractBookingUser(r)
+	if wbUserID == "" {
+		respondError(w, http.StatusBadRequest, "wb_user_id is required")
 		return
 	}
 
@@ -375,19 +406,19 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if payload.Dates == nil || len(payload.Dates) == 0 {
+	if len(payload.Dates) == 0 {
 		respondError(w, http.StatusBadRequest, "dates are required")
 		return
 	}
 
-	if payload.DeskID == 0 {
-		respondError(w, http.StatusBadRequest, "desk_id is required")
+	if payload.WorkplaceID == 0 {
+		respondError(w, http.StatusBadRequest, "workplace_id is required")
 		return
 	}
 
-	if err := a.ensureDeskExists(payload.DeskID); err != nil {
+	if err := a.ensureWorkplaceExists(payload.WorkplaceID); err != nil {
 		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "desk not found")
+			respondError(w, http.StatusNotFound, "workplace not found")
 			return
 		}
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -407,7 +438,17 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	}
 	defer tx.Rollback()
 
-	bookedByOthers, err := findBookedDates(tx, payload.DeskID, userKey, validDates)
+	employeeID, err := getEmployeeIDByWbUserID(tx, wbUserID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if employeeID == "" {
+		respondError(w, http.StatusBadRequest, "employee_id is required")
+		return
+	}
+
+	bookedByOthers, err := findBookedDates(tx, payload.WorkplaceID, employeeID, validDates)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -421,7 +462,7 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	}
 
 	if len(available) > 0 {
-		if err := deleteUserBookingsForDates(tx, userKey, available); err != nil {
+		if err := deleteUserBookingsForDates(tx, employeeID, available); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -431,11 +472,10 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	failed := make([]string, 0, len(validDates))
 	for _, date := range available {
 		if _, err := tx.Exec(
-			`INSERT INTO workplace_bookings (desk_id, user_key, user_name, date)
-			 VALUES ($1, $2, $3, $4)`,
-			payload.DeskID,
-			userKey,
-			userName,
+			`INSERT INTO workplace_bookings (workplace_id, employee_id, date)
+			 VALUES ($1, $2, $3)`,
+			payload.WorkplaceID,
+			employeeID,
 			date,
 		); err != nil {
 			failed = append(failed, date)
@@ -463,8 +503,8 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-func (a *app) ensureDeskExists(deskID int64) error {
-	row := a.db.QueryRow(`SELECT id FROM workplaces WHERE id = $1`, deskID)
+func (a *app) ensureWorkplaceExists(workplaceID int64) error {
+	row := a.db.QueryRow(`SELECT id FROM workplaces WHERE id = $1`, workplaceID)
 	var id int64
 	if err := row.Scan(&id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -476,12 +516,15 @@ func (a *app) ensureDeskExists(deskID int64) error {
 }
 
 func extractBookingUser(r *http.Request) (string, string) {
-	userKey := strings.TrimSpace(r.Header.Get("X-User-Key"))
-	if userKey == "" {
-		userKey = strings.TrimSpace(r.Header.Get("X-User-Email"))
+	wbUserID := strings.TrimSpace(r.Header.Get("X-Wb-User-Id"))
+	if wbUserID == "" {
+		wbUserID = strings.TrimSpace(r.Header.Get("X-User-Key"))
+	}
+	if wbUserID == "" {
+		wbUserID = strings.TrimSpace(r.Header.Get("X-User-Email"))
 	}
 	userName := strings.TrimSpace(r.Header.Get("X-User-Name"))
-	return userKey, userName
+	return wbUserID, userName
 }
 
 func normalizeBookingDate(raw string) (string, error) {
@@ -538,19 +581,19 @@ func normalizeBookingDates(dates []string) ([]string, error) {
 	return normalized, nil
 }
 
-func findBookedDates(tx *sql.Tx, deskID int64, userKey string, dates []string) (map[string]bool, error) {
+func findBookedDates(tx *sql.Tx, workplaceID int64, employeeID string, dates []string) (map[string]bool, error) {
 	if len(dates) == 0 {
 		return map[string]bool{}, nil
 	}
 	placeholders := make([]string, 0, len(dates))
 	args := make([]any, 0, len(dates)+1)
-	args = append(args, deskID)
+	args = append(args, workplaceID)
 	for i, date := range dates {
 		placeholders = append(placeholders, fmt.Sprintf("$%d", i+2))
 		args = append(args, date)
 	}
 	query := fmt.Sprintf(
-		`SELECT date, user_key FROM workplace_bookings WHERE desk_id = $1 AND date IN (%s)`,
+		`SELECT date, employee_id FROM workplace_bookings WHERE workplace_id = $1 AND date IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 	rows, err := tx.Query(query, args...)
@@ -566,7 +609,7 @@ func findBookedDates(tx *sql.Tx, deskID int64, userKey string, dates []string) (
 		if err := rows.Scan(&date, &bookingUser); err != nil {
 			return nil, err
 		}
-		if bookingUser != userKey {
+		if bookingUser != employeeID {
 			bookedByOthers[date] = true
 		}
 	}
@@ -576,19 +619,19 @@ func findBookedDates(tx *sql.Tx, deskID int64, userKey string, dates []string) (
 	return bookedByOthers, nil
 }
 
-func deleteUserBookingsForDates(tx *sql.Tx, userKey string, dates []string) error {
+func deleteUserBookingsForDates(tx *sql.Tx, employeeID string, dates []string) error {
 	if len(dates) == 0 {
 		return nil
 	}
 	placeholders := make([]string, 0, len(dates))
 	args := make([]any, 0, len(dates)+1)
-	args = append(args, userKey)
+	args = append(args, employeeID)
 	for i, date := range dates {
 		placeholders = append(placeholders, fmt.Sprintf("$%d", i+2))
 		args = append(args, date)
 	}
 	query := fmt.Sprintf(
-		`DELETE FROM workplace_bookings WHERE user_key = $1 AND date IN (%s)`,
+		`DELETE FROM workplace_bookings WHERE employee_id = $1 AND date IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 	_, err := tx.Exec(query, args...)
@@ -621,26 +664,75 @@ func migrateBookingsTable(db *sql.DB) error {
 	if _, err := tx.Exec(
 		`CREATE TABLE IF NOT EXISTS workplace_bookings_new (
 			id BIGSERIAL PRIMARY KEY,
-			desk_id BIGINT NOT NULL,
-			user_key TEXT NOT NULL,
-			user_name TEXT NOT NULL DEFAULT '',
+			workplace_id BIGINT NOT NULL,
+			employee_id TEXT NOT NULL,
 			date TEXT NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
-			FOREIGN KEY(desk_id) REFERENCES workplaces(id) ON DELETE CASCADE,
-			UNIQUE(desk_id, date),
-			UNIQUE(user_key, date)
+			FOREIGN KEY(workplace_id) REFERENCES workplaces(id) ON DELETE CASCADE,
+			UNIQUE(workplace_id, date),
+			UNIQUE(employee_id, date)
 		);`,
 	); err != nil {
 		return err
 	}
 
-	if _, err := tx.Exec(
-		`INSERT INTO workplace_bookings_new (id, desk_id, user_key, user_name, date, created_at)
-		 SELECT DISTINCT ON (b.user_key, b.date)
-		        b.id, b.desk_id, b.user_key, b.user_name, b.date, b.created_at
+	hasEmployeeID, err := columnExists(db, "workplace_bookings", "employee_id")
+	if err != nil {
+		return err
+	}
+	hasWbUserID, err := columnExists(db, "workplace_bookings", "wb_user_id")
+	if err != nil {
+		return err
+	}
+	hasUserKey, err := columnExists(db, "workplace_bookings", "user_key")
+	if err != nil {
+		return err
+	}
+	sourceColumn := "b.employee_id"
+	if hasWbUserID {
+		sourceColumn = "b.wb_user_id"
+	} else if hasUserKey {
+		sourceColumn = "b.user_key"
+	} else if !hasEmployeeID {
+		sourceColumn = "b.user_key"
+	}
+	hasUsers, err := tableExists(db, "users")
+	if err != nil {
+		return err
+	}
+	joinClause := ""
+	employeeExpr := sourceColumn
+	if hasUsers {
+		hasUsersEmployeeID, err := columnExists(db, "users", "employee_id")
+		if err != nil {
+			return err
+		}
+		if hasUsersEmployeeID {
+			joinClause = fmt.Sprintf("LEFT JOIN users u ON u.wb_user_id = %s OR u.wb_team_profile_id = %s OR u.employee_id = %s", sourceColumn, sourceColumn, sourceColumn)
+			employeeExpr = fmt.Sprintf("COALESCE(NULLIF(u.employee_id, ''), %s)", sourceColumn)
+		}
+	}
+	sourceIDColumn := "b.workplace_id"
+	hasWorkplaceID, err := columnExists(db, "workplace_bookings", "workplace_id")
+	if err != nil {
+		return err
+	}
+	if !hasWorkplaceID {
+		sourceIDColumn = "b.desk_id"
+	}
+	if _, err := tx.Exec(fmt.Sprintf(
+		`INSERT INTO workplace_bookings_new (id, workplace_id, employee_id, date, created_at)
+		 SELECT DISTINCT ON (%s, b.date)
+		        b.id, %s, %s, b.date, b.created_at
 		   FROM workplace_bookings b
-		  ORDER BY b.user_key, b.date, b.created_at DESC`,
-	); err != nil {
+		   %s
+		  ORDER BY %s, b.date, b.created_at DESC`,
+		employeeExpr,
+		sourceIDColumn,
+		employeeExpr,
+		joinClause,
+		employeeExpr,
+	)); err != nil {
 		return err
 	}
 

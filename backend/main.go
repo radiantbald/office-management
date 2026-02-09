@@ -85,12 +85,11 @@ type desk struct {
 }
 
 type deskBookingUser struct {
-	WbTeamUserID string `json:"wbteam_user_id"`
-	UserName     string `json:"user_name"`
-	EmployeeID   string `json:"employee_id,omitempty"`
-	WbUserID     string `json:"wb_user_id,omitempty"`
-	AvatarURL    string `json:"avatar_url,omitempty"`
-	WbBand       string `json:"wb_band,omitempty"`
+	WbUserID   string `json:"wb_user_id"`
+	UserName   string `json:"user_name"`
+	EmployeeID string `json:"employee_id,omitempty"`
+	AvatarURL  string `json:"avatar_url,omitempty"`
+	WbBand     string `json:"wb_band,omitempty"`
 }
 
 type deskBookingInfo struct {
@@ -114,14 +113,13 @@ type deskCreateInput struct {
 }
 
 type meetingRoom struct {
-	ID             int64   `json:"id"`
-	FloorID        int64   `json:"floor_id"`
-	Name           string  `json:"name"`
-	Capacity       int     `json:"capacity"`
-	Color          string  `json:"color,omitempty"`
-	SnapshotHidden bool    `json:"snapshot_hidden"`
-	Points         []point `json:"points"`
-	CreatedAt      string  `json:"created_at"`
+	ID        int64   `json:"id"`
+	FloorID   int64   `json:"floor_id"`
+	Name      string  `json:"name"`
+	Capacity  int     `json:"capacity"`
+	Color     string  `json:"color,omitempty"`
+	Points    []point `json:"points"`
+	CreatedAt string  `json:"created_at"`
 }
 
 func postgresDSN() string {
@@ -269,14 +267,15 @@ func migrate(db *sql.DB) error {
 	if err := migrateWorkplaceTables(db); err != nil {
 		return err
 	}
+	if err := migrateWorkplaceCoworkingID(db); err != nil {
+		return err
+	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS users (
 			id BIGSERIAL PRIMARY KEY,
-			user_key TEXT NOT NULL UNIQUE,
-			user_name TEXT NOT NULL DEFAULT '',
 			full_name TEXT NOT NULL DEFAULT '',
 			employee_id TEXT NOT NULL DEFAULT '',
-			profile_id TEXT NOT NULL DEFAULT '',
+			wb_team_profile_id TEXT NOT NULL DEFAULT '',
 			wb_user_id TEXT NOT NULL DEFAULT '',
 			avatar_url TEXT NOT NULL DEFAULT '',
 			wb_band TEXT NOT NULL DEFAULT '',
@@ -316,7 +315,7 @@ func migrate(db *sql.DB) error {
 		);`,
 		`CREATE TABLE IF NOT EXISTS workplaces (
 			id BIGSERIAL PRIMARY KEY,
-			space_id BIGINT NOT NULL,
+			coworking_id BIGINT NOT NULL,
 			label TEXT NOT NULL,
 			x DOUBLE PRECISION NOT NULL DEFAULT 0,
 			y DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -324,7 +323,7 @@ func migrate(db *sql.DB) error {
 			height DOUBLE PRECISION NOT NULL DEFAULT 100,
 			rotation DOUBLE PRECISION NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
-			FOREIGN KEY(space_id) REFERENCES coworkings(id) ON DELETE CASCADE
+			FOREIGN KEY(coworking_id) REFERENCES coworkings(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS meeting_rooms (
 			id BIGINT PRIMARY KEY DEFAULT nextval('spaces_id_seq'),
@@ -333,31 +332,28 @@ func migrate(db *sql.DB) error {
 			capacity INTEGER NOT NULL DEFAULT 0,
 			points_json TEXT NOT NULL DEFAULT '[]',
 			color TEXT NOT NULL DEFAULT '',
-			snapshot_hidden INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
 			FOREIGN KEY(floor_id) REFERENCES floors(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS meeting_room_bookings (
 			id BIGSERIAL PRIMARY KEY,
-			space_id BIGINT NOT NULL,
-			user_key TEXT NOT NULL,
-			user_name TEXT NOT NULL DEFAULT '',
+			meeting_room_id BIGINT NOT NULL,
+			employee_id TEXT NOT NULL,
 			date TEXT NOT NULL,
 			start_min INTEGER NOT NULL,
 			end_min INTEGER NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
-			FOREIGN KEY(space_id) REFERENCES meeting_rooms(id) ON DELETE CASCADE
+			FOREIGN KEY(meeting_room_id) REFERENCES meeting_rooms(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS workplace_bookings (
 			id BIGSERIAL PRIMARY KEY,
-			desk_id BIGINT NOT NULL,
-			user_key TEXT NOT NULL,
-			user_name TEXT NOT NULL DEFAULT '',
+			workplace_id BIGINT NOT NULL,
+			employee_id TEXT NOT NULL,
 			date TEXT NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (now()::text),
-			FOREIGN KEY(desk_id) REFERENCES workplaces(id) ON DELETE CASCADE,
-			UNIQUE(desk_id, date),
-			UNIQUE(user_key, date)
+			FOREIGN KEY(workplace_id) REFERENCES workplaces(id) ON DELETE CASCADE,
+			UNIQUE(workplace_id, date),
+			UNIQUE(employee_id, date)
 		);`,
 	}
 
@@ -365,6 +361,19 @@ func migrate(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
+	}
+	if _, err := db.Exec(`DELETE FROM users WHERE wb_user_id IS NULL OR wb_user_id = ''`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`DELETE FROM users a
+		 USING users b
+		 WHERE a.id < b.id AND a.wb_user_id = b.wb_user_id`,
+	); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS users_wb_user_id_uidx ON users (wb_user_id)`); err != nil {
+		return err
 	}
 	if err := ensureColumn(db, "office_buildings", "image_url", "TEXT"); err != nil {
 		return err
@@ -402,14 +411,20 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "meeting_rooms", "color", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "meeting_rooms", "snapshot_hidden", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
 	if err := ensureColumn(db, "meeting_rooms", "floor_id", "BIGINT"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "meeting_rooms", "capacity", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
+	}
+	hasMeetingSnapshotHidden, err := columnExists(db, "meeting_rooms", "snapshot_hidden")
+	if err != nil {
+		return err
+	}
+	if hasMeetingSnapshotHidden {
+		if _, err := db.Exec(`ALTER TABLE meeting_rooms DROP COLUMN snapshot_hidden`); err != nil {
+			return err
+		}
 	}
 	if err := ensureColumn(db, "workplaces", "x", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
@@ -429,7 +444,19 @@ func migrate(db *sql.DB) error {
 	if err := migrateMeetingRoomSpaces(db); err != nil {
 		return err
 	}
+	if err := migrateMeetingRoomBookingsMeetingRoomID(db); err != nil {
+		return err
+	}
+	if err := migrateMeetingRoomBookingsUserNameColumn(db); err != nil {
+		return err
+	}
+	if err := migrateMeetingRoomBookingsEmployeeID(db); err != nil {
+		return err
+	}
 	if err := migrateBookingsTable(db); err != nil {
+		return err
+	}
+	if err := migrateUsersProfileIDColumn(db); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "users", "wb_band", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -441,7 +468,7 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "users", "full_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "users", "profile_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := ensureColumn(db, "users", "wb_team_profile_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "users", "wb_user_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -449,6 +476,67 @@ func migrate(db *sql.DB) error {
 	}
 	if err := ensureColumn(db, "users", "avatar_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
+	}
+	if err := migrateWorkplaceBookingsEmployeeID(db); err != nil {
+		return err
+	}
+	if err := migrateWorkplaceBookingsWorkplaceID(db); err != nil {
+		return err
+	}
+	if err := migrateUsersUserNameColumn(db); err != nil {
+		return err
+	}
+	if err := migrateWorkplaceBookingsUserName(db); err != nil {
+		return err
+	}
+	if err := migrateUserKeyColumns(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS users_wb_user_id_unique ON users (wb_user_id) WHERE wb_user_id <> ''`); err != nil {
+		return err
+	}
+	if err := ensureUsersView(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureUsersView(db *sql.DB) error {
+	stmts := []string{
+		`CREATE OR REPLACE VIEW users_view AS
+		  SELECT id,
+		         full_name,
+		         employee_id,
+		         wb_team_profile_id,
+		         wb_user_id,
+		         avatar_url,
+		         wb_band,
+		         created_at
+		    FROM users`,
+		`CREATE OR REPLACE FUNCTION users_view_update_fn()
+		   RETURNS trigger AS $$
+		   BEGIN
+		     UPDATE users
+		        SET full_name = COALESCE(NEW.full_name, ''),
+		            employee_id = COALESCE(NEW.employee_id, ''),
+		            wb_team_profile_id = COALESCE(NEW.wb_team_profile_id, ''),
+		            wb_user_id = COALESCE(NEW.wb_user_id, ''),
+		            avatar_url = COALESCE(NEW.avatar_url, ''),
+		            wb_band = COALESCE(NEW.wb_band, '')
+		      WHERE id = OLD.id;
+		     RETURN NEW;
+		   END;
+		   $$ LANGUAGE plpgsql`,
+		`DROP TRIGGER IF EXISTS users_view_update ON users_view`,
+		`CREATE TRIGGER users_view_update
+		 INSTEAD OF UPDATE ON users_view
+		 FOR EACH ROW
+		 EXECUTE FUNCTION users_view_update_fn()`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -535,6 +623,44 @@ func migrateWorkplaceTables(db *sql.DB) error {
 	return nil
 }
 
+func migrateWorkplaceCoworkingID(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "workplaces")
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+	hasCoworkingID, err := columnExists(db, "workplaces", "coworking_id")
+	if err != nil {
+		return err
+	}
+	hasSpaceID, err := columnExists(db, "workplaces", "space_id")
+	if err != nil {
+		return err
+	}
+	switch {
+	case !hasCoworkingID && hasSpaceID:
+		if _, err := db.Exec(`ALTER TABLE workplaces RENAME COLUMN space_id TO coworking_id`); err != nil {
+			return err
+		}
+	case hasCoworkingID && hasSpaceID:
+		if _, err := db.Exec(
+			`UPDATE workplaces
+			 SET coworking_id = space_id
+			 WHERE coworking_id IS NULL`,
+		); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`ALTER TABLE workplaces DROP COLUMN space_id`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func migrateMeetingRoomSpaces(db *sql.DB) error {
 	if _, err := db.Exec(`ALTER TABLE coworkings ALTER COLUMN id SET DEFAULT nextval('spaces_id_seq')`); err != nil {
 		return err
@@ -543,14 +669,13 @@ func migrateMeetingRoomSpaces(db *sql.DB) error {
 		return err
 	}
 	if _, err := db.Exec(
-		`INSERT INTO meeting_rooms (id, floor_id, name, capacity, points_json, color, snapshot_hidden, created_at)
+		`INSERT INTO meeting_rooms (id, floor_id, name, capacity, points_json, color, created_at)
 		 SELECT id,
 		        floor_id,
 		        name,
 		        COALESCE(capacity, 0),
 		        COALESCE(points_json, '[]'),
 		        COALESCE(color, ''),
-		        COALESCE(snapshot_hidden, 0),
 		        created_at
 		   FROM coworkings
 		  WHERE kind = 'meeting'
@@ -561,16 +686,6 @@ func migrateMeetingRoomSpaces(db *sql.DB) error {
 	if _, err := db.Exec(`DELETE FROM coworkings WHERE kind = 'meeting'`); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`ALTER TABLE meeting_room_bookings DROP CONSTRAINT IF EXISTS meeting_room_bookings_space_id_fkey`); err != nil {
-		return err
-	}
-	if _, err := db.Exec(
-		`ALTER TABLE meeting_room_bookings
-		 ADD CONSTRAINT meeting_room_bookings_space_id_fkey
-		 FOREIGN KEY(space_id) REFERENCES meeting_rooms(id) ON DELETE CASCADE`,
-	); err != nil {
-		return err
-	}
 	if _, err := db.Exec(
 		`SELECT setval('spaces_id_seq', GREATEST(
 		    COALESCE((SELECT MAX(id) FROM coworkings), 0),
@@ -578,6 +693,399 @@ func migrateMeetingRoomSpaces(db *sql.DB) error {
 		))`,
 	); err != nil {
 		return err
+	}
+	return nil
+}
+
+func migrateMeetingRoomBookingsMeetingRoomID(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "meeting_room_bookings")
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+	hasMeetingRoomID, err := columnExists(db, "meeting_room_bookings", "meeting_room_id")
+	if err != nil {
+		return err
+	}
+	hasSpaceID, err := columnExists(db, "meeting_room_bookings", "space_id")
+	if err != nil {
+		return err
+	}
+	switch {
+	case !hasMeetingRoomID && hasSpaceID:
+		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings RENAME COLUMN space_id TO meeting_room_id`); err != nil {
+			return err
+		}
+	case hasMeetingRoomID && hasSpaceID:
+		if _, err := db.Exec(
+			`UPDATE meeting_room_bookings
+			 SET meeting_room_id = space_id
+			 WHERE meeting_room_id IS NULL`,
+		); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings DROP COLUMN space_id`); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`ALTER TABLE meeting_room_bookings DROP CONSTRAINT IF EXISTS meeting_room_bookings_space_id_fkey`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE meeting_room_bookings DROP CONSTRAINT IF EXISTS meeting_room_bookings_meeting_room_id_fkey`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`ALTER TABLE meeting_room_bookings
+		 ADD CONSTRAINT meeting_room_bookings_meeting_room_id_fkey
+		 FOREIGN KEY(meeting_room_id) REFERENCES meeting_rooms(id) ON DELETE CASCADE`,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateMeetingRoomBookingsUserNameColumn(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "meeting_room_bookings")
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+	hasUserName, err := columnExists(db, "meeting_room_bookings", "user_name")
+	if err != nil {
+		return err
+	}
+	if hasUserName {
+		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings DROP COLUMN user_name`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateMeetingRoomBookingsEmployeeID(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "meeting_room_bookings")
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+	hasEmployeeID, err := columnExists(db, "meeting_room_bookings", "employee_id")
+	if err != nil {
+		return err
+	}
+	hasWbUserID, err := columnExists(db, "meeting_room_bookings", "wb_user_id")
+	if err != nil {
+		return err
+	}
+	switch {
+	case !hasEmployeeID && hasWbUserID:
+		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings RENAME COLUMN wb_user_id TO employee_id`); err != nil {
+			return err
+		}
+	case hasEmployeeID && hasWbUserID:
+		if _, err := db.Exec(
+			`UPDATE meeting_room_bookings
+			 SET employee_id = wb_user_id
+			 WHERE employee_id IS NULL`,
+		); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings DROP COLUMN wb_user_id`); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(
+		`UPDATE meeting_room_bookings b
+		 SET employee_id = COALESCE(NULLIF(u.employee_id, ''), b.employee_id)
+		 FROM users u
+		 WHERE b.employee_id = u.wb_user_id
+		    OR b.employee_id = u.wb_team_profile_id
+		    OR b.employee_id = u.employee_id`,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateUserKeyColumns(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+
+	hasUsers, err := tableExists(db, "users")
+	if err != nil {
+		return err
+	}
+	if hasUsers {
+		hasUserKey, err := columnExists(db, "users", "user_key")
+		if err != nil {
+			return err
+		}
+		if hasUserKey {
+			if _, err := db.Exec(
+				`UPDATE users
+				 SET wb_user_id = user_key
+				 WHERE (wb_user_id = '' OR wb_user_id IS NULL) AND user_key <> ''`,
+			); err != nil {
+				return err
+			}
+			if _, err := db.Exec(`ALTER TABLE users DROP COLUMN user_key`); err != nil {
+				return err
+			}
+		}
+	}
+
+	if _, err := db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS workplace_bookings_wb_user_id_date_unique
+		 ON workplace_bookings (employee_id, date)`,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateUsersProfileIDColumn(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+
+	hasUsers, err := tableExists(db, "users")
+	if err != nil {
+		return err
+	}
+	if !hasUsers {
+		return nil
+	}
+
+	hasProfileID, err := columnExists(db, "users", "profile_id")
+	if err != nil {
+		return err
+	}
+	hasTeamProfileID, err := columnExists(db, "users", "wb_team_profile_id")
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case hasProfileID && !hasTeamProfileID:
+		if _, err := db.Exec(`ALTER TABLE users RENAME COLUMN profile_id TO wb_team_profile_id`); err != nil {
+			return err
+		}
+	case hasProfileID && hasTeamProfileID:
+		if _, err := db.Exec(
+			`UPDATE users
+			 SET wb_team_profile_id = profile_id
+			 WHERE (wb_team_profile_id = '' OR wb_team_profile_id IS NULL) AND profile_id <> ''`,
+		); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`ALTER TABLE users DROP COLUMN profile_id`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateUsersUserNameColumn(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasUsers, err := tableExists(db, "users")
+	if err != nil {
+		return err
+	}
+	if !hasUsers {
+		return nil
+	}
+	hasUserName, err := columnExists(db, "users", "user_name")
+	if err != nil {
+		return err
+	}
+	if !hasUserName {
+		return nil
+	}
+	if _, err := db.Exec(`DROP VIEW IF EXISTS users_view CASCADE`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DROP FUNCTION IF EXISTS users_view_update_fn()`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE users DROP COLUMN user_name`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateWorkplaceBookingsEmployeeID(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "workplace_bookings")
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+
+	hasEmployeeID, err := columnExists(db, "workplace_bookings", "employee_id")
+	if err != nil {
+		return err
+	}
+	hasWbUserID, err := columnExists(db, "workplace_bookings", "wb_user_id")
+	if err != nil {
+		return err
+	}
+	hasUserKey, err := columnExists(db, "workplace_bookings", "user_key")
+	if err != nil {
+		return err
+	}
+	hasUsers, err := tableExists(db, "users")
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case !hasEmployeeID && hasWbUserID:
+		if _, err := db.Exec(`ALTER TABLE workplace_bookings RENAME COLUMN wb_user_id TO employee_id`); err != nil {
+			return err
+		}
+		hasEmployeeID = true
+		hasWbUserID = false
+	case !hasEmployeeID && hasUserKey:
+		if _, err := db.Exec(`ALTER TABLE workplace_bookings RENAME COLUMN user_key TO employee_id`); err != nil {
+			return err
+		}
+		hasEmployeeID = true
+		hasUserKey = false
+	}
+
+	if hasEmployeeID && hasUsers {
+		updateQuery := `UPDATE workplace_bookings b
+		                   SET employee_id = u.employee_id
+		                  FROM users u
+		                 WHERE u.employee_id <> ''
+		                   AND (u.wb_user_id = b.employee_id OR u.wb_team_profile_id = b.employee_id OR u.employee_id = b.employee_id`
+		if hasWbUserID {
+			updateQuery += ` OR u.wb_user_id = b.wb_user_id OR u.wb_team_profile_id = b.wb_user_id OR u.employee_id = b.wb_user_id`
+		}
+		if hasUserKey {
+			updateQuery += ` OR u.wb_user_id = b.user_key OR u.wb_team_profile_id = b.user_key OR u.employee_id = b.user_key`
+		}
+		updateQuery += `)`
+		if _, err := db.Exec(updateQuery); err != nil {
+			return err
+		}
+	}
+
+	if hasEmployeeID && hasWbUserID {
+		if _, err := db.Exec(`ALTER TABLE workplace_bookings DROP COLUMN wb_user_id`); err != nil {
+			return err
+		}
+	}
+	if hasEmployeeID && hasUserKey {
+		if _, err := db.Exec(`ALTER TABLE workplace_bookings DROP COLUMN user_key`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateWorkplaceBookingsWorkplaceID(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "workplace_bookings")
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+	hasDeskID, err := columnExists(db, "workplace_bookings", "desk_id")
+	if err != nil {
+		return err
+	}
+	if !hasDeskID {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE workplace_bookings RENAME COLUMN desk_id TO workplace_id`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateWorkplaceBookingsUserName(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "workplace_bookings")
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+	hasUserName, err := columnExists(db, "workplace_bookings", "user_name")
+	if err != nil {
+		return err
+	}
+	if !hasUserName {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE workplace_bookings DROP COLUMN user_name`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateBookingUserKeyColumn(db *sql.DB, table string) error {
+	hasTable, err := tableExists(db, table)
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+	hasUserKey, err := columnExists(db, table, "user_key")
+	if err != nil {
+		return err
+	}
+	hasWbUserID, err := columnExists(db, table, "wb_user_id")
+	if err != nil {
+		return err
+	}
+	switch {
+	case hasUserKey && !hasWbUserID:
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s RENAME COLUMN user_key TO wb_user_id", table)); err != nil {
+			return err
+		}
+	case hasUserKey && hasWbUserID:
+		if _, err := db.Exec(fmt.Sprintf(
+			`UPDATE %s
+			 SET wb_user_id = user_key
+			 WHERE (wb_user_id = '' OR wb_user_id IS NULL) AND user_key <> ''`,
+			table,
+		)); err != nil {
+			return err
+		}
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN user_key", table)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -616,57 +1124,62 @@ func columnExists(db *sql.DB, table, column string) (bool, error) {
 	return exists, nil
 }
 
-func (a *app) upsertUserInfo(userKey, userName, fullName, employeeID, profileID, wbUserID, avatarURL, wbBand string) error {
-	if strings.TrimSpace(userKey) == "" {
+func (a *app) upsertUserInfo(wbUserID, userName, fullName, employeeID, profileID, avatarURL, wbBand string) error {
+	if strings.TrimSpace(wbUserID) == "" {
 		return nil
 	}
+	normalizedFullName := strings.TrimSpace(fullName)
+	if normalizedFullName == "" {
+		normalizedFullName = strings.TrimSpace(userName)
+	}
 	_, err := a.db.Exec(
-		`INSERT INTO users (user_key, user_name, full_name, employee_id, profile_id, wb_user_id, avatar_url, wb_band)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 ON CONFLICT (user_key)
-		 DO UPDATE SET user_name = EXCLUDED.user_name,
-		               full_name = EXCLUDED.full_name,
+		`INSERT INTO users (wb_user_id, full_name, employee_id, wb_team_profile_id, avatar_url, wb_band)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (wb_user_id)
+		 DO UPDATE SET full_name = EXCLUDED.full_name,
 		               employee_id = EXCLUDED.employee_id,
-		               profile_id = EXCLUDED.profile_id,
-		               wb_user_id = EXCLUDED.wb_user_id,
+		               wb_team_profile_id = EXCLUDED.wb_team_profile_id,
 		               avatar_url = EXCLUDED.avatar_url,
 		               wb_band = EXCLUDED.wb_band`,
-		strings.TrimSpace(userKey),
-		strings.TrimSpace(userName),
-		strings.TrimSpace(fullName),
+		strings.TrimSpace(wbUserID),
+		normalizedFullName,
 		strings.TrimSpace(employeeID),
 		strings.TrimSpace(profileID),
-		strings.TrimSpace(wbUserID),
 		strings.TrimSpace(avatarURL),
 		strings.TrimSpace(wbBand),
 	)
 	return err
 }
 
-func (a *app) upsertUserWBBand(userKey, userName, wbBand string) error {
-	if strings.TrimSpace(userKey) == "" || strings.TrimSpace(wbBand) == "" {
+func (a *app) upsertUserWBBand(wbUserID, userName, wbBand string) error {
+	if strings.TrimSpace(wbUserID) == "" || strings.TrimSpace(wbBand) == "" {
 		return nil
 	}
+	normalizedFullName := strings.TrimSpace(userName)
 	_, err := a.db.Exec(
-		`INSERT INTO users (user_key, user_name, wb_band)
+		`INSERT INTO users (wb_user_id, full_name, wb_band)
 		 VALUES ($1, $2, $3)
-		 ON CONFLICT (user_key)
-		 DO UPDATE SET user_name = EXCLUDED.user_name, wb_band = EXCLUDED.wb_band`,
-		strings.TrimSpace(userKey),
-		strings.TrimSpace(userName),
+		 ON CONFLICT (wb_user_id)
+		 DO UPDATE SET wb_band = EXCLUDED.wb_band,
+		               full_name = CASE
+		                 WHEN COALESCE(users.full_name, '') = '' THEN EXCLUDED.full_name
+		                 ELSE users.full_name
+		               END`,
+		strings.TrimSpace(wbUserID),
+		normalizedFullName,
 		strings.TrimSpace(wbBand),
 	)
 	return err
 }
 
-func (a *app) getUserWBBand(userKey string) (string, error) {
-	if strings.TrimSpace(userKey) == "" {
+func (a *app) getUserWBBand(wbUserID string) (string, error) {
+	if strings.TrimSpace(wbUserID) == "" {
 		return "", nil
 	}
 	var wbBand string
 	err := a.db.QueryRow(
-		`SELECT COALESCE(wb_band, '') FROM users WHERE user_key = $1`,
-		strings.TrimSpace(userKey),
+		`SELECT COALESCE(wb_band, '') FROM users WHERE wb_user_id = $1`,
+		strings.TrimSpace(wbUserID),
 	).Scan(&wbBand)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1232,6 +1745,10 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 							respondError(w, http.StatusNotFound, "space not found")
 							return
 						}
+						if errors.Is(err, errSnapshotHiddenNotAllowed) {
+							respondError(w, http.StatusBadRequest, "snapshot can only be hidden for coworking")
+							return
+						}
 						respondError(w, http.StatusInternalServerError, err.Error())
 						return
 					}
@@ -1609,6 +2126,7 @@ func (a *app) listBuildings() ([]building, error) {
 }
 
 var errNotFound = errors.New("not found")
+var errSnapshotHiddenNotAllowed = errors.New("snapshot can only be hidden for coworking")
 
 func (a *app) createBuilding(name, address, imageURL string) (building, error) {
 	return a.createBuildingWithFloors(name, address, defaultBuildingTimezone, imageURL, 0, 0)
@@ -1927,7 +2445,7 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 		            '' AS subdivision_level_2,
 		            COALESCE(points_json, '[]') AS points_json,
 		            COALESCE(color, '') AS color,
-		            COALESCE(snapshot_hidden, 0) AS snapshot_hidden,
+		            0 AS snapshot_hidden,
 		            created_at
 		       FROM meeting_rooms
 		      WHERE floor_id = $1
@@ -2004,7 +2522,7 @@ func (a *app) getSpace(id int64) (space, error) {
 		            '' AS subdivision_level_2,
 		            COALESCE(points_json, '[]') AS points_json,
 		            COALESCE(color, '') AS color,
-		            COALESCE(snapshot_hidden, 0) AS snapshot_hidden,
+		            0 AS snapshot_hidden,
 		            created_at
 		       FROM meeting_rooms
 		      WHERE id = $1
@@ -2291,25 +2809,20 @@ func (a *app) updateSpaceDetails(
 	if err != nil {
 		return space{}, err
 	}
-	snapshotHidden := 0
-	if current.SnapshotHidden {
-		snapshotHidden = 1
-	}
 	tx, err := a.db.Begin()
 	if err != nil {
 		return space{}, err
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(
-		`INSERT INTO meeting_rooms (id, floor_id, name, capacity, points_json, color, snapshot_hidden, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		`INSERT INTO meeting_rooms (id, floor_id, name, capacity, points_json, color, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		id,
 		current.FloorID,
 		name,
 		capacity,
 		pointsJSON,
 		color,
-		snapshotHidden,
 		current.CreatedAt,
 	); err != nil {
 		return space{}, err
@@ -2337,17 +2850,14 @@ func (a *app) updateSpaceSnapshotHidden(id int64, hidden bool) (space, error) {
 		return space{}, err
 	}
 	if rows == 0 {
-		result, err = a.db.Exec(`UPDATE meeting_rooms SET snapshot_hidden = $1 WHERE id = $2`, value, id)
-		if err != nil {
-			return space{}, err
+		row := a.db.QueryRow(`SELECT id FROM meeting_rooms WHERE id = $1`, id)
+		var meetingID int64
+		if scanErr := row.Scan(&meetingID); scanErr == nil {
+			return space{}, errSnapshotHiddenNotAllowed
+		} else if !errors.Is(scanErr, sql.ErrNoRows) {
+			return space{}, scanErr
 		}
-		rows, err = result.RowsAffected()
-		if err != nil {
-			return space{}, err
-		}
-		if rows == 0 {
-			return space{}, errNotFound
-		}
+		return space{}, errNotFound
 	}
 	return a.getSpace(id)
 }
@@ -2379,7 +2889,7 @@ func (a *app) deleteSpace(id int64) error {
 
 func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 	rows, err := a.db.Query(
-		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM workplaces WHERE space_id = $1 ORDER BY id DESC`,
+		`SELECT id, coworking_id, label, x, y, width, height, rotation, created_at FROM workplaces WHERE coworking_id = $1 ORDER BY id DESC`,
 		spaceID,
 	)
 	if err != nil {
@@ -2400,23 +2910,22 @@ func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 
 func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWithBooking, error) {
 	rows, err := a.db.Query(
-		`SELECT d.id, d.space_id, d.label, d.x, d.y, d.width, d.height, d.rotation, d.created_at,
-		        b.user_key,
-		        COALESCE(NULLIF(u.full_name, ''), NULLIF(u.user_name, ''), b.user_name),
-		        COALESCE(u.employee_id, ''),
+		`SELECT d.id, d.coworking_id, d.label, d.x, d.y, d.width, d.height, d.rotation, d.created_at,
+		        b.employee_id,
+		        COALESCE(NULLIF(u.full_name, ''), ''),
+		        COALESCE(NULLIF(u.employee_id, ''), b.employee_id, ''),
 		        COALESCE(u.wb_user_id, ''),
 		        COALESCE(u.avatar_url, ''),
 		        COALESCE(u.wb_band, '')
 		   FROM workplaces d
-		   LEFT JOIN workplace_bookings b ON b.desk_id = d.id AND b.date = $2
+		   LEFT JOIN workplace_bookings b ON b.workplace_id = d.id AND b.date = $2
 		   LEFT JOIN LATERAL (
-		     SELECT user_name, full_name, employee_id, profile_id, wb_user_id, avatar_url, wb_band
+		     SELECT full_name, employee_id, wb_user_id, avatar_url, wb_band
 		       FROM users
-		      WHERE user_key = b.user_key OR profile_id = b.user_key
-		      ORDER BY (user_key = b.user_key) DESC
+		      WHERE employee_id = b.employee_id
 		      LIMIT 1
 		   ) u ON true
-		  WHERE d.space_id = $1
+		  WHERE d.coworking_id = $1
 		  ORDER BY d.id DESC`,
 		spaceID,
 		date,
@@ -2429,10 +2938,10 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 	var items []deskWithBooking
 	for rows.Next() {
 		var d deskWithBooking
-		var userKey sql.NullString
+		var bookingWbUserID sql.NullString
 		var userName sql.NullString
 		var employeeID sql.NullString
-		var wbUserID sql.NullString
+		var userWbUserID sql.NullString
 		var avatarURL sql.NullString
 		var wbBand sql.NullString
 		if err := rows.Scan(
@@ -2445,29 +2954,32 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 			&d.Height,
 			&d.Rotation,
 			&d.CreatedAt,
-			&userKey,
+			&bookingWbUserID,
 			&userName,
 			&employeeID,
-			&wbUserID,
+			&userWbUserID,
 			&avatarURL,
 			&wbBand,
 		); err != nil {
 			return nil, err
 		}
-		d.Booking.IsBooked = userKey.Valid && strings.TrimSpace(userKey.String) != ""
+		d.Booking.IsBooked = bookingWbUserID.Valid && strings.TrimSpace(bookingWbUserID.String) != ""
 		if d.Booking.IsBooked {
-			userKeyValue := strings.TrimSpace(userKey.String)
+			wbUserIDValue := strings.TrimSpace(bookingWbUserID.String)
+			resolvedWbUserID := strings.TrimSpace(userWbUserID.String)
+			if resolvedWbUserID == "" {
+				resolvedWbUserID = wbUserIDValue
+			}
 			userNameValue := strings.TrimSpace(userName.String)
 			if userNameValue == "" {
-				userNameValue = userKeyValue
+				userNameValue = wbUserIDValue
 			}
 			d.Booking.User = &deskBookingUser{
-				WbTeamUserID: userKeyValue,
-				UserName:     userNameValue,
-				EmployeeID:   strings.TrimSpace(employeeID.String),
-				WbUserID:     strings.TrimSpace(wbUserID.String),
-				AvatarURL:    strings.TrimSpace(avatarURL.String),
-				WbBand:       strings.TrimSpace(wbBand.String),
+				WbUserID:   resolvedWbUserID,
+				UserName:   userNameValue,
+				EmployeeID: strings.TrimSpace(employeeID.String),
+				AvatarURL:  strings.TrimSpace(avatarURL.String),
+				WbBand:     strings.TrimSpace(wbBand.String),
 			}
 		}
 		items = append(items, d)
@@ -2478,7 +2990,7 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 func (a *app) createDesk(spaceID int64, label string, x, y, width, height, rotation float64) (desk, error) {
 	var id int64
 	if err := a.db.QueryRow(
-		`INSERT INTO workplaces (space_id, label, x, y, width, height, rotation)
+		`INSERT INTO workplaces (coworking_id, label, x, y, width, height, rotation)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id`,
 		spaceID,
@@ -2518,7 +3030,7 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 		}
 	}()
 	stmt, err := tx.Prepare(
-		`INSERT INTO workplaces (space_id, label, x, y, width, height, rotation)
+		`INSERT INTO workplaces (coworking_id, label, x, y, width, height, rotation)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id`,
 	)
@@ -2566,7 +3078,7 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 func (a *app) getDesk(id int64) (desk, error) {
 	var d desk
 	row := a.db.QueryRow(
-		`SELECT id, space_id, label, x, y, width, height, rotation, created_at FROM workplaces WHERE id = $1`,
+		`SELECT id, coworking_id, label, x, y, width, height, rotation, created_at FROM workplaces WHERE id = $1`,
 		id,
 	)
 	if err := row.Scan(&d.ID, &d.SpaceID, &d.Label, &d.X, &d.Y, &d.Width, &d.Height, &d.Rotation, &d.CreatedAt); err != nil {
@@ -2692,7 +3204,7 @@ func (a *app) listMeetingRoomsBySpace(spaceID int64) ([]meetingRoom, error) {
 		return nil, err
 	}
 	rows, err := a.db.Query(
-		`SELECT id, floor_id, name, capacity, COALESCE(points_json, '[]'), COALESCE(color, ''), COALESCE(snapshot_hidden, 0), created_at
+		`SELECT id, floor_id, name, capacity, COALESCE(points_json, '[]'), COALESCE(color, ''), created_at
 		   FROM meeting_rooms
 		  WHERE floor_id = $1
 		  ORDER BY id DESC`,
@@ -2707,7 +3219,6 @@ func (a *app) listMeetingRoomsBySpace(spaceID int64) ([]meetingRoom, error) {
 	for rows.Next() {
 		var m meetingRoom
 		var pointsJSON string
-		var snapshotHidden int
 		if err := rows.Scan(
 			&m.ID,
 			&m.FloorID,
@@ -2715,13 +3226,11 @@ func (a *app) listMeetingRoomsBySpace(spaceID int64) ([]meetingRoom, error) {
 			&m.Capacity,
 			&pointsJSON,
 			&m.Color,
-			&snapshotHidden,
 			&m.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
 		m.Points = decodePoints(pointsJSON)
-		m.SnapshotHidden = snapshotHidden != 0
 		m.Color = strings.TrimSpace(m.Color)
 		items = append(items, m)
 	}

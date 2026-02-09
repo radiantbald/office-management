@@ -609,7 +609,9 @@ const getDisplayNameFromUser = (user) =>
 
 const getUserProfileId = (user) => {
   const directId = String(
-    user?.profile_id ||
+    user?.wb_team_profile_id ||
+      user?.wbTeamProfileId ||
+      user?.profile_id ||
       user?.profileId ||
       user?.employee_id ||
       user?.employeeId ||
@@ -626,6 +628,7 @@ const getUserProfileId = (user) => {
     user?.profile || user?.data?.profile || user?.payload?.profile || null;
   const profileId = String(
     profile?.id ||
+      profile?.wb_team_profile_id ||
       profile?.profile_id ||
       profile?.employee_id ||
       profile?.employeeId ||
@@ -637,7 +640,9 @@ const getUserProfileId = (user) => {
   const nestedUser =
     user?.user || user?.data?.user || user?.payload?.user || null;
   const nestedId = String(
-    nestedUser?.profile_id ||
+    nestedUser?.wb_team_profile_id ||
+      nestedUser?.wbTeamProfileId ||
+      nestedUser?.profile_id ||
       nestedUser?.profileId ||
       nestedUser?.employee_id ||
       nestedUser?.employeeId ||
@@ -650,6 +655,7 @@ const getUserProfileId = (user) => {
   const nestedProfile = nestedUser?.profile || null;
   return String(
     nestedProfile?.id ||
+      nestedProfile?.wb_team_profile_id ||
       nestedProfile?.profile_id ||
       nestedProfile?.employee_id ||
       nestedProfile?.employeeId ||
@@ -970,23 +976,17 @@ const fetchAndStoreWBBand = async (accessToken, user) => {
     if (cookies) {
       headers["X-Cookie"] = cookies;
     }
-    const userKey = String(
-      user?.id ||
-        user?.employee_id ||
-        user?.employeeId ||
-        user?.employeeID ||
-        user?.wbUserID ||
-        user?.email ||
-        user?.phone ||
-        ""
-    ).trim();
-    if (userKey) {
-      headers["X-User-Key"] = userKey;
+    const wbUserId = getBookingUserKey(user);
+    if (wbUserId) {
+      headers["X-Wb-User-Id"] = wbUserId;
     }
-    const response = await fetch(`/api/auth/user/wb-band?profile_id=${encodeURIComponent(profileId)}`, {
+    const response = await fetch(
+      `/api/auth/user/wb-band?wb_team_profile_id=${encodeURIComponent(profileId)}`,
+      {
       headers,
       credentials: "include",
-    });
+      }
+    );
     const data = await response.json().catch(() => null);
     if (!response.ok || !data) {
       return null;
@@ -1012,45 +1012,64 @@ const runAppInit = async () => {
 };
 
 const initializeAuth = async () => {
-  if (!authGate) {
-    await runAppInit();
-    return;
-  }
   const token = getAuthToken();
-  if (!token) {
-    showAuthGate();
-    return;
-  }
   const cachedUser = getUserInfo();
   if (cachedUser) {
     updateAuthUserBlock(cachedUser);
   }
+
+  if (!token) {
+    if (authGate) {
+      showAuthGate();
+      return;
+    }
+    await runAppInit();
+    return;
+  }
+
   // Kick off app initialization immediately so key data requests start without delay.
   void runAppInit();
-  setAuthLoading(true);
-  setAuthStatus("Проверяем авторизацию...");
+
+  if (authGate) {
+    setAuthLoading(true);
+    setAuthStatus("Проверяем авторизацию...");
+  }
+
   const userResult = await fetchAuthUserInfo(token);
-  setAuthLoading(false);
+
+  if (authGate) {
+    setAuthLoading(false);
+  }
+
   if (userResult.success) {
     setUserInfo(userResult.user);
     updateAuthUserBlock(userResult.user);
-    hideAuthGate();
+    refreshDeskBookingOwnership();
+    if (authGate) {
+      hideAuthGate();
+    }
     return;
   }
+
   const isUnauthorized = userResult.status === 401 || userResult.status === 403;
   if (isUnauthorized) {
     clearAuthStorage();
-    showAuthGate();
-    setAuthStatus("Авторизуйтесь снова.", "error");
+    if (authGate) {
+      showAuthGate();
+      setAuthStatus("Авторизуйтесь снова.", "error");
+    }
     return;
   }
-  if (cachedUser) {
+
+  if (authGate) {
+    if (cachedUser) {
+      hideAuthGate();
+      setAuthStatus("Не удалось проверить авторизацию. Продолжаем работу офлайн.", "warning");
+      return;
+    }
     hideAuthGate();
-    setAuthStatus("Не удалось проверить авторизацию. Продолжаем работу офлайн.", "warning");
-    return;
+    setAuthStatus("Не удалось проверить авторизацию. Повторите попытку позже.", "warning");
   }
-  hideAuthGate();
-  setAuthStatus("Не удалось проверить авторизацию. Повторите попытку позже.", "warning");
 };
 
 const apiRequest = async (path, options = {}) => {
@@ -1242,23 +1261,49 @@ const clearBookingStatus = () => {
 
 const getBookingUserKey = (user) =>
   String(
-    user?.wbteam_user_id ||
+    user?.wb_user_id ||
+      user?.wbUserId ||
+      user?.wbUserID ||
+      user?.wb_team_profile_id ||
+      user?.wbTeamProfileId ||
+      user?.wbteam_user_id ||
       user?.wbteamUserId ||
       user?.id ||
       user?.employee_id ||
       user?.employeeId ||
       user?.employeeID ||
-      user?.wbUserID ||
       user?.email ||
       user?.phone ||
       ""
   ).trim();
 
+const getBookingUserEmployeeID = (user) => {
+  const direct = String(user?.employee_id || user?.employeeId || user?.employeeID || "").trim();
+  if (direct) {
+    return direct;
+  }
+  const profile = user?.profile || user?.data?.profile || user?.payload?.profile || null;
+  const profileEmployeeID = String(profile?.employee_id || profile?.employeeId || "").trim();
+  if (profileEmployeeID) {
+    return profileEmployeeID;
+  }
+  const nestedUser = user?.user || user?.data?.user || user?.payload?.user || null;
+  const nestedEmployeeID = String(
+    nestedUser?.employee_id || nestedUser?.employeeId || nestedUser?.employeeID || ""
+  ).trim();
+  if (nestedEmployeeID) {
+    return nestedEmployeeID;
+  }
+  const nestedProfile = nestedUser?.profile || null;
+  return String(nestedProfile?.employee_id || nestedProfile?.employeeId || "").trim();
+};
+
 const getBookingUserInfo = () => {
   const user = getUserInfo();
   const key = getBookingUserKey(user);
   const name = getDisplayNameFromUser(user) || key;
-  return { user, key, name };
+  const employeeId = getBookingUserEmployeeID(user);
+  return { user, key, name, employeeId };
 };
 
 const getBookingHeaders = () => {
@@ -1267,7 +1312,7 @@ const getBookingHeaders = () => {
     return {};
   }
   return {
-    "X-User-Key": info.key,
+    "X-Wb-User-Id": info.key,
   };
 };
 
@@ -1390,16 +1435,16 @@ const applyDeskBookingPayload = (desk) => {
     return true;
   }
   const user = booking.user || {};
-  const userKey = String(
-    user.wbteam_user_id || user.wbteamUserId || user.user_key || user.userKey || ""
-  ).trim();
+  const userEmployeeID = String(user.employee_id || user.employeeId || user.employeeID || "").trim();
+  const userKey = userEmployeeID;
   const userName = String(
     user.user_name || user.userName || user.full_name || user.fullName || userKey || ""
   ).trim();
-  const { key: currentUserKey } = getBookingUserInfo();
+  const { employeeId: currentEmployeeID } = getBookingUserInfo();
   desk.bookingUserKey = userKey;
   desk.bookingUserName = formatUserNameInitials(userName);
-  desk.bookingStatus = currentUserKey && userKey && userKey === currentUserKey ? "my" : "booked";
+  desk.bookingStatus =
+    currentEmployeeID && userKey && userKey === currentEmployeeID ? "my" : "booked";
   return true;
 };
 
@@ -1609,12 +1654,17 @@ const ensureBookingDate = () => {
 
 const getMeetingBookingHeaders = () => {
   const info = getBookingUserInfo();
-  if (!info.key) {
+  if (!info.employeeId && !info.key) {
     return {};
   }
-  return {
-    "X-User-Key": info.key,
-  };
+  const headers = {};
+  if (info.employeeId) {
+    headers["X-Employee-Id"] = info.employeeId;
+  }
+  if (info.key) {
+    headers["X-Wb-User-Id"] = info.key;
+  }
+  return headers;
 };
 
 const setMeetingBookingStatus = (message, tone = "") => {
@@ -2285,7 +2335,9 @@ const fetchMeetingSearchBookings = async (spaceId, date) => {
     return meetingSearchState.bookingsCache.get(key) || [];
   }
   const response = await apiRequest(
-    `/api/meeting-room-bookings?space_id=${encodeURIComponent(spaceId)}&date=${encodeURIComponent(date)}`
+    `/api/meeting-room-bookings?meeting_room_id=${encodeURIComponent(
+      spaceId
+    )}&date=${encodeURIComponent(date)}`
   );
   const items = Array.isArray(response?.items) ? response.items : [];
   const bookings = items
@@ -2411,7 +2463,9 @@ const loadMeetingRoomBookings = async (spaceId, date) => {
   meetingBookingState.isLoading = true;
   try {
     const response = await apiRequest(
-      `/api/meeting-room-bookings?space_id=${encodeURIComponent(spaceId)}&date=${encodeURIComponent(date)}`
+      `/api/meeting-room-bookings?meeting_room_id=${encodeURIComponent(
+        spaceId
+      )}&date=${encodeURIComponent(date)}`
     );
     const items = Array.isArray(response?.items) ? response.items : [];
     meetingBookingState.bookings = items
@@ -2433,15 +2487,17 @@ const loadMeetingRoomBookings = async (spaceId, date) => {
 };
 
 const getMeetingSlotStatus = (startMin, endMin) => {
-  const { key: currentUserKey } = getBookingUserInfo();
+  const { employeeId: currentEmployeeID } = getBookingUserInfo();
   let hasMine = false;
   let hasOther = false;
   meetingBookingState.bookings.forEach((booking) => {
     if (startMin >= booking.endMin || endMin <= booking.startMin) {
       return;
     }
-    const bookingUserKey = String(booking.user_key || "").trim();
-    if (currentUserKey && bookingUserKey && bookingUserKey === currentUserKey) {
+    const bookingEmployeeID = String(
+      booking.employee_id || booking.employeeId || booking.employeeID || ""
+    ).trim();
+    if (currentEmployeeID && bookingEmployeeID && bookingEmployeeID === currentEmployeeID) {
       hasMine = true;
     } else {
       hasOther = true;
@@ -2483,13 +2539,15 @@ const hideMeetingSlotTooltip = () => {
 };
 
 const getMeetingSlotBooking = (startMin, endMin) => {
-  const { key: currentUserKey } = getBookingUserInfo();
+  const { employeeId: currentEmployeeID } = getBookingUserInfo();
   for (const booking of meetingBookingState.bookings) {
     if (startMin >= booking.endMin || endMin <= booking.startMin) {
       continue;
     }
-    const bookingUserKey = String(booking.user_key || booking.userKey || "").trim();
-    if (currentUserKey && bookingUserKey && bookingUserKey === currentUserKey) {
+    const bookingEmployeeID = String(
+      booking.employee_id || booking.employeeId || booking.employeeID || ""
+    ).trim();
+    if (currentEmployeeID && bookingEmployeeID && bookingEmployeeID === currentEmployeeID) {
       continue;
     }
     return booking;
@@ -2832,9 +2890,7 @@ const syncBookingsFromDesks = (desks = []) => {
       return;
     }
     const user = booking.user || {};
-    const userKey = String(
-      user.wbteam_user_id || user.wbteamUserId || user.user_key || user.userKey || ""
-    ).trim();
+    const userKey = String(user.employee_id || user.employeeId || user.employeeID || "").trim();
     if (!userKey) {
       return;
     }
@@ -2842,7 +2898,7 @@ const syncBookingsFromDesks = (desks = []) => {
       user.user_name || user.userName || user.full_name || user.fullName || userKey || ""
     ).trim();
     byDesk.set(String(desk.id), {
-      user_key: userKey,
+      wb_user_id: userKey,
       user_name: formatUserNameInitials(userName),
     });
   });
@@ -2852,12 +2908,12 @@ const syncBookingsFromDesks = (desks = []) => {
 const applyBookingsToDesks = (bookings = []) => {
   const byDesk = new Map();
   bookings.forEach((booking) => {
-    if (booking?.desk_id) {
-      byDesk.set(String(booking.desk_id), booking);
+    if (booking?.workplace_id) {
+      byDesk.set(String(booking.workplace_id), booking);
     }
   });
   bookingState.bookingsByDeskId = byDesk;
-  const { key: userKey } = getBookingUserInfo();
+  const { employeeId: currentEmployeeID } = getBookingUserInfo();
   currentDesks.forEach((desk) => {
     const booking = byDesk.get(String(desk.id));
     if (!booking) {
@@ -2867,7 +2923,8 @@ const applyBookingsToDesks = (bookings = []) => {
       desk.booking = null;
       return;
     }
-    const bookingUserKey = String(booking.user_key || "").trim();
+    const bookingEmployeeID = String(booking.employee_id || booking.employeeId || "").trim();
+    const bookingUserKey = bookingEmployeeID;
     const bookingUserName = String(booking.user_name || booking.userName || bookingUserKey || "").trim();
     const avatarUrl = String(booking.avatar_url || booking.avatarUrl || "").trim();
     const wbBand = String(booking.wb_band || booking.wbBand || booking.wbband || "").trim();
@@ -2876,14 +2933,13 @@ const applyBookingsToDesks = (bookings = []) => {
     desk.booking = {
       is_booked: true,
       user: {
-        wbteam_user_id: bookingUserKey,
-        user_key: bookingUserKey,
+        wb_user_id: bookingUserKey,
         user_name: bookingUserName,
         avatar_url: avatarUrl,
         wb_band: wbBand,
       },
     };
-    if (userKey && bookingUserKey === userKey) {
+    if (currentEmployeeID && bookingUserKey === currentEmployeeID) {
       desk.bookingStatus = "my";
     } else {
       desk.bookingStatus = "booked";
@@ -2892,6 +2948,28 @@ const applyBookingsToDesks = (bookings = []) => {
   if (!updateDeskBookingIndicators(currentDesks)) {
     renderSpaceDesks(currentDesks);
   }
+};
+
+const refreshDeskBookingOwnership = () => {
+  if (!Array.isArray(currentDesks) || currentDesks.length === 0) {
+    return;
+  }
+  let hasUpdates = false;
+  currentDesks.forEach((desk) => {
+    const previousStatus = desk.bookingStatus;
+    applyDeskBookingPayload(desk);
+    if (desk.bookingStatus !== previousStatus) {
+      hasUpdates = true;
+    }
+  });
+  if (!hasUpdates) {
+    return;
+  }
+  if (!updateDeskBookingIndicators(currentDesks)) {
+    renderSpaceDesks(currentDesks);
+  }
+  renderSpaceDeskList(currentDesks);
+  renderSpaceAttendeesList(currentDesks);
 };
 
 const loadSpaceBookings = async (spaceId, date) => {
@@ -2918,7 +2996,7 @@ const loadMyBookings = async () => {
     return;
   }
   const headers = getBookingHeaders();
-  if (!headers["X-User-Key"]) {
+  if (!headers["X-Wb-User-Id"]) {
     setBookingStatus("Нужна информация о пользователе для бронирований.", "error");
     return;
   }
@@ -2972,7 +3050,7 @@ const renderBookingsList = () => {
     space.textContent = spaceLabel;
     const desk = document.createElement("div");
     desk.className = "space-booking-desk";
-    desk.textContent = booking.desk_label || `Стол ${booking.desk_id}`;
+    desk.textContent = booking.desk_label || `Стол ${booking.workplace_id}`;
     info.appendChild(date);
     if (spaceLabel) {
       info.appendChild(space);
@@ -3062,9 +3140,9 @@ const getAttendeeInitials = (name) => {
   return `${first}${second}` || "?";
 };
 
-const collectSpaceAttendees = (desks = [], currentUserKey = "") => {
+const collectSpaceAttendees = (desks = [], currentEmployeeID = "") => {
   const list = Array.isArray(desks) ? desks : [];
-  const normalizedCurrentUserKey = String(currentUserKey || "").trim();
+  const normalizedCurrentUserKey = String(currentEmployeeID || "").trim();
   const attendeesMap = new Map();
   list.forEach((desk) => {
     if (!desk || (desk.bookingStatus !== "booked" && desk.bookingStatus !== "my")) {
@@ -3113,9 +3191,9 @@ const buildAttendeeAvatarUrl = (avatarUrl, cacheKey) => {
   return `${trimmed}?v=${encodeURIComponent(cacheKey)}`;
 };
 
-const hasCurrentUserBookingInSpace = (desks = [], currentUserKey = "") => {
+const hasCurrentUserBookingInSpace = (desks = [], currentEmployeeID = "") => {
   const list = Array.isArray(desks) ? desks : [];
-  const normalizedCurrentUserKey = String(currentUserKey || "").trim();
+  const normalizedCurrentUserKey = String(currentEmployeeID || "").trim();
   return list.some((desk) => {
     if (!desk) {
       return false;
@@ -3163,10 +3241,10 @@ const renderSpaceAttendeesList = (desks = []) => {
   }
   clearAttendeeListDeskHover();
   spaceAttendeesList.innerHTML = "";
-  const { key: currentUserKey } = getBookingUserInfo();
-  const attendees = collectSpaceAttendees(desks, currentUserKey);
+  const { employeeId: currentEmployeeID } = getBookingUserInfo();
+  const attendees = collectSpaceAttendees(desks, currentEmployeeID);
   if (attendees.length === 0) {
-    const hasCurrentUserBooking = hasCurrentUserBookingInSpace(desks, currentUserKey);
+    const hasCurrentUserBooking = hasCurrentUserBookingInSpace(desks, currentEmployeeID);
     spaceAttendeesEmpty.textContent = hasCurrentUserBooking
       ? "Никто кроме тебя еще не забронировал место на эту дату🥲"
       : "Никто еще не забронировал место на эту дату";
@@ -3293,7 +3371,7 @@ const toggleBookingsList = () => {
 
 const handleCancelBooking = async (booking) => {
   const headers = getBookingHeaders();
-  if (!headers["X-User-Key"]) {
+  if (!headers["X-Wb-User-Id"]) {
     setBookingStatus("Нужна информация о пользователе для отмены.", "error");
     return;
   }
@@ -3311,7 +3389,7 @@ const handleCancelBooking = async (booking) => {
       headers,
       body: JSON.stringify({
         date: normalizeBookingDate(booking.date),
-        desk_id: Number(booking.desk_id),
+        workplace_id: Number(booking.workplace_id),
       }),
     });
     await loadMyBookings();
@@ -3325,7 +3403,7 @@ const handleCancelBooking = async (booking) => {
 
 const handleCancelAllBookings = async () => {
   const headers = getBookingHeaders();
-  if (!headers["X-User-Key"]) {
+  if (!headers["X-Wb-User-Id"]) {
     setBookingStatus("Нужна информация о пользователе для отмены.", "error");
     return;
   }
@@ -3350,7 +3428,7 @@ const handleDeskBookingClick = async (desk) => {
     ensureBookingDate();
   }
   const headers = getBookingHeaders();
-  if (!headers["X-User-Key"]) {
+  if (!headers["X-Wb-User-Id"]) {
     setBookingStatus("Нужна информация о пользователе для бронирования.", "error");
     return;
   }
@@ -3366,7 +3444,7 @@ const handleDeskBookingClick = async (desk) => {
         headers,
         body: JSON.stringify({
           date: bookingState.selectedDate,
-          desk_id: Number(desk.id),
+          workplace_id: Number(desk.id),
         }),
       });
       setBookingStatus("Бронирование отменено.", "success");
@@ -3384,10 +3462,10 @@ const handleDeskBookingClick = async (desk) => {
     await apiRequest("/api/bookings", {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        date: bookingState.selectedDate,
-        desk_id: Number(desk.id),
-      }),
+    body: JSON.stringify({
+      date: bookingState.selectedDate,
+      workplace_id: Number(desk.id),
+    }),
     });
     setBookingStatus("Место успешно забронировано.", "success");
     if (currentSpace?.id) {
@@ -3414,7 +3492,7 @@ const handleMeetingBookingSubmit = async () => {
     return;
   }
   const headers = getMeetingBookingHeaders();
-  if (!headers["X-User-Key"]) {
+  if (!headers["X-Wb-User-Id"]) {
     setMeetingBookingStatus("Нужна информация о пользователе для бронирования.", "error");
     return;
   }
@@ -3428,7 +3506,7 @@ const handleMeetingBookingSubmit = async () => {
           method: "POST",
           headers,
           body: JSON.stringify({
-            space_id: Number(spaceId),
+            meeting_room_id: Number(spaceId),
             date,
             start_time: formatMeetingMinutes(startMin),
             end_time: formatMeetingMinutes(endMin),
@@ -3473,7 +3551,7 @@ const handleCancelMeetingBooking = async (startMin, endMin) => {
     return;
   }
   const headers = getMeetingBookingHeaders();
-  if (!headers["X-User-Key"]) {
+  if (!headers["X-Wb-User-Id"]) {
     setMeetingBookingStatus("Нужна информация о пользователе для отмены.", "error");
     return;
   }
@@ -3488,7 +3566,7 @@ const handleCancelMeetingBooking = async (startMin, endMin) => {
       method: "DELETE",
       headers,
       body: JSON.stringify({
-        space_id: Number(spaceId),
+        meeting_room_id: Number(spaceId),
         date,
         start_time: formatMeetingMinutes(startMin),
         end_time: formatMeetingMinutes(endMin),
@@ -3516,7 +3594,7 @@ const handleCancelMeetingBookings = async () => {
     return;
   }
   const headers = getMeetingBookingHeaders();
-  if (!headers["X-User-Key"]) {
+  if (!headers["X-Wb-User-Id"]) {
     setMeetingBookingStatus("Нужна информация о пользователе для отмены.", "error");
     return;
   }
@@ -3534,7 +3612,7 @@ const handleCancelMeetingBookings = async () => {
           method: "DELETE",
           headers,
           body: JSON.stringify({
-            space_id: Number(spaceId),
+            meeting_room_id: Number(spaceId),
             date,
             start_time: formatMeetingMinutes(startMin),
             end_time: formatMeetingMinutes(endMin),
@@ -3691,7 +3769,7 @@ const openWeekCalendar = (desk) => {
 
 const handleWeekBooking = async (desk, selectedDays) => {
   const headers = getBookingHeaders();
-  if (!headers["X-User-Key"]) {
+  if (!headers["X-Wb-User-Id"]) {
     setBookingStatus("Нужна информация о пользователе для бронирования.", "error");
     return;
   }
@@ -3704,10 +3782,10 @@ const handleWeekBooking = async (desk, selectedDays) => {
     const response = await apiRequest("/api/bookings/multiple", {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        dates,
-        desk_id: Number(desk.id),
-      }),
+    body: JSON.stringify({
+      dates,
+      workplace_id: Number(desk.id),
+    }),
     });
     const createdCount = response?.createdDates?.length || 0;
     const failedCount = response?.failedDates?.length || 0;
@@ -6016,8 +6094,10 @@ const setSpaceEditMode = (editing) => {
     spaceSnapshot.classList.toggle("is-booking", !editing);
   }
   if (spaceSnapshotToggleBtn) {
-    spaceSnapshotToggleBtn.classList.toggle("is-hidden", !editing);
-    spaceSnapshotToggleBtn.setAttribute("aria-hidden", String(!editing));
+    const canToggleSnapshot = Boolean(currentSpace && currentSpace.kind === "coworking");
+    const shouldHideSnapshotToggle = !editing || !canToggleSnapshot;
+    spaceSnapshotToggleBtn.classList.toggle("is-hidden", shouldHideSnapshotToggle);
+    spaceSnapshotToggleBtn.setAttribute("aria-hidden", String(shouldHideSnapshotToggle));
   }
   if (addDeskBtn) {
     const canEdit = Boolean(currentSpace && currentSpace.kind === "coworking");
@@ -8958,7 +9038,8 @@ const renderSpaceSnapshot = (space, floorPlanMarkup) => {
     space?.color || "#60a5fa",
     space?.id || null
   );
-  applySpaceSnapshotBackgroundState(space?.snapshot_hidden);
+  const isSnapshotHidden = Boolean(space?.kind === "coworking" && space?.snapshot_hidden);
+  applySpaceSnapshotBackgroundState(isSnapshotHidden);
   if (!snapshotSvg) {
     spaceSnapshotPlaceholder.classList.remove("is-hidden");
     resetSpaceSnapshotTransform();
@@ -9340,6 +9421,10 @@ if (spaceSnapshotToggleBtn) {
     event.preventDefault();
     event.stopPropagation();
     if (!currentSpace || !currentSpace.id) {
+      return;
+    }
+    if (currentSpace.kind !== "coworking") {
+      setSpacePageStatus("Спрятать снепшот можно только для коворкинга.", "error");
       return;
     }
     if (!isSpaceEditing) {
@@ -10254,6 +10339,7 @@ const handleAuthSuccess = async (token, user) => {
     setUserInfo(user);
   }
   updateAuthUserBlock(user || getUserInfo());
+  refreshDeskBookingOwnership();
   hideAuthGate();
   setAuthStatus("");
   await runAppInit();
