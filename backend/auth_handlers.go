@@ -106,6 +106,11 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 			if err := a.upsertUserInfo(wbUserID, userName, fullName, employeeID, profileIDStr, avatarURL, wbBand); err != nil {
 				log.Printf("handleAuthUserInfo: failed to save user info: %v", err)
 			}
+			roleID, err := getUserRoleByWbUserID(a.db, wbUserID)
+			if err != nil {
+				log.Printf("handleAuthUserInfo: failed to resolve role: %v", err)
+				roleID = roleEmployee
+			}
 
 			response := map[string]any{
 				"status": jsonData["status"],
@@ -116,6 +121,7 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 					"wb_team_profile_id": dataMap["id"],
 					"wb_user_id":         dataMap["wbUserID"],
 					"wb_band":            wbBand,
+					"role":               roleID,
 				},
 			}
 			_ = json.NewEncoder(w).Encode(response)

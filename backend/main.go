@@ -204,6 +204,7 @@ func main() {
 	mux.HandleFunc("/api/meeting-room-bookings", app.handleMeetingRoomBookings)
 	mux.HandleFunc("/api/bookings", app.handleBookings)
 	mux.HandleFunc("/api/bookings/", app.handleBookingsSubroutes)
+	mux.HandleFunc("/api/users/role", app.handleUserRole)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -279,6 +280,7 @@ func migrate(db *sql.DB) error {
 			wb_user_id TEXT NOT NULL DEFAULT '',
 			avatar_url TEXT NOT NULL DEFAULT '',
 			wb_band TEXT NOT NULL DEFAULT '',
+			role INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL DEFAULT (now()::text)
 		);`,
 		`CREATE TABLE IF NOT EXISTS office_buildings (
@@ -472,6 +474,9 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "users", "wb_band", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := ensureColumn(db, "users", "role", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
 	if err := ensureColumn(db, "users", "employee_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
@@ -521,7 +526,8 @@ func ensureUsersView(db *sql.DB) error {
 		         wb_user_id,
 		         avatar_url,
 		         wb_band,
-		         created_at
+		         created_at,
+		         role
 		    FROM users`,
 		`CREATE OR REPLACE FUNCTION users_view_update_fn()
 		   RETURNS trigger AS $$
@@ -532,7 +538,8 @@ func ensureUsersView(db *sql.DB) error {
 		            wb_team_profile_id = COALESCE(NEW.wb_team_profile_id, ''),
 		            wb_user_id = COALESCE(NEW.wb_user_id, ''),
 		            avatar_url = COALESCE(NEW.avatar_url, ''),
-		            wb_band = COALESCE(NEW.wb_band, '')
+		            wb_band = COALESCE(NEW.wb_band, ''),
+		            role = COALESCE(NEW.role, users.role)
 		      WHERE id = OLD.id;
 		     RETURN NEW;
 		   END;
@@ -1158,9 +1165,24 @@ func (a *app) upsertUserInfo(wbUserID, userName, fullName, employeeID, profileID
 	if normalizedFullName == "" {
 		normalizedFullName = strings.TrimSpace(userName)
 	}
-	_, err := a.db.Exec(
-		`INSERT INTO users (wb_user_id, full_name, employee_id, wb_team_profile_id, avatar_url, wb_band)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	role, err := defaultRoleForNewUser(tx)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(
+		`INSERT INTO users (wb_user_id, full_name, employee_id, wb_team_profile_id, avatar_url, wb_band, role)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (wb_user_id)
 		 DO UPDATE SET full_name = EXCLUDED.full_name,
 		               employee_id = EXCLUDED.employee_id,
@@ -1173,8 +1195,12 @@ func (a *app) upsertUserInfo(wbUserID, userName, fullName, employeeID, profileID
 		strings.TrimSpace(profileID),
 		strings.TrimSpace(avatarURL),
 		strings.TrimSpace(wbBand),
+		role,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *app) upsertUserWBBand(wbUserID, userName, wbBand string) error {

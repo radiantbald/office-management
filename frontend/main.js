@@ -696,6 +696,24 @@ const toggleBreadcrumbMenu = (profile) => {
   }
 };
 
+const getRoleLabelFromUser = (user) => {
+  if (!user) {
+    return "";
+  }
+  const rawRole = user.role ?? user.role_id ?? user.roleId ?? user.roleID;
+  const role = Number(rawRole);
+  switch (role) {
+    case 1:
+      return "Сотрудник";
+    case 2:
+      return "Секретарь";
+    case 3:
+      return "Администратор";
+    default:
+      return "";
+  }
+};
+
 const updateBreadcrumbProfile = (user) => {
   if (!breadcrumbProfiles || breadcrumbProfiles.length === 0) {
     return;
@@ -710,12 +728,18 @@ const updateBreadcrumbProfile = (user) => {
 
   const displayName = getDisplayNameFromUser(user);
   const avatarUrl = typeof user.avatar_url === "string" ? user.avatar_url.trim() : "";
+  const roleLabel = getRoleLabelFromUser(user);
 
   breadcrumbProfiles.forEach((node) => {
     const avatar = node.querySelector(".breadcrumb-avatar");
     const name = node.querySelector(".breadcrumb-name");
+    const role = node.querySelector(".breadcrumb-role");
     if (name) {
       name.textContent = displayName;
+    }
+    if (role) {
+      role.textContent = roleLabel;
+      role.classList.toggle("is-hidden", !roleLabel);
     }
     if (avatar) {
       avatar.alt = displayName;

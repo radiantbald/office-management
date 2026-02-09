@@ -20,7 +20,7 @@ func authMiddleware(next http.Handler) http.Handler {
 		}
 
 		publicPaths := []string{
-		"/api/health",
+			"/api/health",
 			"/api/auth/",
 		}
 		for _, publicPath := range publicPaths {
