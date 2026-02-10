@@ -54,17 +54,18 @@ type floor struct {
 }
 
 type space struct {
-	ID             int64     `json:"id"`
-	FloorID        int64     `json:"floor_id"`
-	Name           string    `json:"name"`
-	Kind           string    `json:"kind"`
-	Capacity       int       `json:"capacity"`
-	Color          string    `json:"color,omitempty"`
-	SnapshotHidden bool      `json:"snapshot_hidden"`
-	SubdivisionL1  string    `json:"subdivision_level_1"`
-	SubdivisionL2  string    `json:"subdivision_level_2"`
-	Points         []point   `json:"points"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID                    int64     `json:"id"`
+	FloorID               int64     `json:"floor_id"`
+	Name                  string    `json:"name"`
+	Kind                  string    `json:"kind"`
+	Capacity              int       `json:"capacity"`
+	Color                 string    `json:"color,omitempty"`
+	SnapshotHidden        bool      `json:"snapshot_hidden"`
+	SubdivisionL1         string    `json:"subdivision_level_1"`
+	SubdivisionL2         string    `json:"subdivision_level_2"`
+	ResponsibleEmployeeID string    `json:"responsible_employee_id,omitempty"`
+	Points                []point   `json:"points"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type point struct {
@@ -204,6 +205,7 @@ func main() {
 	mux.HandleFunc("/api/meeting-room-bookings", app.handleMeetingRoomBookings)
 	mux.HandleFunc("/api/bookings", app.handleBookings)
 	mux.HandleFunc("/api/bookings/", app.handleBookingsSubroutes)
+	mux.HandleFunc("/api/users", app.handleUsers)
 	mux.HandleFunc("/api/users/role", app.handleUserRole)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -307,6 +309,7 @@ func migrate(db *sql.DB) error {
 			name TEXT NOT NULL,
 			subdivision_level_1 TEXT NOT NULL DEFAULT '',
 			subdivision_level_2 TEXT NOT NULL DEFAULT '',
+			responsible_employee_id TEXT NOT NULL DEFAULT '',
 			points_json TEXT NOT NULL DEFAULT '[]',
 			color TEXT NOT NULL DEFAULT '',
 			snapshot_hidden INTEGER NOT NULL DEFAULT 0,
@@ -405,6 +408,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "coworkings", "subdivision_level_2", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "coworkings", "responsible_employee_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "coworkings", "snapshot_hidden", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -1954,14 +1960,15 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		FloorID           int64   `json:"floor_id"`
-		Name              string  `json:"name"`
-		Kind              string  `json:"kind"`
-		Capacity          *int    `json:"capacity"`
-		Color             string  `json:"color"`
-		SubdivisionLevel1 string  `json:"subdivision_level_1"`
-		SubdivisionLevel2 string  `json:"subdivision_level_2"`
-		Points            []point `json:"points"`
+		FloorID               int64   `json:"floor_id"`
+		Name                  string  `json:"name"`
+		Kind                  string  `json:"kind"`
+		Capacity              *int    `json:"capacity"`
+		Color                 string  `json:"color"`
+		SubdivisionLevel1     string  `json:"subdivision_level_1"`
+		SubdivisionLevel2     string  `json:"subdivision_level_2"`
+		ResponsibleEmployeeID string  `json:"responsible_employee_id"`
+		Points                []point `json:"points"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
@@ -1972,6 +1979,7 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 	payload.Color = strings.TrimSpace(payload.Color)
 	payload.SubdivisionLevel1 = strings.TrimSpace(payload.SubdivisionLevel1)
 	payload.SubdivisionLevel2 = strings.TrimSpace(payload.SubdivisionLevel2)
+	payload.ResponsibleEmployeeID = strings.TrimSpace(payload.ResponsibleEmployeeID)
 	if payload.FloorID == 0 || payload.Name == "" || payload.Kind == "" {
 		respondError(w, http.StatusBadRequest, "floor_id, name, and kind are required")
 		return
@@ -1994,6 +2002,18 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 	if payload.Kind != "coworking" {
 		payload.SubdivisionLevel1 = ""
 		payload.SubdivisionLevel2 = ""
+		payload.ResponsibleEmployeeID = ""
+	}
+	if payload.ResponsibleEmployeeID != "" {
+		role, err := resolveRoleFromRequest(r, a.db)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+			return
+		}
+		if role != roleAdmin {
+			respondError(w, http.StatusForbidden, "Недостаточно прав")
+			return
+		}
 	}
 	result, err := a.createSpace(
 		payload.FloorID,
@@ -2004,6 +2024,7 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		payload.SubdivisionLevel2,
 		payload.Points,
 		payload.Color,
+		payload.ResponsibleEmployeeID,
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -2033,18 +2054,19 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, item)
 		case http.MethodPut:
-			if !ensureNotEmployeeRole(w, r, a.db) {
+			if !a.ensureCanManageSpace(w, r, id) {
 				return
 			}
 			var payload struct {
-				Name              string  `json:"name"`
-				Kind              string  `json:"kind"`
-				Capacity          *int    `json:"capacity"`
-				Color             string  `json:"color"`
-				SubdivisionLevel1 string  `json:"subdivision_level_1"`
-				SubdivisionLevel2 string  `json:"subdivision_level_2"`
-				Points            []point `json:"points"`
-				SnapshotHidden    *bool   `json:"snapshot_hidden"`
+				Name                  string  `json:"name"`
+				Kind                  string  `json:"kind"`
+				Capacity              *int    `json:"capacity"`
+				Color                 string  `json:"color"`
+				SubdivisionLevel1     string  `json:"subdivision_level_1"`
+				SubdivisionLevel2     string  `json:"subdivision_level_2"`
+				ResponsibleEmployeeID *string `json:"responsible_employee_id"`
+				Points                []point `json:"points"`
+				SnapshotHidden        *bool   `json:"snapshot_hidden"`
 			}
 			if err := decodeJSON(r, &payload); err != nil {
 				respondError(w, http.StatusBadRequest, err.Error())
@@ -2055,6 +2077,19 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			payload.Color = strings.TrimSpace(payload.Color)
 			payload.SubdivisionLevel1 = strings.TrimSpace(payload.SubdivisionLevel1)
 			payload.SubdivisionLevel2 = strings.TrimSpace(payload.SubdivisionLevel2)
+			if payload.ResponsibleEmployeeID != nil {
+				trimmed := strings.TrimSpace(*payload.ResponsibleEmployeeID)
+				payload.ResponsibleEmployeeID = &trimmed
+				role, err := resolveRoleFromRequest(r, a.db)
+				if err != nil {
+					respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+					return
+				}
+				if role != roleAdmin {
+					respondError(w, http.StatusForbidden, "Недостаточно прав")
+					return
+				}
+			}
 			var (
 				result space
 				err    error
@@ -2122,6 +2157,7 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 					payload.Color,
 					payload.SubdivisionLevel1,
 					payload.SubdivisionLevel2,
+					payload.ResponsibleEmployeeID,
 				)
 			}
 			if err != nil {
@@ -2134,7 +2170,7 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, result)
 		case http.MethodDelete:
-			if !ensureNotEmployeeRole(w, r, a.db) {
+			if !a.ensureCanManageSpace(w, r, id) {
 				return
 			}
 			if err := a.deleteSpace(id); err != nil {
@@ -2193,9 +2229,6 @@ func (a *app) handleDesks(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if !ensureNotEmployeeRole(w, r, a.db) {
-		return
-	}
 	var payload struct {
 		SpaceID  int64    `json:"space_id"`
 		Label    string   `json:"label"`
@@ -2212,6 +2245,9 @@ func (a *app) handleDesks(w http.ResponseWriter, r *http.Request) {
 	payload.Label = strings.TrimSpace(payload.Label)
 	if payload.SpaceID == 0 || payload.Label == "" || payload.X == nil || payload.Y == nil {
 		respondError(w, http.StatusBadRequest, "space_id, label, x, and y are required")
+		return
+	}
+	if !a.ensureCanManageCoworking(w, r, payload.SpaceID) {
 		return
 	}
 	width := 200.0
@@ -2237,9 +2273,6 @@ func (a *app) handleDesks(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
-		if !ensureNotEmployeeRole(w, r, a.db) {
-			return
-		}
 		var payload struct {
 			Items []struct {
 				SpaceID  int64    `json:"space_id"`
@@ -2260,6 +2293,7 @@ func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		inputs := make([]deskCreateInput, 0, len(payload.Items))
+		spaceIDs := make(map[int64]struct{})
 		for _, item := range payload.Items {
 			label := strings.TrimSpace(item.Label)
 			if item.SpaceID == 0 || label == "" || item.X == nil || item.Y == nil {
@@ -2287,6 +2321,14 @@ func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 				Height:   height,
 				Rotation: rotation,
 			})
+			spaceIDs[item.SpaceID] = struct{}{}
+		}
+		uniqueSpaces := make([]int64, 0, len(spaceIDs))
+		for id := range spaceIDs {
+			uniqueSpaces = append(uniqueSpaces, id)
+		}
+		if !a.ensureCanManageCoworkings(w, r, uniqueSpaces) {
+			return
 		}
 		created, err := a.createDesksBulk(inputs)
 		if err != nil {
@@ -2295,9 +2337,6 @@ func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 		}
 		respondJSON(w, http.StatusCreated, map[string]any{"items": created})
 	case http.MethodDelete:
-		if !ensureNotEmployeeRole(w, r, a.db) {
-			return
-		}
 		var payload struct {
 			IDs []int64 `json:"ids"`
 		}
@@ -2323,6 +2362,9 @@ func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(unique) == 0 {
 			respondError(w, http.StatusBadRequest, "ids are required")
+			return
+		}
+		if !a.ensureCanManageDesks(w, r, unique) {
 			return
 		}
 		if err := a.deleteDesksBulk(unique); err != nil {
@@ -2351,7 +2393,7 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodPut:
-		if !ensureNotEmployeeRole(w, r, a.db) {
+		if !a.ensureCanManageDesk(w, r, id) {
 			return
 		}
 		var payload struct {
@@ -2397,7 +2439,7 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 		}
 		respondJSON(w, http.StatusOK, result)
 	case http.MethodDelete:
-		if !ensureNotEmployeeRole(w, r, a.db) {
+		if !a.ensureCanManageDesk(w, r, id) {
 			return
 		}
 		if err := a.deleteDesk(id); err != nil {
@@ -2784,6 +2826,7 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 		        COALESCE(points_json, '[]'),
 		        COALESCE(color, ''),
 		        COALESCE(snapshot_hidden, 0),
+		        COALESCE(responsible_employee_id, ''),
 		        created_at
 		   FROM (
 		     SELECT id,
@@ -2796,6 +2839,7 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 		            COALESCE(points_json, '[]') AS points_json,
 		            COALESCE(color, '') AS color,
 		            COALESCE(snapshot_hidden, 0) AS snapshot_hidden,
+		            COALESCE(responsible_employee_id, '') AS responsible_employee_id,
 		            created_at
 		       FROM coworkings
 		      WHERE floor_id = $1
@@ -2810,6 +2854,7 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 		            COALESCE(points_json, '[]') AS points_json,
 		            COALESCE(color, '') AS color,
 		            0 AS snapshot_hidden,
+		            '' AS responsible_employee_id,
 		            created_at
 		       FROM meeting_rooms
 		      WHERE floor_id = $1
@@ -2838,6 +2883,7 @@ func (a *app) listSpacesByFloor(floorID int64) ([]space, error) {
 			&pointsJSON,
 			&s.Color,
 			&snapshotHidden,
+			&s.ResponsibleEmployeeID,
 			&s.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -2861,6 +2907,7 @@ func (a *app) getSpace(id int64) (space, error) {
 		        COALESCE(points_json, '[]'),
 		        COALESCE(color, ''),
 		        COALESCE(snapshot_hidden, 0),
+		        COALESCE(responsible_employee_id, ''),
 		        created_at
 		   FROM (
 		     SELECT id,
@@ -2873,6 +2920,7 @@ func (a *app) getSpace(id int64) (space, error) {
 		            COALESCE(points_json, '[]') AS points_json,
 		            COALESCE(color, '') AS color,
 		            COALESCE(snapshot_hidden, 0) AS snapshot_hidden,
+		            COALESCE(responsible_employee_id, '') AS responsible_employee_id,
 		            created_at
 		       FROM coworkings
 		      WHERE id = $1
@@ -2887,6 +2935,7 @@ func (a *app) getSpace(id int64) (space, error) {
 		            COALESCE(points_json, '[]') AS points_json,
 		            COALESCE(color, '') AS color,
 		            0 AS snapshot_hidden,
+		            '' AS responsible_employee_id,
 		            created_at
 		       FROM meeting_rooms
 		      WHERE id = $1
@@ -2908,6 +2957,7 @@ func (a *app) getSpace(id int64) (space, error) {
 		&pointsStored,
 		&s.Color,
 		&snapshotHidden,
+		&s.ResponsibleEmployeeID,
 		&s.CreatedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -2964,6 +3014,7 @@ func (a *app) createSpace(
 	subdivisionLevel1, subdivisionLevel2 string,
 	points []point,
 	color string,
+	responsibleEmployeeID string,
 ) (space, error) {
 	pointsJSON, err := encodePoints(points)
 	if err != nil {
@@ -2986,8 +3037,8 @@ func (a *app) createSpace(
 	} else {
 		kind = "coworking"
 		if err := a.db.QueryRow(
-			`INSERT INTO coworkings (floor_id, name, subdivision_level_1, subdivision_level_2, points_json, color)
-			 VALUES ($1, $2, $3, $4, $5, $6)
+			`INSERT INTO coworkings (floor_id, name, subdivision_level_1, subdivision_level_2, points_json, color, responsible_employee_id)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)
 			 RETURNING id`,
 			floorID,
 			name,
@@ -2995,22 +3046,24 @@ func (a *app) createSpace(
 			subdivisionLevel2,
 			pointsJSON,
 			color,
+			responsibleEmployeeID,
 		).Scan(&id); err != nil {
 			return space{}, err
 		}
 	}
 	return space{
-		ID:             id,
-		FloorID:        floorID,
-		Name:           name,
-		Kind:           kind,
-		Capacity:       capacity,
-		Color:          color,
-		SnapshotHidden: false,
-		SubdivisionL1:  subdivisionLevel1,
-		SubdivisionL2:  subdivisionLevel2,
-		Points:         points,
-		CreatedAt:      time.Now().UTC(),
+		ID:                    id,
+		FloorID:               floorID,
+		Name:                  name,
+		Kind:                  kind,
+		Capacity:              capacity,
+		Color:                 color,
+		SnapshotHidden:        false,
+		SubdivisionL1:         subdivisionLevel1,
+		SubdivisionL2:         subdivisionLevel2,
+		ResponsibleEmployeeID: strings.TrimSpace(responsibleEmployeeID),
+		Points:                points,
+		CreatedAt:             time.Now().UTC(),
 	}, nil
 }
 
@@ -3060,10 +3113,15 @@ func (a *app) updateSpaceDetails(
 	capacityProvided bool,
 	color string,
 	subdivisionLevel1, subdivisionLevel2 string,
+	responsibleEmployeeID *string,
 ) (space, error) {
 	current, err := a.getSpace(id)
 	if err != nil {
 		return space{}, err
+	}
+	responsibleValue := strings.TrimSpace(current.ResponsibleEmployeeID)
+	if responsibleEmployeeID != nil {
+		responsibleValue = strings.TrimSpace(*responsibleEmployeeID)
 	}
 	if kind == "" {
 		kind = current.Kind
@@ -3117,8 +3175,8 @@ func (a *app) updateSpaceDetails(
 		}
 		defer tx.Rollback()
 		if _, err := tx.Exec(
-			`INSERT INTO coworkings (id, floor_id, name, subdivision_level_1, subdivision_level_2, points_json, color, snapshot_hidden, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			`INSERT INTO coworkings (id, floor_id, name, subdivision_level_1, subdivision_level_2, points_json, color, snapshot_hidden, responsible_employee_id, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 			id,
 			current.FloorID,
 			name,
@@ -3127,6 +3185,7 @@ func (a *app) updateSpaceDetails(
 			pointsJSON,
 			color,
 			snapshotHidden,
+			responsibleValue,
 			current.CreatedAt,
 		); err != nil {
 			return space{}, err
@@ -3144,12 +3203,14 @@ func (a *app) updateSpaceDetails(
 		result, err := a.db.Exec(
 			`UPDATE coworkings
 			 SET name = $1, color = $2,
-			     subdivision_level_1 = $3, subdivision_level_2 = $4
-			 WHERE id = $5`,
+			     subdivision_level_1 = $3, subdivision_level_2 = $4,
+			     responsible_employee_id = $5
+			 WHERE id = $6`,
 			name,
 			color,
 			subdivisionLevel1,
 			subdivisionLevel2,
+			responsibleValue,
 			id,
 		)
 		if err != nil {

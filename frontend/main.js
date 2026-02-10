@@ -91,6 +91,8 @@ const spaceKindField = document.getElementById("spaceKindField");
 const spaceSubdivisionFields = document.getElementById("spaceSubdivisionFields");
 const spaceSubdivisionLevel1Field = document.getElementById("spaceSubdivisionLevel1Field");
 const spaceSubdivisionLevel2Field = document.getElementById("spaceSubdivisionLevel2Field");
+const spaceResponsibleFieldRow = document.getElementById("spaceResponsibleFieldRow");
+const spaceResponsibleField = document.getElementById("spaceResponsibleField");
 const spaceCapacityFieldRow = document.getElementById("spaceCapacityFieldRow");
 const spaceCapacityField = document.getElementById("spaceCapacityField");
 const spaceColorInput = document.getElementById("spaceColorInput");
@@ -700,7 +702,20 @@ const getRoleIdFromUser = (user) => {
   if (!user) {
     return null;
   }
-  const rawRole = user.role ?? user.role_id ?? user.roleId ?? user.roleID;
+  const rawRole =
+    user.role ??
+    user.role_id ??
+    user.roleId ??
+    user.roleID ??
+    user?.data?.role ??
+    user?.data?.role_id ??
+    user?.data?.roleId ??
+    user?.payload?.role ??
+    user?.payload?.role_id ??
+    user?.payload?.roleId ??
+    user?.user?.role ??
+    user?.user?.role_id ??
+    user?.user?.roleId;
   const role = Number(rawRole);
   return Number.isFinite(role) ? role : null;
 };
@@ -725,19 +740,9 @@ const applyRoleRestrictions = (user) => {
   toggleHidden(openAddModalBtn, true);
   toggleHidden(editBuildingBtn, true);
   toggleHidden(editFloorBtn, true);
-  toggleHidden(editSpaceBtn, true);
   toggleHidden(deleteBuildingBtn, true);
   toggleHidden(openFloorPlanModalBtn, true);
   toggleHidden(addSpaceBtn, true);
-  toggleHidden(spaceSaveBtn, true);
-  toggleHidden(spaceDeleteBtn, true);
-  toggleHidden(addDeskBtn, true);
-  toggleHidden(deleteDeskBtn, true);
-  toggleHidden(copyDeskBtn, true);
-  toggleHidden(pasteDeskBtn, true);
-  toggleHidden(shrinkDeskBtn, true);
-  toggleHidden(rotateDeskBtn, true);
-  toggleHidden(deskSaveBtn, true);
   setFloorEditMode(false);
   setSpaceEditMode(false);
 };
@@ -1145,13 +1150,16 @@ const shouldBlockEmployeeRequest = (path, options = {}) => {
     return false;
   }
   const target = typeof path === "string" ? path : String(path);
-  const restrictedPrefixes = [
-    "/api/buildings",
-    "/api/floors",
-    "/api/spaces",
-    "/api/desks",
-    "/api/meeting-rooms",
-  ];
+  if (target.startsWith("/api/spaces")) {
+    if (method === "POST") {
+      return true;
+    }
+    return !canManageActiveSpaceResources(getUserInfo());
+  }
+  if (target.startsWith("/api/desks")) {
+    return !canManageActiveSpaceResources(getUserInfo());
+  }
+  const restrictedPrefixes = ["/api/buildings", "/api/floors", "/api/meeting-rooms"];
   return restrictedPrefixes.some((prefix) => target.startsWith(prefix));
 };
 
@@ -1364,7 +1372,21 @@ const getBookingUserKey = (user) =>
   ).trim();
 
 const getBookingUserEmployeeID = (user) => {
-  const direct = String(user?.employee_id || user?.employeeId || user?.employeeID || "").trim();
+  const direct = String(
+    user?.employee_id ||
+      user?.employeeId ||
+      user?.employeeID ||
+      user?.data?.employee_id ||
+      user?.data?.employeeId ||
+      user?.data?.employeeID ||
+      user?.payload?.employee_id ||
+      user?.payload?.employeeId ||
+      user?.payload?.employeeID ||
+      user?.user?.employee_id ||
+      user?.user?.employeeId ||
+      user?.user?.employeeID ||
+      ""
+  ).trim();
   if (direct) {
     return direct;
   }
@@ -1391,6 +1413,34 @@ const getBookingUserInfo = () => {
   const employeeId = getBookingUserEmployeeID(user);
   return { user, key, name, employeeId };
 };
+
+const isAdminRole = (user) => getRoleIdFromUser(user) === 3;
+
+const getSpaceResponsibleEmployeeId = (space) =>
+  String(
+    space?.responsible_employee_id ||
+      space?.responsibleEmployeeId ||
+      space?.responsible_employee ||
+      space?.responsibleEmployee ||
+      ""
+  ).trim();
+
+const isCoworkingResponsible = (user, space) => {
+  if (!space || space.kind !== "coworking") {
+    return false;
+  }
+  const employeeId = getBookingUserEmployeeID(user);
+  const responsibleId = getSpaceResponsibleEmployeeId(space);
+  return Boolean(employeeId && responsibleId && employeeId === responsibleId);
+};
+
+const canManageSpaceResources = (user, space) =>
+  canManageOfficeResources(user) || isCoworkingResponsible(user, space);
+
+const getActiveSpaceForPermissions = () => editingSpace || currentSpace || null;
+
+const canManageActiveSpaceResources = (user) =>
+  canManageSpaceResources(user, getActiveSpaceForPermissions());
 
 const getBookingHeaders = () => {
   return {};
@@ -3962,11 +4012,106 @@ const updateSpaceSubdivisionVisibility = (kind) => {
   });
 };
 
+let coworkingResponsibleOptions = null;
+let coworkingResponsibleLoading = false;
+
+const buildResponsibleLabel = (item) => {
+  const employeeId = String(item?.employee_id || item?.employeeId || "").trim();
+  const fullName = String(item?.full_name || item?.fullName || "").trim();
+  if (!employeeId) {
+    return "";
+  }
+  if (fullName && fullName !== employeeId) {
+    return `${fullName} (${employeeId})`;
+  }
+  return employeeId;
+};
+
+const fetchCoworkingResponsibleOptions = async () => {
+  if (!isAdminRole(getUserInfo())) {
+    return [];
+  }
+  if (coworkingResponsibleOptions) {
+    return coworkingResponsibleOptions;
+  }
+  if (coworkingResponsibleLoading) {
+    return coworkingResponsibleOptions || [];
+  }
+  coworkingResponsibleLoading = true;
+  try {
+    const result = await apiRequest("/api/users");
+    const items = Array.isArray(result?.items) ? result.items : [];
+    coworkingResponsibleOptions = items
+      .map((item) => ({
+        employee_id: String(item?.employee_id || item?.employeeId || "").trim(),
+        full_name: String(item?.full_name || item?.fullName || "").trim(),
+      }))
+      .filter((item) => item.employee_id);
+  } catch (error) {
+    coworkingResponsibleOptions = [];
+    showTopAlert("Не удалось загрузить список сотрудников.", "error");
+  } finally {
+    coworkingResponsibleLoading = false;
+  }
+  return coworkingResponsibleOptions;
+};
+
+const updateSpaceResponsibleVisibility = (kind) => {
+  const canAssign = kind === "coworking" && isAdminRole(getUserInfo());
+  if (spaceResponsibleFieldRow) {
+    spaceResponsibleFieldRow.classList.toggle("is-hidden", !canAssign);
+    spaceResponsibleFieldRow.setAttribute("aria-hidden", String(!canAssign));
+  }
+  if (spaceResponsibleField) {
+    spaceResponsibleField.disabled = !canAssign;
+    if (!canAssign) {
+      spaceResponsibleField.value = "";
+    }
+  }
+};
+
+const populateSpaceResponsibleOptions = async (selectedValue = "") => {
+  if (!spaceResponsibleField) {
+    return;
+  }
+  const options = await fetchCoworkingResponsibleOptions();
+  const normalizedSelected = String(selectedValue || "").trim();
+  const knownIds = new Set(options.map((item) => item.employee_id));
+  spaceResponsibleField.innerHTML = "";
+  const emptyOption = document.createElement("option");
+  emptyOption.value = "";
+  emptyOption.textContent = "Не назначать";
+  spaceResponsibleField.appendChild(emptyOption);
+  options.forEach((item) => {
+    const label = buildResponsibleLabel(item);
+    if (!label) {
+      return;
+    }
+    const option = document.createElement("option");
+    option.value = item.employee_id;
+    option.textContent = label;
+    spaceResponsibleField.appendChild(option);
+  });
+  if (normalizedSelected && !knownIds.has(normalizedSelected)) {
+    const option = document.createElement("option");
+    option.value = normalizedSelected;
+    option.textContent = normalizedSelected;
+    spaceResponsibleField.appendChild(option);
+  }
+  spaceResponsibleField.value = normalizedSelected;
+};
+
 const openSpaceModal = (space = null) => {
   if (!spaceModal) {
     return;
   }
-  if (!canManageOfficeResources(getUserInfo())) {
+  const user = getUserInfo();
+  if (space) {
+    if (!canManageSpaceResources(user, space)) {
+      showTopAlert("Недостаточно прав для изменения пространства.", "error");
+      return;
+    }
+  } else if (!canManageOfficeResources(user)) {
     showTopAlert("Недостаточно прав для изменения пространства.", "error");
     return;
   }
@@ -3975,6 +4120,9 @@ const openSpaceModal = (space = null) => {
   spaceModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("modal-open");
   clearSpaceStatus();
+  if (spaceSaveBtn) {
+    toggleHidden(spaceSaveBtn, false);
+  }
   if (spaceDeleteBtn) {
     spaceDeleteBtn.classList.toggle("is-hidden", !space);
   }
@@ -4008,11 +4156,18 @@ const openSpaceModal = (space = null) => {
   const currentKind = spaceKindField ? spaceKindField.value : defaultSpaceKind;
   updateSpaceCapacityVisibility(currentKind);
   updateSpaceSubdivisionVisibility(currentKind);
+  updateSpaceResponsibleVisibility(currentKind);
   updateSpaceModalCopy(currentKind, Boolean(space));
   if (spaceColorInput) {
     const initialColor = space?.color || getSpaceColor(space) || "#60a5fa";
     spaceColorInput.value = initialColor;
     updateSpaceColorPreview(initialColor);
+  }
+  if (currentKind === "coworking" && isAdminRole(user)) {
+    const selectedResponsible = getSpaceResponsibleEmployeeId(space);
+    void populateSpaceResponsibleOptions(selectedResponsible);
+  } else if (spaceResponsibleField) {
+    spaceResponsibleField.value = "";
   }
 };
 
@@ -4039,6 +4194,10 @@ const closeSpaceModal = () => {
   }
   updateSpaceCapacityVisibility(defaultSpaceKind);
   updateSpaceSubdivisionVisibility(defaultSpaceKind);
+  updateSpaceResponsibleVisibility(defaultSpaceKind);
+  if (spaceResponsibleField) {
+    spaceResponsibleField.value = "";
+  }
   if (spaceDeleteBtn) {
     spaceDeleteBtn.classList.add("is-hidden");
     spaceDeleteBtn.disabled = false;
@@ -4051,7 +4210,7 @@ const openDeskModal = (desk) => {
   if (!deskModal) {
     return;
   }
-  if (!canManageOfficeResources(getUserInfo())) {
+  if (!canManageSpaceResources(getUserInfo(), currentSpace)) {
     showTopAlert("Недостаточно прав для изменения столов.", "error");
     return;
   }
@@ -4063,6 +4222,9 @@ const openDeskModal = (desk) => {
   deskModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("modal-open");
   clearDeskStatus();
+  if (deskSaveBtn) {
+    toggleHidden(deskSaveBtn, false);
+  }
   if (deskModalTitle) {
     deskModalTitle.textContent = "Редактировать стол";
   }
@@ -4124,6 +4286,10 @@ if (spaceKindField) {
     }
     updateSpaceCapacityVisibility(event.target.value);
     updateSpaceSubdivisionVisibility(event.target.value);
+    updateSpaceResponsibleVisibility(event.target.value);
+    if (event.target.value === "coworking" && isAdminRole(getUserInfo())) {
+      void populateSpaceResponsibleOptions(spaceResponsibleField?.value || "");
+    }
   });
 }
 
@@ -5050,7 +5216,7 @@ const renderFloorSpacesList = (spaces) => {
       selectButton.appendChild(capacityTag);
     }
 
-    const canEdit = canManageOfficeResources(getUserInfo());
+    const canEdit = canManageSpaceResources(getUserInfo(), space);
     const editButton = canEdit ? document.createElement("button") : null;
     if (editButton) {
       editButton.type = "button";
@@ -5453,7 +5619,7 @@ const renderSpaceDeskList = (desks) => {
     label.textContent = getDeskDisplayLabel(desk);
     selectButton.appendChild(label);
 
-    const canEdit = canManageOfficeResources(getUserInfo());
+    const canEdit = canManageSpaceResources(getUserInfo(), currentSpace);
     const editButton = canEdit ? document.createElement("button") : null;
     if (editButton) {
       editButton.type = "button";
@@ -6126,7 +6292,11 @@ const setDeskPlacementActive = (active) => {
 };
 
 const updateDeskClipboardButtons = () => {
-  const canEdit = Boolean(currentSpace && currentSpace.kind === "coworking");
+  const canEdit = Boolean(
+    currentSpace &&
+      currentSpace.kind === "coworking" &&
+      canManageSpaceResources(getUserInfo(), currentSpace)
+  );
   const selectedCount = deskEditState.selectedDeskIds ? deskEditState.selectedDeskIds.size : 0;
   if (copyDeskBtn) {
     copyDeskBtn.classList.toggle("is-hidden", !isSpaceEditing || !canEdit);
@@ -6150,7 +6320,7 @@ const scheduleDeskRender = () => {
 };
 
 const setSpaceEditMode = (editing) => {
-  if (editing && !canManageOfficeResources(getUserInfo())) {
+  if (editing && !canManageSpaceResources(getUserInfo(), currentSpace)) {
     showTopAlert("Недостаточно прав для редактирования коворкингов.", "error");
     return;
   }
@@ -6171,13 +6341,21 @@ const setSpaceEditMode = (editing) => {
     spaceSnapshot.classList.toggle("is-booking", !editing);
   }
   if (spaceSnapshotToggleBtn) {
-    const canToggleSnapshot = Boolean(currentSpace && currentSpace.kind === "coworking");
+    const canToggleSnapshot = Boolean(
+      currentSpace &&
+        currentSpace.kind === "coworking" &&
+        canManageSpaceResources(getUserInfo(), currentSpace)
+    );
     const shouldHideSnapshotToggle = !editing || !canToggleSnapshot;
     spaceSnapshotToggleBtn.classList.toggle("is-hidden", shouldHideSnapshotToggle);
     spaceSnapshotToggleBtn.setAttribute("aria-hidden", String(shouldHideSnapshotToggle));
   }
   if (addDeskBtn) {
-    const canEdit = Boolean(currentSpace && currentSpace.kind === "coworking");
+    const canEdit = Boolean(
+      currentSpace &&
+        currentSpace.kind === "coworking" &&
+        canManageSpaceResources(getUserInfo(), currentSpace)
+    );
     addDeskBtn.classList.toggle("is-hidden", !editing || !canEdit);
   }
   if (deleteDeskBtn) {
@@ -8622,6 +8800,7 @@ const setPageMode = (mode) => {
     return;
   }
   const canEdit = canManageOfficeResources(getUserInfo());
+  const canEditSpace = canManageActiveSpaceResources(getUserInfo());
   if (mode === "building") {
     setFloorEditMode(false);
     setSpaceEditMode(false);
@@ -8701,7 +8880,7 @@ const setPageMode = (mode) => {
       editFloorBtn.classList.add("is-hidden");
     }
     if (editSpaceBtn) {
-      editSpaceBtn.classList.toggle("is-hidden", !canEdit);
+      editSpaceBtn.classList.toggle("is-hidden", !canEditSpace);
     }
     if (pageTitle) {
       pageTitle.textContent = "Пространство";
@@ -9253,7 +9432,10 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     }
 
     if (editSpaceBtn) {
-      editSpaceBtn.classList.toggle("is-hidden", !canManageOfficeResources(getUserInfo()));
+      editSpaceBtn.classList.toggle(
+        "is-hidden",
+        !canManageSpaceResources(getUserInfo(), space)
+      );
     }
     if (spaceBookingPanel) {
       spaceBookingPanel.classList.remove("is-hidden");
@@ -9476,7 +9658,7 @@ if (editFloorBtn) {
 
 if (editSpaceBtn) {
   editSpaceBtn.addEventListener("click", async () => {
-    if (!canManageOfficeResources(getUserInfo())) {
+    if (!canManageSpaceResources(getUserInfo(), currentSpace)) {
       showTopAlert("Недостаточно прав для редактирования коворкингов.", "error");
       return;
     }
@@ -9559,7 +9741,7 @@ if (spaceSnapshotToggleBtn) {
 
 if (addDeskBtn) {
   addDeskBtn.addEventListener("click", () => {
-    if (!canManageOfficeResources(getUserInfo())) {
+    if (!canManageSpaceResources(getUserInfo(), currentSpace)) {
       showTopAlert("Недостаточно прав для добавления столов.", "error");
       return;
     }
@@ -9575,7 +9757,7 @@ if (addDeskBtn) {
 
 if (deleteDeskBtn) {
   deleteDeskBtn.addEventListener("click", async () => {
-    if (!canManageOfficeResources(getUserInfo())) {
+    if (!canManageSpaceResources(getUserInfo(), currentSpace)) {
       showTopAlert("Недостаточно прав для удаления столов.", "error");
       return;
     }
@@ -9870,7 +10052,13 @@ if (spaceKindFilterButtons.length) {
 if (spaceForm) {
   spaceForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!canManageOfficeResources(getUserInfo())) {
+    const user = getUserInfo();
+    if (editingSpace && editingSpace.id) {
+      if (!canManageSpaceResources(user, editingSpace)) {
+        showTopAlert("Недостаточно прав для изменения пространств.", "error");
+        return;
+      }
+    } else if (!canManageOfficeResources(user)) {
       showTopAlert("Недостаточно прав для изменения пространств.", "error");
       return;
     }
@@ -9884,6 +10072,9 @@ if (spaceForm) {
       const capacityRaw = spaceCapacityField ? spaceCapacityField.value.trim() : "";
       const capacity = capacityRaw === "" ? 0 : Number(capacityRaw);
       const color = spaceColorInput && spaceColorInput.value ? spaceColorInput.value : "#60a5fa";
+      const responsibleEmployeeID = spaceResponsibleField
+        ? spaceResponsibleField.value.trim()
+        : "";
       let subdivisionLevel1 = spaceSubdivisionLevel1Field
         ? spaceSubdivisionLevel1Field.value.trim()
         : "";
@@ -9911,16 +10102,20 @@ if (spaceForm) {
         spaceSaveBtn.disabled = true;
       }
       try {
+        const payload = {
+          name,
+          kind,
+          capacity: kind === "meeting" ? capacity : 0,
+          color,
+          subdivision_level_1: subdivisionLevel1,
+          subdivision_level_2: subdivisionLevel2,
+        };
+        if (kind === "coworking" && isAdminRole(user)) {
+          payload.responsible_employee_id = responsibleEmployeeID;
+        }
         await apiRequest(`/api/spaces/${editingSpace.id}`, {
           method: "PUT",
-          body: JSON.stringify({
-            name,
-            kind,
-            capacity: kind === "meeting" ? capacity : 0,
-            color,
-            subdivision_level_1: subdivisionLevel1,
-            subdivision_level_2: subdivisionLevel2,
-          }),
+          body: JSON.stringify(payload),
         });
         await loadFloorSpaces(currentFloor.id);
         setFloorStatus("Пространство обновлено.", "success");
@@ -9944,6 +10139,7 @@ if (spaceForm) {
     const capacityRaw = spaceCapacityField ? spaceCapacityField.value.trim() : "";
     const capacity = capacityRaw === "" ? 0 : Number(capacityRaw);
     const color = spaceColorInput && spaceColorInput.value ? spaceColorInput.value : "#60a5fa";
+    const responsibleEmployeeID = spaceResponsibleField ? spaceResponsibleField.value.trim() : "";
     let subdivisionLevel1 = spaceSubdivisionLevel1Field
       ? spaceSubdivisionLevel1Field.value.trim()
       : "";
@@ -9976,18 +10172,22 @@ if (spaceForm) {
       if (!createdElements || !lassoState.svg) {
         throw new Error("Не удалось создать пространство на плане.");
       }
+      const payload = {
+        floor_id: currentFloor.id,
+        name,
+        kind,
+        capacity: kind === "meeting" ? capacity : 0,
+        color,
+        subdivision_level_1: subdivisionLevel1,
+        subdivision_level_2: subdivisionLevel2,
+        points,
+      };
+      if (kind === "coworking" && isAdminRole(user)) {
+        payload.responsible_employee_id = responsibleEmployeeID;
+      }
       const createdSpace = await apiRequest("/api/spaces", {
         method: "POST",
-        body: JSON.stringify({
-          floor_id: currentFloor.id,
-          name,
-          kind,
-          capacity: kind === "meeting" ? capacity : 0,
-          color,
-          subdivision_level_1: subdivisionLevel1,
-          subdivision_level_2: subdivisionLevel2,
-          points,
-        }),
+        body: JSON.stringify(payload),
       });
       if (createdElements.polygon && createdSpace?.id) {
         createdElements.polygon.setAttribute("data-space-id", String(createdSpace.id));
@@ -10016,7 +10216,7 @@ if (spaceForm) {
 
 if (spaceDeleteBtn) {
   spaceDeleteBtn.addEventListener("click", async () => {
-    if (!canManageOfficeResources(getUserInfo())) {
+    if (!canManageSpaceResources(getUserInfo(), editingSpace)) {
       showTopAlert("Недостаточно прав для удаления пространств.", "error");
       return;
     }
@@ -10051,7 +10251,7 @@ if (spaceDeleteBtn) {
 if (deskForm) {
   deskForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!canManageOfficeResources(getUserInfo())) {
+    if (!canManageSpaceResources(getUserInfo(), currentSpace)) {
       showTopAlert("Недостаточно прав для изменения столов.", "error");
       return;
     }
