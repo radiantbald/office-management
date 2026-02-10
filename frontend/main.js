@@ -696,12 +696,54 @@ const toggleBreadcrumbMenu = (profile) => {
   }
 };
 
-const getRoleLabelFromUser = (user) => {
+const getRoleIdFromUser = (user) => {
   if (!user) {
-    return "";
+    return null;
   }
   const rawRole = user.role ?? user.role_id ?? user.roleId ?? user.roleID;
   const role = Number(rawRole);
+  return Number.isFinite(role) ? role : null;
+};
+
+const isEmployeeRole = (user) => getRoleIdFromUser(user) === 1;
+
+const canManageOfficeResources = (user) => !isEmployeeRole(user);
+
+const toggleHidden = (node, hidden) => {
+  if (!node) {
+    return;
+  }
+  node.classList.toggle("is-hidden", hidden);
+};
+
+const applyRoleRestrictions = (user) => {
+  const restricted = !canManageOfficeResources(user);
+  document.body.classList.toggle("role-employee", restricted);
+  if (!restricted) {
+    return;
+  }
+  toggleHidden(openAddModalBtn, true);
+  toggleHidden(editBuildingBtn, true);
+  toggleHidden(editFloorBtn, true);
+  toggleHidden(editSpaceBtn, true);
+  toggleHidden(deleteBuildingBtn, true);
+  toggleHidden(openFloorPlanModalBtn, true);
+  toggleHidden(addSpaceBtn, true);
+  toggleHidden(spaceSaveBtn, true);
+  toggleHidden(spaceDeleteBtn, true);
+  toggleHidden(addDeskBtn, true);
+  toggleHidden(deleteDeskBtn, true);
+  toggleHidden(copyDeskBtn, true);
+  toggleHidden(pasteDeskBtn, true);
+  toggleHidden(shrinkDeskBtn, true);
+  toggleHidden(rotateDeskBtn, true);
+  toggleHidden(deskSaveBtn, true);
+  setFloorEditMode(false);
+  setSpaceEditMode(false);
+};
+
+const getRoleLabelFromUser = (user) => {
+  const role = getRoleIdFromUser(user);
   switch (role) {
     case 1:
       return "Сотрудник";
@@ -768,6 +810,7 @@ const updateBreadcrumbProfile = (user) => {
     }
     node.classList.remove("is-hidden");
   });
+  applyRoleRestrictions(user);
 };
 
 const updateAuthUserBlock = (user) => {
@@ -777,6 +820,7 @@ const updateAuthUserBlock = (user) => {
       authUserName.textContent = "";
     }
     updateBreadcrumbProfile(null);
+    applyRoleRestrictions(null);
     return;
   }
 
@@ -1092,7 +1136,29 @@ const initializeAuth = async () => {
   }
 };
 
+const shouldBlockEmployeeRequest = (path, options = {}) => {
+  if (!isEmployeeRole(getUserInfo())) {
+    return false;
+  }
+  const method = String(options.method || "GET").toUpperCase();
+  if (!["POST", "PUT", "DELETE"].includes(method)) {
+    return false;
+  }
+  const target = typeof path === "string" ? path : String(path);
+  const restrictedPrefixes = [
+    "/api/buildings",
+    "/api/floors",
+    "/api/spaces",
+    "/api/desks",
+    "/api/meeting-rooms",
+  ];
+  return restrictedPrefixes.some((prefix) => target.startsWith(prefix));
+};
+
 const apiRequest = async (path, options = {}) => {
+  if (shouldBlockEmployeeRequest(path, options)) {
+    throw new Error("Недостаточно прав для выполнения действия.");
+  }
   const headers = { ...(options.headers || {}) };
   const isFormData = options.body instanceof FormData;
   if (!isFormData && !headers["Content-Type"]) {
@@ -3900,6 +3966,10 @@ const openSpaceModal = (space = null) => {
   if (!spaceModal) {
     return;
   }
+  if (!canManageOfficeResources(getUserInfo())) {
+    showTopAlert("Недостаточно прав для изменения пространства.", "error");
+    return;
+  }
   editingSpace = space;
   spaceModal.classList.add("is-open");
   spaceModal.setAttribute("aria-hidden", "false");
@@ -3979,6 +4049,10 @@ const closeSpaceModal = () => {
 
 const openDeskModal = (desk) => {
   if (!deskModal) {
+    return;
+  }
+  if (!canManageOfficeResources(getUserInfo())) {
+    showTopAlert("Недостаточно прав для изменения столов.", "error");
     return;
   }
   if (desk?.id) {
@@ -4976,17 +5050,22 @@ const renderFloorSpacesList = (spaces) => {
       selectButton.appendChild(capacityTag);
     }
 
-    const editButton = document.createElement("button");
-    editButton.type = "button";
-    editButton.className = "space-edit-button";
-    editButton.setAttribute("aria-label", "Редактировать пространство");
-    editButton.textContent = "✏";
+    const canEdit = canManageOfficeResources(getUserInfo());
+    const editButton = canEdit ? document.createElement("button") : null;
+    if (editButton) {
+      editButton.type = "button";
+      editButton.className = "space-edit-button";
+      editButton.setAttribute("aria-label", "Редактировать пространство");
+      editButton.textContent = "✏";
+    }
 
     selectButton.addEventListener("click", () => selectSpaceFromList(space));
-    editButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      openSpaceModal(space);
-    });
+    if (editButton) {
+      editButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openSpaceModal(space);
+      });
+    }
     item.addEventListener("mouseenter", () => {
       const polygon = findSpacePolygon(space);
       if (!polygon) {
@@ -5007,7 +5086,9 @@ const renderFloorSpacesList = (spaces) => {
     });
 
     item.appendChild(selectButton);
-    item.appendChild(editButton);
+    if (editButton) {
+      item.appendChild(editButton);
+    }
     return item;
   };
   const getSubdivisionPath = (space) => {
@@ -5372,20 +5453,27 @@ const renderSpaceDeskList = (desks) => {
     label.textContent = getDeskDisplayLabel(desk);
     selectButton.appendChild(label);
 
-    const editButton = document.createElement("button");
-    editButton.type = "button";
-    editButton.className = "space-edit-button";
-    editButton.setAttribute("aria-label", "Редактировать стол");
-    editButton.textContent = "✏";
+    const canEdit = canManageOfficeResources(getUserInfo());
+    const editButton = canEdit ? document.createElement("button") : null;
+    if (editButton) {
+      editButton.type = "button";
+      editButton.className = "space-edit-button";
+      editButton.setAttribute("aria-label", "Редактировать стол");
+      editButton.textContent = "✏";
+    }
 
     selectButton.addEventListener("click", () => selectDeskFromList(desk));
-    editButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      openDeskModal(desk);
-    });
+    if (editButton) {
+      editButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openDeskModal(desk);
+      });
+    }
 
     item.appendChild(selectButton);
-    item.appendChild(editButton);
+    if (editButton) {
+      item.appendChild(editButton);
+    }
     spaceDesksList.appendChild(item);
   });
   updateDeskListSelection();
@@ -5967,6 +6055,10 @@ const updateFloorPlanSpacesVisibility = () => {
 };
 
 const setFloorEditMode = (editing) => {
+  if (editing && !canManageOfficeResources(getUserInfo())) {
+    showTopAlert("Недостаточно прав для редактирования этажей.", "error");
+    return;
+  }
   isFloorEditing = editing;
   document.body.classList.toggle("floor-editing", editing);
   if (floorPlanLayout) {
@@ -6058,6 +6150,10 @@ const scheduleDeskRender = () => {
 };
 
 const setSpaceEditMode = (editing) => {
+  if (editing && !canManageOfficeResources(getUserInfo())) {
+    showTopAlert("Недостаточно прав для редактирования коворкингов.", "error");
+    return;
+  }
   isSpaceEditing = editing;
   document.body.classList.toggle("space-editing", editing);
   if (spaceLayout) {
@@ -8525,6 +8621,7 @@ const setPageMode = (mode) => {
   if (!buildingsPage || !buildingPage) {
     return;
   }
+  const canEdit = canManageOfficeResources(getUserInfo());
   if (mode === "building") {
     setFloorEditMode(false);
     setSpaceEditMode(false);
@@ -8538,7 +8635,7 @@ const setPageMode = (mode) => {
     }
     openAddModalBtn.classList.add("is-hidden");
     if (editBuildingBtn) {
-      editBuildingBtn.classList.remove("is-hidden");
+      editBuildingBtn.classList.toggle("is-hidden", !canEdit);
     }
     if (editFloorBtn) {
       editFloorBtn.classList.add("is-hidden");
@@ -8571,7 +8668,7 @@ const setPageMode = (mode) => {
       editBuildingBtn.classList.add("is-hidden");
     }
     if (editFloorBtn) {
-      editFloorBtn.classList.remove("is-hidden");
+      editFloorBtn.classList.toggle("is-hidden", !canEdit);
     }
     if (editSpaceBtn) {
       editSpaceBtn.classList.add("is-hidden");
@@ -8604,7 +8701,7 @@ const setPageMode = (mode) => {
       editFloorBtn.classList.add("is-hidden");
     }
     if (editSpaceBtn) {
-      editSpaceBtn.classList.remove("is-hidden");
+      editSpaceBtn.classList.toggle("is-hidden", !canEdit);
     }
     if (pageTitle) {
       pageTitle.textContent = "Пространство";
@@ -8625,7 +8722,7 @@ const setPageMode = (mode) => {
   if (spacePage) {
     spacePage.classList.add("is-hidden");
   }
-  openAddModalBtn.classList.remove("is-hidden");
+  openAddModalBtn.classList.toggle("is-hidden", !canEdit);
   if (editBuildingBtn) {
     editBuildingBtn.classList.add("is-hidden");
   }
@@ -9156,7 +9253,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     }
 
     if (editSpaceBtn) {
-      editSpaceBtn.classList.remove("is-hidden");
+      editSpaceBtn.classList.toggle("is-hidden", !canManageOfficeResources(getUserInfo()));
     }
     if (spaceBookingPanel) {
       spaceBookingPanel.classList.remove("is-hidden");
@@ -9175,6 +9272,10 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
 
 buildingForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!canManageOfficeResources(getUserInfo())) {
+    showTopAlert("Недостаточно прав для изменения зданий.", "error");
+    return;
+  }
   clearStatus();
   const name = buildingNameInput.value.trim();
   const address = buildingAddressInput.value.trim();
@@ -9285,6 +9386,10 @@ buildingForm.addEventListener("submit", async (event) => {
 });
 
 openAddModalBtn.addEventListener("click", () => {
+  if (!canManageOfficeResources(getUserInfo())) {
+    showTopAlert("Недостаточно прав для добавления зданий.", "error");
+    return;
+  }
   clearStatus();
   resetForm("create");
   openModal("create");
@@ -9292,6 +9397,10 @@ openAddModalBtn.addEventListener("click", () => {
 
 if (editBuildingBtn) {
   editBuildingBtn.addEventListener("click", () => {
+    if (!canManageOfficeResources(getUserInfo())) {
+      showTopAlert("Недостаточно прав для редактирования зданий.", "error");
+      return;
+    }
     openEditModal();
   });
 }
@@ -9325,12 +9434,20 @@ if (removeImageBtn) {
 
 if (deleteBuildingBtn) {
   deleteBuildingBtn.addEventListener("click", () => {
+    if (!canManageOfficeResources(getUserInfo())) {
+      showTopAlert("Недостаточно прав для удаления зданий.", "error");
+      return;
+    }
     deleteCurrentBuilding();
   });
 }
 
 if (editFloorBtn) {
   editFloorBtn.addEventListener("click", async () => {
+    if (!canManageOfficeResources(getUserInfo())) {
+      showTopAlert("Недостаточно прав для редактирования этажей.", "error");
+      return;
+    }
     if (!currentFloor) {
       setFloorStatus("Сначала выберите этаж.", "error");
       return;
@@ -9359,6 +9476,10 @@ if (editFloorBtn) {
 
 if (editSpaceBtn) {
   editSpaceBtn.addEventListener("click", async () => {
+    if (!canManageOfficeResources(getUserInfo())) {
+      showTopAlert("Недостаточно прав для редактирования коворкингов.", "error");
+      return;
+    }
     if (!currentSpace) {
       setSpacePageStatus("Сначала выберите пространство.", "error");
       return;
@@ -9438,6 +9559,10 @@ if (spaceSnapshotToggleBtn) {
 
 if (addDeskBtn) {
   addDeskBtn.addEventListener("click", () => {
+    if (!canManageOfficeResources(getUserInfo())) {
+      showTopAlert("Недостаточно прав для добавления столов.", "error");
+      return;
+    }
     if (!isSpaceEditing) {
       setSpacePageStatus("Сначала включите режим редактирования.", "error");
       return;
@@ -9450,6 +9575,10 @@ if (addDeskBtn) {
 
 if (deleteDeskBtn) {
   deleteDeskBtn.addEventListener("click", async () => {
+    if (!canManageOfficeResources(getUserInfo())) {
+      showTopAlert("Недостаточно прав для удаления столов.", "error");
+      return;
+    }
     if (!isSpaceEditing) {
       setSpacePageStatus("Сначала включите режим редактирования.", "error");
       return;
@@ -9716,6 +9845,10 @@ if (deleteFloorPlanBtn) {
 
 if (addSpaceBtn) {
   addSpaceBtn.addEventListener("click", async () => {
+    if (!canManageOfficeResources(getUserInfo())) {
+      showTopAlert("Недостаточно прав для добавления пространств.", "error");
+      return;
+    }
     if (lassoState.active) {
       cancelLassoMode("Выделение отменено.");
       return;
@@ -9737,6 +9870,10 @@ if (spaceKindFilterButtons.length) {
 if (spaceForm) {
   spaceForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (!canManageOfficeResources(getUserInfo())) {
+      showTopAlert("Недостаточно прав для изменения пространств.", "error");
+      return;
+    }
     if (!currentFloor) {
       setSpaceStatus("Сначала выберите этаж.", "error");
       return;
@@ -9879,6 +10016,10 @@ if (spaceForm) {
 
 if (spaceDeleteBtn) {
   spaceDeleteBtn.addEventListener("click", async () => {
+    if (!canManageOfficeResources(getUserInfo())) {
+      showTopAlert("Недостаточно прав для удаления пространств.", "error");
+      return;
+    }
     if (!editingSpace || !editingSpace.id) {
       setSpaceStatus("Пространство не выбрано.", "error");
       return;
@@ -9910,6 +10051,10 @@ if (spaceDeleteBtn) {
 if (deskForm) {
   deskForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (!canManageOfficeResources(getUserInfo())) {
+      showTopAlert("Недостаточно прав для изменения столов.", "error");
+      return;
+    }
     if (!editingDesk || !editingDesk.id) {
       setDeskStatus("Не удалось определить стол для редактирования.", "error");
       return;

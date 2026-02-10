@@ -42,6 +42,39 @@ func roleTokenFromRequest(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get("Role-Token"))
 }
 
+func resolveRoleFromRequest(r *http.Request, queryer rowQueryer) (int, error) {
+	token := roleTokenFromRequest(r)
+	if token != "" {
+		if adminToken := roleTokenFor(roleAdmin); adminToken != "" && token == adminToken {
+			return roleAdmin, nil
+		}
+		if secretaryToken := roleTokenFor(roleSecretary); secretaryToken != "" && token == secretaryToken {
+			return roleSecretary, nil
+		}
+		if employeeToken := roleTokenFor(roleEmployee); employeeToken != "" && token == employeeToken {
+			return roleEmployee, nil
+		}
+	}
+	wbUserID, _ := extractBookingUser(r)
+	if strings.TrimSpace(wbUserID) == "" {
+		return roleEmployee, nil
+	}
+	return getUserRoleByWbUserID(queryer, wbUserID)
+}
+
+func ensureNotEmployeeRole(w http.ResponseWriter, r *http.Request, queryer rowQueryer) bool {
+	role, err := resolveRoleFromRequest(r, queryer)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		return false
+	}
+	if role == roleEmployee {
+		respondError(w, http.StatusForbidden, "Недостаточно прав")
+		return false
+	}
+	return true
+}
+
 func getUserRoleByWbUserID(queryer rowQueryer, wbUserID string) (int, error) {
 	if queryer == nil || strings.TrimSpace(wbUserID) == "" {
 		return roleEmployee, nil

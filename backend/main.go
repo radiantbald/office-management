@@ -1571,6 +1571,9 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 		}
 		respondJSON(w, http.StatusOK, map[string]any{"items": items})
 	case http.MethodPost:
+		if !ensureNotEmployeeRole(w, r, a.db) {
+			return
+		}
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 			created, status, err := a.createBuildingFromMultipart(w, r)
 			if err != nil {
@@ -1694,6 +1697,9 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, item)
 		case http.MethodPut:
+			if !ensureNotEmployeeRole(w, r, a.db) {
+				return
+			}
 			var payload struct {
 				Name     string  `json:"name"`
 				Address  string  `json:"address"`
@@ -1740,6 +1746,9 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, result)
 		case http.MethodDelete:
+			if !ensureNotEmployeeRole(w, r, a.db) {
+				return
+			}
 			if err := a.deleteBuilding(id); err != nil {
 				if errors.Is(err, errNotFound) {
 					respondError(w, http.StatusNotFound, "building not found")
@@ -1757,6 +1766,9 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 	if suffix == "/image" {
 		switch r.Method {
 		case http.MethodPost:
+			if !ensureNotEmployeeRole(w, r, a.db) {
+				return
+			}
 			existing, err := a.getBuilding(id)
 			if err != nil {
 				if errors.Is(err, errNotFound) {
@@ -1804,6 +1816,9 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, updated)
 		case http.MethodDelete:
+			if !ensureNotEmployeeRole(w, r, a.db) {
+				return
+			}
 			updated, err := a.clearBuildingImage(id)
 			if err != nil {
 				if errors.Is(err, errNotFound) {
@@ -1839,6 +1854,9 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleFloors(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !ensureNotEmployeeRole(w, r, a.db) {
 		return
 	}
 	var payload struct {
@@ -1886,6 +1904,9 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, item)
 		case http.MethodPut:
+			if !ensureNotEmployeeRole(w, r, a.db) {
+				return
+			}
 			var payload struct {
 				PlanSVG string `json:"plan_svg"`
 			}
@@ -1927,6 +1948,9 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !ensureNotEmployeeRole(w, r, a.db) {
 		return
 	}
 	var payload struct {
@@ -2009,6 +2033,9 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, item)
 		case http.MethodPut:
+			if !ensureNotEmployeeRole(w, r, a.db) {
+				return
+			}
 			var payload struct {
 				Name              string  `json:"name"`
 				Kind              string  `json:"kind"`
@@ -2107,6 +2134,9 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, result)
 		case http.MethodDelete:
+			if !ensureNotEmployeeRole(w, r, a.db) {
+				return
+			}
 			if err := a.deleteSpace(id); err != nil {
 				if errors.Is(err, errNotFound) {
 					respondError(w, http.StatusNotFound, "space not found")
@@ -2163,6 +2193,9 @@ func (a *app) handleDesks(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if !ensureNotEmployeeRole(w, r, a.db) {
+		return
+	}
 	var payload struct {
 		SpaceID  int64    `json:"space_id"`
 		Label    string   `json:"label"`
@@ -2204,6 +2237,9 @@ func (a *app) handleDesks(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
+		if !ensureNotEmployeeRole(w, r, a.db) {
+			return
+		}
 		var payload struct {
 			Items []struct {
 				SpaceID  int64    `json:"space_id"`
@@ -2259,6 +2295,9 @@ func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 		}
 		respondJSON(w, http.StatusCreated, map[string]any{"items": created})
 	case http.MethodDelete:
+		if !ensureNotEmployeeRole(w, r, a.db) {
+			return
+		}
 		var payload struct {
 			IDs []int64 `json:"ids"`
 		}
@@ -2312,6 +2351,9 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodPut:
+		if !ensureNotEmployeeRole(w, r, a.db) {
+			return
+		}
 		var payload struct {
 			Label    *string  `json:"label"`
 			X        *float64 `json:"x"`
@@ -2355,6 +2397,9 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 		}
 		respondJSON(w, http.StatusOK, result)
 	case http.MethodDelete:
+		if !ensureNotEmployeeRole(w, r, a.db) {
+			return
+		}
 		if err := a.deleteDesk(id); err != nil {
 			if errors.Is(err, errNotFound) {
 				respondError(w, http.StatusNotFound, "desk not found")
@@ -2372,6 +2417,9 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleMeetingRooms(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !ensureNotEmployeeRole(w, r, a.db) {
 		return
 	}
 	var payload struct {
