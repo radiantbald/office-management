@@ -723,7 +723,11 @@ func migrateBookingsTable(db *sql.DB) error {
 		return err
 	}
 	if _, err := tx.Exec(
-		`SELECT setval(pg_get_serial_sequence('workplace_bookings', 'id'), COALESCE((SELECT MAX(id) FROM workplace_bookings), 0))`,
+		`SELECT setval(
+		    pg_get_serial_sequence('workplace_bookings', 'id'),
+		    GREATEST(1, COALESCE((SELECT MAX(id) FROM workplace_bookings), 0)),
+		    COALESCE((SELECT MAX(id) FROM workplace_bookings), 0) > 0
+		)`,
 	); err != nil {
 		return err
 	}

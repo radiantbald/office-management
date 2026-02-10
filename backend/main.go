@@ -720,10 +720,18 @@ func migrateMeetingRoomSpaces(db *sql.DB) error {
 		}
 	}
 	if _, err := db.Exec(
-		`SELECT setval('spaces_id_seq', GREATEST(
-		    COALESCE((SELECT MAX(id) FROM coworkings), 0),
-		    COALESCE((SELECT MAX(id) FROM meeting_rooms), 0)
-		))`,
+		`SELECT setval(
+		    'spaces_id_seq',
+		    GREATEST(
+		        1,
+		        COALESCE((SELECT MAX(id) FROM coworkings), 0),
+		        COALESCE((SELECT MAX(id) FROM meeting_rooms), 0)
+		    ),
+		    GREATEST(
+		        COALESCE((SELECT MAX(id) FROM coworkings), 0),
+		        COALESCE((SELECT MAX(id) FROM meeting_rooms), 0)
+		    ) > 0
+		)`,
 	); err != nil {
 		return err
 	}

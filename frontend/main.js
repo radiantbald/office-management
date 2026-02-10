@@ -4877,17 +4877,6 @@ const renderFloorSpacesList = (spaces) => {
   }
   const spacesToRender = Array.isArray(spaces) ? spaces : [];
   floorSpacesList.innerHTML = "";
-  if (spacesToRender.length === 0) {
-    const hasAnySpaces = currentSpaces.length > 0;
-    floorSpacesEmpty.textContent = hasAnySpaces
-      ? "Пространств этого типа пока нет."
-      : "Пространств пока нет.";
-    floorSpacesEmpty.classList.remove("is-hidden");
-    updateFloorPlanSpacesVisibility();
-    return;
-  }
-  floorSpacesEmpty.classList.add("is-hidden");
-
   const sortByName = (left, right) =>
     (left?.name || "").localeCompare(right?.name || "", "ru", { sensitivity: "base" });
   const createKindHeading = (kindGroup) => {
@@ -4922,6 +4911,19 @@ const renderFloorSpacesList = (spaces) => {
       }
       floorSpacesList.appendChild(heading);
   };
+  if (spacesToRender.length === 0) {
+    const hasAnySpaces = currentSpaces.length > 0;
+    floorSpacesEmpty.textContent = hasAnySpaces
+      ? "Пространств этого типа пока нет."
+      : "Пространств пока нет.";
+    floorSpacesEmpty.classList.remove("is-hidden");
+    if (isFloorEditing) {
+      createKindHeading(normalizeSpaceKindFilter(currentSpaceKindFilter));
+    }
+    updateFloorPlanSpacesVisibility();
+    return;
+  }
+  floorSpacesEmpty.classList.add("is-hidden");
   const createSpaceListItem = (space, indentLevel = 0) => {
     const item = document.createElement("div");
     item.className = "space-list-item";
