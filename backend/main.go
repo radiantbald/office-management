@@ -34,37 +34,37 @@ type app struct {
 }
 
 type building struct {
-	ID        int64   `json:"id"`
-	Name      string  `json:"name"`
-	Address   string  `json:"address"`
-	Timezone  string  `json:"timezone"`
-	ImageURL  string  `json:"image_url,omitempty"`
-	Floors    []int64 `json:"floors"`
-	CreatedAt string  `json:"created_at"`
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Address   string    `json:"address"`
+	Timezone  string    `json:"timezone"`
+	ImageURL  string    `json:"image_url,omitempty"`
+	Floors    []int64   `json:"floors"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type floor struct {
-	ID          int64  `json:"id"`
-	BuildingID  int64  `json:"building_id"`
-	Name        string `json:"name"`
-	Level       int    `json:"level"`
-	SpacesCount int    `json:"spaces_count"`
-	PlanSVG     string `json:"plan_svg,omitempty"`
-	CreatedAt   string `json:"created_at"`
+	ID          int64     `json:"id"`
+	BuildingID  int64     `json:"building_id"`
+	Name        string    `json:"name"`
+	Level       int       `json:"level"`
+	SpacesCount int       `json:"spaces_count"`
+	PlanSVG     string    `json:"plan_svg,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type space struct {
-	ID             int64   `json:"id"`
-	FloorID        int64   `json:"floor_id"`
-	Name           string  `json:"name"`
-	Kind           string  `json:"kind"`
-	Capacity       int     `json:"capacity"`
-	Color          string  `json:"color,omitempty"`
-	SnapshotHidden bool    `json:"snapshot_hidden"`
-	SubdivisionL1  string  `json:"subdivision_level_1"`
-	SubdivisionL2  string  `json:"subdivision_level_2"`
-	Points         []point `json:"points"`
-	CreatedAt      string  `json:"created_at"`
+	ID             int64     `json:"id"`
+	FloorID        int64     `json:"floor_id"`
+	Name           string    `json:"name"`
+	Kind           string    `json:"kind"`
+	Capacity       int       `json:"capacity"`
+	Color          string    `json:"color,omitempty"`
+	SnapshotHidden bool      `json:"snapshot_hidden"`
+	SubdivisionL1  string    `json:"subdivision_level_1"`
+	SubdivisionL2  string    `json:"subdivision_level_2"`
+	Points         []point   `json:"points"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type point struct {
@@ -73,15 +73,15 @@ type point struct {
 }
 
 type desk struct {
-	ID        int64   `json:"id"`
-	SpaceID   int64   `json:"space_id"`
-	Label     string  `json:"label"`
-	X         float64 `json:"x"`
-	Y         float64 `json:"y"`
-	Width     float64 `json:"width"`
-	Height    float64 `json:"height"`
-	Rotation  float64 `json:"rotation"`
-	CreatedAt string  `json:"created_at"`
+	ID        int64     `json:"id"`
+	SpaceID   int64     `json:"space_id"`
+	Label     string    `json:"label"`
+	X         float64   `json:"x"`
+	Y         float64   `json:"y"`
+	Width     float64   `json:"width"`
+	Height    float64   `json:"height"`
+	Rotation  float64   `json:"rotation"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type deskBookingUser struct {
@@ -113,13 +113,13 @@ type deskCreateInput struct {
 }
 
 type meetingRoom struct {
-	ID        int64   `json:"id"`
-	FloorID   int64   `json:"floor_id"`
-	Name      string  `json:"name"`
-	Capacity  int     `json:"capacity"`
-	Color     string  `json:"color,omitempty"`
-	Points    []point `json:"points"`
-	CreatedAt string  `json:"created_at"`
+	ID        int64     `json:"id"`
+	FloorID   int64     `json:"floor_id"`
+	Name      string    `json:"name"`
+	Capacity  int       `json:"capacity"`
+	Color     string    `json:"color,omitempty"`
+	Points    []point   `json:"points"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func postgresDSN() string {
@@ -281,7 +281,7 @@ func migrate(db *sql.DB) error {
 			avatar_url TEXT NOT NULL DEFAULT '',
 			wb_band TEXT NOT NULL DEFAULT '',
 			role INTEGER NOT NULL DEFAULT 1,
-			created_at TEXT NOT NULL DEFAULT (now()::text)
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);`,
 		`CREATE TABLE IF NOT EXISTS office_buildings (
 			id BIGSERIAL PRIMARY KEY,
@@ -290,7 +290,7 @@ func migrate(db *sql.DB) error {
 			timezone TEXT NOT NULL DEFAULT 'Europe/Moscow',
 			image_url TEXT,
 			floors TEXT NOT NULL DEFAULT '[]',
-			created_at TEXT NOT NULL DEFAULT (now()::text)
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);`,
 		`CREATE TABLE IF NOT EXISTS floors (
 			id BIGSERIAL PRIMARY KEY,
@@ -298,7 +298,7 @@ func migrate(db *sql.DB) error {
 			name TEXT NOT NULL,
 			level INTEGER NOT NULL,
 			plan_svg TEXT NOT NULL,
-			created_at TEXT NOT NULL DEFAULT (now()::text),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(building_id) REFERENCES office_buildings(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS coworkings (
@@ -310,7 +310,7 @@ func migrate(db *sql.DB) error {
 			points_json TEXT NOT NULL DEFAULT '[]',
 			color TEXT NOT NULL DEFAULT '',
 			snapshot_hidden INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL DEFAULT (now()::text),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(floor_id) REFERENCES floors(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS workplaces (
@@ -322,7 +322,7 @@ func migrate(db *sql.DB) error {
 			width DOUBLE PRECISION NOT NULL DEFAULT 200,
 			height DOUBLE PRECISION NOT NULL DEFAULT 100,
 			rotation DOUBLE PRECISION NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL DEFAULT (now()::text),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(coworking_id) REFERENCES coworkings(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS meeting_rooms (
@@ -332,7 +332,7 @@ func migrate(db *sql.DB) error {
 			capacity INTEGER NOT NULL DEFAULT 0,
 			points_json TEXT NOT NULL DEFAULT '[]',
 			color TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL DEFAULT (now()::text),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(floor_id) REFERENCES floors(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS meeting_room_bookings (
@@ -342,7 +342,7 @@ func migrate(db *sql.DB) error {
 			date TEXT NOT NULL,
 			start_min INTEGER NOT NULL,
 			end_min INTEGER NOT NULL,
-			created_at TEXT NOT NULL DEFAULT (now()::text),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(meeting_room_id) REFERENCES meeting_rooms(id) ON DELETE CASCADE
 		);`,
 		`CREATE TABLE IF NOT EXISTS workplace_bookings (
@@ -350,7 +350,7 @@ func migrate(db *sql.DB) error {
 			workplace_id BIGINT NOT NULL,
 			employee_id TEXT NOT NULL,
 			date TEXT NOT NULL,
-			created_at TEXT NOT NULL DEFAULT (now()::text),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(workplace_id) REFERENCES workplaces(id) ON DELETE CASCADE,
 			UNIQUE(workplace_id, date),
 			UNIQUE(employee_id, date)
@@ -361,6 +361,9 @@ func migrate(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
+	}
+	if err := migrateCreatedAtColumns(db); err != nil {
+		return err
 	}
 	if _, err := db.Exec(`DELETE FROM users WHERE wb_user_id IS NULL OR wb_user_id = ''`); err != nil {
 		return err
@@ -1094,6 +1097,80 @@ func migrateWorkplaceBookingsUserName(db *sql.DB) error {
 	return nil
 }
 
+func migrateCreatedAtColumns(db *sql.DB) error {
+	if _, err := db.Exec(`DROP VIEW IF EXISTS users_view`); err != nil {
+		return err
+	}
+	tables := []string{
+		"users",
+		"office_buildings",
+		"floors",
+		"coworkings",
+		"workplaces",
+		"meeting_rooms",
+		"meeting_room_bookings",
+		"workplace_bookings",
+	}
+	for _, table := range tables {
+		hasTable, err := tableExists(db, table)
+		if err != nil {
+			return err
+		}
+		if !hasTable {
+			continue
+		}
+		hasColumn, err := columnExists(db, table, "created_at")
+		if err != nil {
+			return err
+		}
+		if !hasColumn {
+			continue
+		}
+		dataType, err := columnType(db, table, "created_at")
+		if err != nil {
+			return err
+		}
+		if dataType == "timestamp with time zone" {
+			continue
+		}
+		if dataType == "text" {
+			if _, err := db.Exec(
+				fmt.Sprintf(
+					`UPDATE %s SET created_at = now()::text WHERE created_at IS NULL OR TRIM(created_at) = ''`,
+					table,
+				),
+			); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(
+			fmt.Sprintf(
+				`ALTER TABLE %s ALTER COLUMN created_at DROP DEFAULT`,
+				table,
+			),
+		); err != nil {
+			return err
+		}
+		if _, err := db.Exec(
+			fmt.Sprintf(
+				`ALTER TABLE %s ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz`,
+				table,
+			),
+		); err != nil {
+			return err
+		}
+		if _, err := db.Exec(
+			fmt.Sprintf(
+				`ALTER TABLE %s ALTER COLUMN created_at SET DEFAULT now()`,
+				table,
+			),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func migrateBookingUserKeyColumn(db *sql.DB, table string) error {
 	hasTable, err := tableExists(db, table)
 	if err != nil {
@@ -1163,6 +1240,22 @@ func columnExists(db *sql.DB, table, column string) (bool, error) {
 		return false, err
 	}
 	return exists, nil
+}
+
+func columnType(db *sql.DB, table, column string) (string, error) {
+	var dataType string
+	if err := db.QueryRow(
+		`SELECT data_type
+		 FROM information_schema.columns
+		 WHERE table_schema = current_schema()
+		   AND table_name = $1
+		   AND column_name = $2`,
+		table,
+		column,
+	).Scan(&dataType); err != nil {
+		return "", err
+	}
+	return dataType, nil
 }
 
 func (a *app) upsertUserInfo(wbUserID, userName, fullName, employeeID, profileID, avatarURL, wbBand string) error {
@@ -2254,7 +2347,7 @@ func (a *app) createBuildingWithFloors(name, address, timezone, imageURL string,
 		Timezone:  timezone,
 		ImageURL:  imageURL,
 		Floors:    floorIDs,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		CreatedAt: time.Now().UTC(),
 	}, nil
 }
 
@@ -2448,7 +2541,7 @@ func (a *app) createFloor(buildingID int64, name string, level int, planSVG stri
 		Name:       name,
 		Level:      level,
 		PlanSVG:    planSVG,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:  time.Now().UTC(),
 	}, nil
 }
 
@@ -2706,7 +2799,7 @@ func (a *app) createSpace(
 		SubdivisionL1:  subdivisionLevel1,
 		SubdivisionL2:  subdivisionLevel2,
 		Points:         points,
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:      time.Now().UTC(),
 	}, nil
 }
 
@@ -3068,7 +3161,7 @@ func (a *app) createDesk(spaceID int64, label string, x, y, width, height, rotat
 		Width:     width,
 		Height:    height,
 		Rotation:  rotation,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		CreatedAt: time.Now().UTC(),
 	}, nil
 }
 
@@ -3095,7 +3188,7 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 	}
 	defer stmt.Close()
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 	created := make([]desk, 0, len(items))
 	for _, item := range items {
 		var id int64
@@ -3312,7 +3405,7 @@ func (a *app) createMeetingRoom(floorID int64, name string, capacity int) (meeti
 		Capacity:  capacity,
 		Points:    []point{},
 		Color:     "",
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		CreatedAt: time.Now().UTC(),
 	}, nil
 }
 

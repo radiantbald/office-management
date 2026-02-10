@@ -10,15 +10,15 @@ import (
 )
 
 type meetingRoomBooking struct {
-	ID            int64  `json:"id"`
-	MeetingRoomID int64  `json:"meeting_room_id"`
-	EmployeeID    string `json:"employee_id"`
-	UserName      string `json:"user_name"`
-	WbBand        string `json:"wb_band,omitempty"`
-	Date          string `json:"date"`
-	StartTime     string `json:"start_time"`
-	EndTime       string `json:"end_time"`
-	CreatedAt     string `json:"created_at"`
+	ID            int64     `json:"id"`
+	MeetingRoomID int64     `json:"meeting_room_id"`
+	EmployeeID    string    `json:"employee_id"`
+	UserName      string    `json:"user_name"`
+	WbBand        string    `json:"wb_band,omitempty"`
+	Date          string    `json:"date"`
+	StartTime     string    `json:"start_time"`
+	EndTime       string    `json:"end_time"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type meetingRoomBookingPayload struct {

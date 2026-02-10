@@ -12,20 +12,20 @@ import (
 )
 
 type booking struct {
-	ID          int64  `json:"id"`
-	WorkplaceID int64  `json:"workplace_id"`
-	BuildingID  int64  `json:"building_id,omitempty"`
-	FloorLevel  int    `json:"floor_level,omitempty"`
-	WbUserID    string `json:"wb_user_id"`
-	UserName    string `json:"user_name"`
-	EmployeeID  string `json:"employeeID,omitempty"`
-	AvatarURL   string `json:"avatar_url,omitempty"`
-	WbBand      string `json:"wb_band,omitempty"`
-	Date        string `json:"date"`
-	CreatedAt   string `json:"created_at"`
-	DeskLabel   string `json:"desk_label,omitempty"`
-	SpaceID     int64  `json:"space_id,omitempty"`
-	SpaceName   string `json:"space_name,omitempty"`
+	ID          int64     `json:"id"`
+	WorkplaceID int64     `json:"workplace_id"`
+	BuildingID  int64     `json:"building_id,omitempty"`
+	FloorLevel  int       `json:"floor_level,omitempty"`
+	WbUserID    string    `json:"wb_user_id"`
+	UserName    string    `json:"user_name"`
+	EmployeeID  string    `json:"employeeID,omitempty"`
+	AvatarURL   string    `json:"avatar_url,omitempty"`
+	WbBand      string    `json:"wb_band,omitempty"`
+	Date        string    `json:"date"`
+	CreatedAt   time.Time `json:"created_at"`
+	DeskLabel   string    `json:"desk_label,omitempty"`
+	SpaceID     int64     `json:"space_id,omitempty"`
+	SpaceName   string    `json:"space_name,omitempty"`
 }
 
 type bookingCreatePayload struct {
@@ -647,7 +647,7 @@ func migrateBookingsTable(db *sql.DB) error {
 			workplace_id BIGINT NOT NULL,
 			employee_id TEXT NOT NULL,
 			date TEXT NOT NULL,
-			created_at TEXT NOT NULL DEFAULT (now()::text),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(workplace_id) REFERENCES workplaces(id) ON DELETE CASCADE,
 			UNIQUE(workplace_id, date),
 			UNIQUE(employee_id, date)
