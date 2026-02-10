@@ -15,7 +15,6 @@ type meetingRoomBooking struct {
 	EmployeeID    string    `json:"employee_id"`
 	UserName      string    `json:"user_name"`
 	WbBand        string    `json:"wb_band,omitempty"`
-	Date          string    `json:"date"`
 	StartTime     string    `json:"start_time"`
 	EndTime       string    `json:"end_time"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -23,7 +22,6 @@ type meetingRoomBooking struct {
 
 type meetingRoomBookingPayload struct {
 	MeetingRoomID int64  `json:"meeting_room_id"`
-	Date          string `json:"date"`
 	StartTime     string `json:"start_time"`
 	EndTime       string `json:"end_time"`
 }
@@ -58,6 +56,24 @@ func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Reque
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	timezone, err := a.getSpaceTimezone(meetingRoomID)
+	if err != nil {
+		if errors.Is(err, errNotFound) {
+			respondError(w, http.StatusNotFound, "meeting room not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	dayStart, dayEnd, err := getBookingDayBounds(date, timezone)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		location = time.Local
+	}
 
 	rows, err := a.db.Query(
 		`SELECT b.id,
@@ -65,16 +81,17 @@ func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Reque
 		        b.employee_id,
 		        COALESCE(NULLIF(u.full_name, ''), ''),
 		        COALESCE(u.wb_band, ''),
-		        b.date,
-		        b.start_min,
-		        b.end_min,
+		        b.start_at,
+		        b.end_at,
 		        b.created_at
 		   FROM meeting_room_bookings b
 		   LEFT JOIN users u ON u.employee_id = b.employee_id
-		  WHERE b.meeting_room_id = $1 AND b.date = $2
-		  ORDER BY b.start_min ASC`,
+		  WHERE b.meeting_room_id = $1
+		    AND NOT (b.end_at <= $2::timestamptz OR b.start_at >= $3::timestamptz)
+		  ORDER BY b.start_at ASC`,
 		meetingRoomID,
-		date,
+		dayStart,
+		dayEnd,
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -85,24 +102,23 @@ func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Reque
 	items := make([]meetingRoomBooking, 0)
 	for rows.Next() {
 		var item meetingRoomBooking
-		var startMin int
-		var endMin int
+		var startAt time.Time
+		var endAt time.Time
 		if err := rows.Scan(
 			&item.ID,
 			&item.MeetingRoomID,
 			&item.EmployeeID,
 			&item.UserName,
 			&item.WbBand,
-			&item.Date,
-			&startMin,
-			&endMin,
+			&startAt,
+			&endAt,
 			&item.CreatedAt,
 		); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		item.StartTime = formatMinutesToTime(startMin)
-		item.EndTime = formatMinutesToTime(endMin)
+		item.StartTime = formatDateTimeInLocation(startAt, location)
+		item.EndTime = formatDateTimeInLocation(endAt, location)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -143,31 +159,6 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	date, err := normalizeBookingDate(payload.Date)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err := ensureNotPast(date); err != nil {
-		respondError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	startMin, err := parseTimeToMinutes(payload.StartTime)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	endMin, err := parseTimeToMinutes(payload.EndTime)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if endMin <= startMin {
-		respondError(w, http.StatusBadRequest, "end_time must be later than start_time")
-		return
-	}
-
 	timezone, err := a.getSpaceTimezone(payload.MeetingRoomID)
 	if err != nil {
 		if errors.Is(err, errNotFound) {
@@ -177,7 +168,21 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := ensureMeetingRoomTimeNotPast(date, endMin, timezone); err != nil {
+	startAt, err := parseLocalBookingDateTime(payload.StartTime, timezone)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	endAt, err := parseLocalBookingDateTime(payload.EndTime, timezone)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !endAt.After(startAt) {
+		respondError(w, http.StatusBadRequest, "end_time must be later than start_time")
+		return
+	}
+	if err := ensureMeetingRoomTimeNotPast(endAt, timezone); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -193,14 +198,13 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 	err = tx.QueryRow(
 		`SELECT 1
 		   FROM meeting_room_bookings
-		  WHERE meeting_room_id = $1 AND date = $2 AND employee_id <> $5
-		    AND NOT (end_min <= $3 OR start_min >= $4)
+		  WHERE meeting_room_id = $1 AND employee_id <> $2
+		    AND NOT (end_at <= $3 OR start_at >= $4)
 		  LIMIT 1`,
 		payload.MeetingRoomID,
-		date,
-		startMin,
-		endMin,
 		employeeID,
+		startAt,
+		endAt,
 	).Scan(&existing)
 	if err == nil {
 		respondError(w, http.StatusBadRequest, "Переговорка занята на выбранное время")
@@ -214,12 +218,11 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 	replacedCount := int64(0)
 	result, err := tx.Exec(
 		`DELETE FROM meeting_room_bookings
-		  WHERE employee_id = $1 AND date = $2 AND meeting_room_id <> $5
-		    AND NOT (end_min <= $3 OR start_min >= $4)`,
+		  WHERE employee_id = $1 AND meeting_room_id <> $4
+		    AND NOT (end_at <= $2 OR start_at >= $3)`,
 		employeeID,
-		date,
-		startMin,
-		endMin,
+		startAt,
+		endAt,
 		payload.MeetingRoomID,
 	)
 	if err != nil {
@@ -232,15 +235,14 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 	var existingOwn int
 	err = tx.QueryRow(
 		`SELECT 1
-		   FROM meeting_room_bookings
-		  WHERE meeting_room_id = $1 AND employee_id = $2 AND date = $3
-		    AND start_min = $4 AND end_min = $5
-		  LIMIT 1`,
+		 FROM meeting_room_bookings
+		WHERE meeting_room_id = $1 AND employee_id = $2
+		  AND start_at = $3 AND end_at = $4
+		LIMIT 1`,
 		payload.MeetingRoomID,
 		employeeID,
-		date,
-		startMin,
-		endMin,
+		startAt,
+		endAt,
 	).Scan(&existingOwn)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -248,13 +250,12 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		if _, err := tx.Exec(
-			`INSERT INTO meeting_room_bookings (meeting_room_id, employee_id, date, start_min, end_min)
-			 VALUES ($1, $2, $3, $4, $5)`,
+			`INSERT INTO meeting_room_bookings (meeting_room_id, employee_id, start_at, end_at)
+			 VALUES ($1, $2, $3, $4)`,
 			payload.MeetingRoomID,
 			employeeID,
-			date,
-			startMin,
-			endMin,
+			startAt,
+			endAt,
 		); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -294,18 +295,21 @@ func (a *app) handleCancelMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	date, err := normalizeBookingDate(payload.Date)
+	timezone, err := a.getSpaceTimezone(payload.MeetingRoomID)
+	if err != nil {
+		if errors.Is(err, errNotFound) {
+			respondError(w, http.StatusNotFound, "meeting room not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	startAt, err := parseLocalBookingDateTime(payload.StartTime, timezone)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	startMin, err := parseTimeToMinutes(payload.StartTime)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	endMin, err := parseTimeToMinutes(payload.EndTime)
+	endAt, err := parseLocalBookingDateTime(payload.EndTime, timezone)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -313,12 +317,11 @@ func (a *app) handleCancelMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 
 	result, err := a.db.Exec(
 		`DELETE FROM meeting_room_bookings
-		  WHERE meeting_room_id = $1 AND employee_id = $2 AND date = $3 AND start_min = $4 AND end_min = $5`,
+		  WHERE meeting_room_id = $1 AND employee_id = $2 AND start_at = $3 AND end_at = $4`,
 		payload.MeetingRoomID,
 		employeeID,
-		date,
-		startMin,
-		endMin,
+		startAt,
+		endAt,
 	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -364,53 +367,61 @@ func (a *app) getSpaceTimezone(spaceID int64) (string, error) {
 	}
 	timezone = strings.TrimSpace(timezone)
 	if timezone == "" {
-		timezone = "Europe/Moscow"
+		timezone = defaultBuildingTimezone
 	}
 	if _, err := time.LoadLocation(timezone); err != nil {
-		timezone = "Europe/Moscow"
+		timezone = defaultBuildingTimezone
 	}
 	return timezone, nil
 }
 
-func ensureMeetingRoomTimeNotPast(date string, endMin int, timezone string) error {
+func ensureMeetingRoomTimeNotPast(endAt time.Time, timezone string) error {
 	location, err := time.LoadLocation(timezone)
 	if err != nil {
 		location = time.Local
 	}
 	now := time.Now().In(location)
-	if now.Format("2006-01-02") != date {
-		return nil
-	}
-	nowMinutes := now.Hour()*60 + now.Minute()
-	if nowMinutes >= endMin {
+	if !endAt.After(now) {
 		return errors.New("Нельзя бронировать на прошедшее время")
 	}
 	return nil
 }
 
-func parseTimeToMinutes(raw string) (int, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return 0, errors.New("time is required")
-	}
-	parsed, err := time.Parse("15:04", value)
+func getBookingDayBounds(date, timezone string) (time.Time, time.Time, error) {
+	location, err := time.LoadLocation(timezone)
 	if err != nil {
-		return 0, errors.New("invalid time format, expected HH:MM")
+		location = time.Local
 	}
-	return parsed.Hour()*60 + parsed.Minute(), nil
+	parsed, err := time.ParseInLocation("2006-01-02", date, location)
+	if err != nil {
+		return time.Time{}, time.Time{}, errors.New("invalid date format, expected YYYY-MM-DD")
+	}
+	dayStart := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, location)
+	dayEnd := dayStart.AddDate(0, 0, 1)
+	return dayStart, dayEnd, nil
 }
 
-func formatMinutesToTime(minutes int) string {
-	if minutes < 0 {
-		minutes = 0
+func parseLocalBookingDateTime(raw, timezone string) (time.Time, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return time.Time{}, errors.New("time is required")
 	}
-	hours := minutes / 60
-	minutes = minutes % 60
-	if hours > 23 {
-		hours = 23
-		minutes = 59
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		location = time.Local
 	}
-	return time.Date(0, 1, 1, hours, minutes, 0, 0, time.UTC).Format("15:04")
+	parsed, err := time.ParseInLocation("2006-01-02 15:04", value, location)
+	if err != nil {
+		return time.Time{}, errors.New("invalid time format, expected YYYY-MM-DD HH:MM")
+	}
+	return parsed, nil
+}
+
+func formatDateTimeInLocation(value time.Time, location *time.Location) string {
+	if location != nil {
+		return value.In(location).Format("2006-01-02 15:04")
+	}
+	return value.Format("2006-01-02 15:04")
 }
 
 type rowQueryer interface {

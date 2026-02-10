@@ -339,9 +339,8 @@ func migrate(db *sql.DB) error {
 			id BIGSERIAL PRIMARY KEY,
 			meeting_room_id BIGINT NOT NULL,
 			employee_id TEXT NOT NULL,
-			date TEXT NOT NULL,
-			start_min INTEGER NOT NULL,
-			end_min INTEGER NOT NULL,
+			start_at TIMESTAMPTZ NOT NULL,
+			end_at TIMESTAMPTZ NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(meeting_room_id) REFERENCES meeting_rooms(id) ON DELETE CASCADE
 		);`,
@@ -466,6 +465,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateMeetingRoomBookingsEmployeeID(db); err != nil {
+		return err
+	}
+	if err := migrateMeetingRoomBookingsTimeColumns(db); err != nil {
 		return err
 	}
 	if err := migrateBookingsTable(db); err != nil {
@@ -789,6 +791,167 @@ func migrateMeetingRoomBookingsMeetingRoomID(db *sql.DB) error {
 		 FOREIGN KEY(meeting_room_id) REFERENCES meeting_rooms(id) ON DELETE CASCADE`,
 	); err != nil {
 		return err
+	}
+	return nil
+}
+
+func migrateMeetingRoomBookingsTimeColumns(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "meeting_room_bookings")
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+	hasStartAt, err := columnExists(db, "meeting_room_bookings", "start_at")
+	if err != nil {
+		return err
+	}
+	hasEndAt, err := columnExists(db, "meeting_room_bookings", "end_at")
+	if err != nil {
+		return err
+	}
+	if !hasStartAt {
+		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings ADD COLUMN start_at TIMESTAMPTZ`); err != nil {
+			return err
+		}
+	}
+	if !hasEndAt {
+		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings ADD COLUMN end_at TIMESTAMPTZ`); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(
+		`CREATE INDEX IF NOT EXISTS meeting_room_bookings_room_start_end_idx
+		  ON meeting_room_bookings (meeting_room_id, start_at, end_at)`,
+	); err != nil {
+		return err
+	}
+
+	hasDate, err := columnExists(db, "meeting_room_bookings", "date")
+	if err != nil {
+		return err
+	}
+	hasStartMin, err := columnExists(db, "meeting_room_bookings", "start_min")
+	if err != nil {
+		return err
+	}
+	hasEndMin, err := columnExists(db, "meeting_room_bookings", "end_min")
+	if err != nil {
+		return err
+	}
+	if hasDate && hasStartMin && hasEndMin {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+
+		rows, err := tx.Query(
+			`SELECT b.id,
+			        b.meeting_room_id,
+			        b.date,
+			        b.start_min,
+			        b.end_min,
+			        COALESCE(ob.timezone, '')
+			   FROM meeting_room_bookings b
+			   JOIN meeting_rooms s ON s.id = b.meeting_room_id
+			   JOIN floors f ON f.id = s.floor_id
+			   JOIN office_buildings ob ON ob.id = f.building_id
+			  WHERE b.start_at IS NULL OR b.end_at IS NULL`,
+		)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		type bookingTimeRow struct {
+			id       int64
+			date     string
+			startMin int
+			endMin   int
+			timezone string
+		}
+		rowsData := make([]bookingTimeRow, 0)
+		for rows.Next() {
+			var row bookingTimeRow
+			var meetingRoomID int64
+			if err := rows.Scan(&row.id, &meetingRoomID, &row.date, &row.startMin, &row.endMin, &row.timezone); err != nil {
+				return err
+			}
+			rowsData = append(rowsData, row)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+
+		for _, row := range rowsData {
+			timezone := strings.TrimSpace(row.timezone)
+			if timezone == "" {
+				timezone = defaultBuildingTimezone
+			}
+			if _, err := time.LoadLocation(timezone); err != nil {
+				timezone = defaultBuildingTimezone
+			}
+			location, err := time.LoadLocation(timezone)
+			if err != nil {
+				location = time.Local
+			}
+			parsedDate, err := time.ParseInLocation("2006-01-02", row.date, location)
+			if err != nil {
+				return err
+			}
+			startAt := parsedDate.Add(time.Duration(row.startMin) * time.Minute)
+			endAt := parsedDate.Add(time.Duration(row.endMin) * time.Minute)
+			if _, err := tx.Exec(
+				`UPDATE meeting_room_bookings SET start_at = $1, end_at = $2 WHERE id = $3`,
+				startAt,
+				endAt,
+				row.id,
+			); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+
+	var hasNulls bool
+	if err := db.QueryRow(
+		`SELECT EXISTS (
+			SELECT 1 FROM meeting_room_bookings
+			WHERE start_at IS NULL OR end_at IS NULL
+		)`,
+	).Scan(&hasNulls); err != nil {
+		return err
+	}
+	if !hasNulls {
+		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings ALTER COLUMN start_at SET NOT NULL`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings ALTER COLUMN end_at SET NOT NULL`); err != nil {
+			return err
+		}
+		if hasDate {
+			if _, err := db.Exec(`ALTER TABLE meeting_room_bookings DROP COLUMN date`); err != nil {
+				return err
+			}
+		}
+		if hasStartMin {
+			if _, err := db.Exec(`ALTER TABLE meeting_room_bookings DROP COLUMN start_min`); err != nil {
+				return err
+			}
+		}
+		if hasEndMin {
+			if _, err := db.Exec(`ALTER TABLE meeting_room_bookings DROP COLUMN end_min`); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

@@ -1690,7 +1690,13 @@ const parseMeetingTimeToMinutes = (raw) => {
   if (typeof raw !== "string") {
     return null;
   }
-  const match = raw.trim().match(/^(\d{1,2}):(\d{2})$/);
+  const trimmed = raw.trim();
+  let timePart = trimmed;
+  if (trimmed.includes(" ")) {
+    const pieces = trimmed.split(" ");
+    timePart = pieces[pieces.length - 1];
+  }
+  const match = timePart.match(/^(\d{1,2}):(\d{2})$/);
   if (!match) {
     return null;
   }
@@ -1710,6 +1716,11 @@ const formatMeetingMinutes = (minutes) => {
   const hours = Math.floor(safe / 60);
   const mins = safe % 60;
   return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+};
+
+const formatMeetingDateTime = (date, minutes) => {
+  const timePart = formatMeetingMinutes(minutes);
+  return `${date} ${timePart}`;
 };
 
 const formatOfficeTime = (timezone) => {
@@ -3490,9 +3501,8 @@ const handleMeetingBookingSubmit = async () => {
           headers,
           body: JSON.stringify({
             meeting_room_id: Number(spaceId),
-            date,
-            start_time: formatMeetingMinutes(startMin),
-            end_time: formatMeetingMinutes(endMin),
+            start_time: formatMeetingDateTime(date, startMin),
+            end_time: formatMeetingDateTime(date, endMin),
           }),
         });
         if (response?.replacedCount) {
@@ -3546,9 +3556,8 @@ const handleCancelMeetingBooking = async (startMin, endMin) => {
       headers,
       body: JSON.stringify({
         meeting_room_id: Number(spaceId),
-        date,
-        start_time: formatMeetingMinutes(startMin),
-        end_time: formatMeetingMinutes(endMin),
+        start_time: formatMeetingDateTime(date, startMin),
+        end_time: formatMeetingDateTime(date, endMin),
       }),
     });
     setMeetingBookingStatus("Бронирование отменено.", "success");
@@ -3588,9 +3597,8 @@ const handleCancelMeetingBookings = async () => {
           headers,
           body: JSON.stringify({
             meeting_room_id: Number(spaceId),
-            date,
-            start_time: formatMeetingMinutes(startMin),
-            end_time: formatMeetingMinutes(endMin),
+            start_time: formatMeetingDateTime(date, startMin),
+            end_time: formatMeetingDateTime(date, endMin),
           }),
         });
       } catch (error) {
