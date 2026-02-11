@@ -125,6 +125,19 @@ func (a *app) ensureCanManageBuildingBySpace(w http.ResponseWriter, r *http.Requ
 	return a.ensureCanManageBuildingByFloor(w, r, floorID)
 }
 
+func (a *app) ensureCanManageFloorBySpace(w http.ResponseWriter, r *http.Request, spaceID int64) bool {
+	floorID, err := a.getSpaceFloorID(spaceID)
+	if err != nil {
+		if errors.Is(err, errNotFound) {
+			respondError(w, http.StatusNotFound, "space not found")
+			return false
+		}
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return false
+	}
+	return a.ensureCanManageFloor(w, r, floorID)
+}
+
 func (a *app) ensureCanManageFloor(w http.ResponseWriter, r *http.Request, floorID int64) bool {
 	role, err := resolveRoleFromRequest(r, a.db)
 	if err != nil {

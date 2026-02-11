@@ -1720,10 +1720,12 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var payload struct {
-				Name                  string  `json:"name"`
-				Address               string  `json:"address"`
+				Name                  string `json:"name"`
+				Address               string `json:"address"`
 				Timezone              *string `json:"timezone"`
 				ResponsibleEmployeeID *string `json:"responsible_employee_id"`
+				UndergroundFloors     *int    `json:"underground_floors"`
+				AbovegroundFloors     *int    `json:"aboveground_floors"`
 			}
 			if err := decodeJSON(r, &payload); err != nil {
 				respondError(w, http.StatusBadRequest, err.Error())
@@ -1768,7 +1770,23 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				}
 				timezone = normalized
 			}
-			result, err := a.updateBuilding(id, payload.Name, payload.Address, timezone, payload.ResponsibleEmployeeID)
+			if payload.UndergroundFloors != nil && *payload.UndergroundFloors < 0 {
+				respondError(w, http.StatusBadRequest, "underground_floors must be non-negative")
+				return
+			}
+			if payload.AbovegroundFloors != nil && *payload.AbovegroundFloors < 0 {
+				respondError(w, http.StatusBadRequest, "aboveground_floors must be non-negative")
+				return
+			}
+			result, err := a.updateBuilding(
+				id,
+				payload.Name,
+				payload.Address,
+				timezone,
+				payload.ResponsibleEmployeeID,
+				payload.UndergroundFloors,
+				payload.AbovegroundFloors,
+			)
 			if err != nil {
 				if errors.Is(err, errNotFound) {
 					respondError(w, http.StatusNotFound, "building not found")
@@ -2094,7 +2112,7 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		payload.ResponsibleEmployeeID = ""
 	}
 	if payload.ResponsibleEmployeeID != "" {
-		if !a.ensureCanManageBuildingByFloor(w, r, payload.FloorID) {
+		if !a.ensureCanManageFloor(w, r, payload.FloorID) {
 			return
 		}
 	}
@@ -2179,7 +2197,7 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			if payload.ResponsibleEmployeeID != nil {
 				trimmed := strings.TrimSpace(*payload.ResponsibleEmployeeID)
 				payload.ResponsibleEmployeeID = &trimmed
-				if !a.ensureCanManageBuildingBySpace(w, r, id) {
+				if !a.ensureCanManageFloorBySpace(w, r, id) {
 					return
 				}
 			}
@@ -2765,18 +2783,36 @@ func (a *app) getBuilding(id int64) (building, error) {
 	return b, nil
 }
 
-func (a *app) updateBuilding(id int64, name, address, timezone string, responsibleEmployeeID *string) (building, error) {
+func (a *app) updateBuilding(
+	id int64,
+	name,
+	address,
+	timezone string,
+	responsibleEmployeeID *string,
+	undergroundFloors,
+	abovegroundFloors *int,
+) (building, error) {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return building{}, err
+	}
+	defer tx.Rollback()
+
 	responsibleValue := ""
 	if responsibleEmployeeID == nil {
-		existing, err := a.getBuilding(id)
-		if err != nil {
+		row := tx.QueryRow(`SELECT responsible_employee_id FROM office_buildings WHERE id = $1`, id)
+		if err := row.Scan(&responsibleValue); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return building{}, errNotFound
+			}
 			return building{}, err
 		}
-		responsibleValue = strings.TrimSpace(existing.ResponsibleEmployeeID)
 	} else {
-		responsibleValue = strings.TrimSpace(*responsibleEmployeeID)
+		responsibleValue = *responsibleEmployeeID
 	}
-	result, err := a.db.Exec(
+	responsibleValue = strings.TrimSpace(responsibleValue)
+
+	result, err := tx.Exec(
 		`UPDATE office_buildings SET name = $1, address = $2, timezone = $3, responsible_employee_id = $4 WHERE id = $5`,
 		name,
 		address,
@@ -2793,6 +2829,191 @@ func (a *app) updateBuilding(id int64, name, address, timezone string, responsib
 	}
 	if rows == 0 {
 		return building{}, errNotFound
+	}
+
+	if undergroundFloors != nil || abovegroundFloors != nil {
+		type floorLevel struct {
+			ID    int64
+			Level int
+		}
+		var levels []floorLevel
+		rows, err := tx.Query(`SELECT id, level FROM floors WHERE building_id = $1`, id)
+		if err != nil {
+			return building{}, err
+		}
+		for rows.Next() {
+			var entry floorLevel
+			if err := rows.Scan(&entry.ID, &entry.Level); err != nil {
+				rows.Close()
+				return building{}, err
+			}
+			levels = append(levels, entry)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return building{}, err
+		}
+		rows.Close()
+
+		currentUnderground := 0
+		currentAboveground := 0
+		for _, entry := range levels {
+			if entry.Level < 0 {
+				currentUnderground++
+			} else if entry.Level > 0 {
+				currentAboveground++
+			}
+		}
+		targetUnderground := currentUnderground
+		targetAboveground := currentAboveground
+		if undergroundFloors != nil {
+			targetUnderground = *undergroundFloors
+		}
+		if abovegroundFloors != nil {
+			targetAboveground = *abovegroundFloors
+		}
+		if targetUnderground < 0 || targetAboveground < 0 {
+			return building{}, errors.New("underground_floors and aboveground_floors must be non-negative")
+		}
+
+		if targetUnderground < currentUnderground || targetAboveground < currentAboveground {
+			lowerLevel := -targetUnderground
+			upperLevel := targetAboveground
+			if _, err := tx.Exec(
+				`DELETE FROM workplace_bookings
+				  WHERE workplace_id IN (
+				    SELECT w.id
+				      FROM workplaces w
+				      JOIN coworkings c ON c.id = w.coworking_id
+				      JOIN floors f ON f.id = c.floor_id
+				     WHERE f.building_id = $1
+				       AND (f.level < $2 OR f.level > $3)
+				  )`,
+				id,
+				lowerLevel,
+				upperLevel,
+			); err != nil {
+				return building{}, err
+			}
+			if _, err := tx.Exec(
+				`DELETE FROM workplaces
+				  WHERE coworking_id IN (
+				    SELECT c.id
+				      FROM coworkings c
+				      JOIN floors f ON f.id = c.floor_id
+				     WHERE f.building_id = $1
+				       AND (f.level < $2 OR f.level > $3)
+				  )`,
+				id,
+				lowerLevel,
+				upperLevel,
+			); err != nil {
+				return building{}, err
+			}
+			if _, err := tx.Exec(
+				`DELETE FROM coworkings
+				  WHERE floor_id IN (
+				    SELECT f.id
+				      FROM floors f
+				     WHERE f.building_id = $1
+				       AND (f.level < $2 OR f.level > $3)
+				  )`,
+				id,
+				lowerLevel,
+				upperLevel,
+			); err != nil {
+				return building{}, err
+			}
+			if _, err := tx.Exec(
+				`DELETE FROM meeting_room_bookings
+				  WHERE meeting_room_id IN (
+				    SELECT m.id
+				      FROM meeting_rooms m
+				      JOIN floors f ON f.id = m.floor_id
+				     WHERE f.building_id = $1
+				       AND (f.level < $2 OR f.level > $3)
+				  )`,
+				id,
+				lowerLevel,
+				upperLevel,
+			); err != nil {
+				return building{}, err
+			}
+			if _, err := tx.Exec(
+				`DELETE FROM meeting_rooms
+				  WHERE floor_id IN (
+				    SELECT f.id
+				      FROM floors f
+				     WHERE f.building_id = $1
+				       AND (f.level < $2 OR f.level > $3)
+				  )`,
+				id,
+				lowerLevel,
+				upperLevel,
+			); err != nil {
+				return building{}, err
+			}
+			_, err := tx.Exec(
+				`DELETE FROM floors WHERE building_id = $1 AND (level < $2 OR level > $3)`,
+				id,
+				lowerLevel,
+				upperLevel,
+			)
+			if err != nil {
+				return building{}, err
+			}
+		}
+
+		if targetUnderground > currentUnderground {
+			for level := currentUnderground + 1; level <= targetUnderground; level++ {
+				floorName := fmt.Sprintf("B%d", level)
+				if _, err := a.createFloorInTx(tx, id, floorName, -level, ""); err != nil {
+					return building{}, err
+				}
+			}
+		}
+		if targetAboveground > currentAboveground {
+			for level := currentAboveground + 1; level <= targetAboveground; level++ {
+				floorName := strconv.Itoa(level)
+				if _, err := a.createFloorInTx(tx, id, floorName, level, ""); err != nil {
+					return building{}, err
+				}
+			}
+		}
+
+		floorRows, err := tx.Query(
+			`SELECT id FROM floors WHERE building_id = $1 ORDER BY level ASC`,
+			id,
+		)
+		if err != nil {
+			return building{}, err
+		}
+		var floorIDs []int64
+		for floorRows.Next() {
+			var floorID int64
+			if err := floorRows.Scan(&floorID); err != nil {
+				floorRows.Close()
+				return building{}, err
+			}
+			floorIDs = append(floorIDs, floorID)
+		}
+		if err := floorRows.Err(); err != nil {
+			floorRows.Close()
+			return building{}, err
+		}
+		floorRows.Close()
+
+		floorsJSON, err := encodeFloorIDs(floorIDs)
+		if err != nil {
+			return building{}, err
+		}
+		if _, err := tx.Exec(`UPDATE office_buildings SET floors = $1 WHERE id = $2`, floorsJSON, id); err != nil {
+			return building{}, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return building{}, err
 	}
 	return a.getBuilding(id)
 }
@@ -3023,6 +3244,37 @@ func (a *app) deleteFloorAndShift(id int64) error {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errNotFound
 		}
+		return err
+	}
+	if _, err = tx.Exec(
+		`DELETE FROM workplace_bookings
+		  WHERE workplace_id IN (
+		    SELECT w.id FROM workplaces w
+		    JOIN coworkings c ON c.id = w.coworking_id
+		    WHERE c.floor_id = $1
+		  )`,
+		id,
+	); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(
+		`DELETE FROM workplaces
+		  WHERE coworking_id IN (SELECT id FROM coworkings WHERE floor_id = $1)`,
+		id,
+	); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM coworkings WHERE floor_id = $1`, id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(
+		`DELETE FROM meeting_room_bookings
+		  WHERE meeting_room_id IN (SELECT id FROM meeting_rooms WHERE floor_id = $1)`,
+		id,
+	); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM meeting_rooms WHERE floor_id = $1`, id); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(`DELETE FROM floors WHERE id = $1`, id); err != nil {

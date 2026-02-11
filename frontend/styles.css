@@ -498,15 +498,22 @@ button:disabled {
 }
 
 .buildings-grid {
+  --buildings-grid-gap: 16px;
   display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--buildings-grid-gap);
+  grid-template-columns: repeat(
+    3,
+    minmax(calc((100% - (2 * var(--buildings-grid-gap))) / 3), 1fr)
+  );
   margin-top: 16px;
+  align-content: start;
 }
 
 .building-tile {
   --tile-image: none;
   width: 100%;
+  max-width: none;
+  max-height: 33.333vh;
   aspect-ratio: 11 / 6;
   border-radius: 12px;
   border: 1px solid #e5e7eb;

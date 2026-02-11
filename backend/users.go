@@ -57,7 +57,24 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if strings.TrimSpace(responsibleID) == "" || strings.TrimSpace(responsibleID) != employeeID {
+		canAccess := strings.TrimSpace(responsibleID) != "" && strings.TrimSpace(responsibleID) == employeeID
+		if !canAccess {
+			var exists int
+			floorRow := a.db.QueryRow(
+				`SELECT 1 FROM floors WHERE building_id = $1 AND COALESCE(responsible_employee_id, '') = $2 LIMIT 1`,
+				buildingID,
+				employeeID,
+			)
+			if err := floorRow.Scan(&exists); err != nil {
+				if err != sql.ErrNoRows {
+					respondError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			} else {
+				canAccess = true
+			}
+		}
+		if !canAccess {
 			respondError(w, http.StatusForbidden, "Недостаточно прав")
 			return
 		}

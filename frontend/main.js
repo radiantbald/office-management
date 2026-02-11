@@ -750,9 +750,9 @@ const getRoleIdFromUser = (user) => {
   return Number.isFinite(role) ? role : null;
 };
 
-const isEmployeeRole = (user) => getRoleIdFromUser(user) === 1;
-
-const canManageOfficeResources = (user) => !isEmployeeRole(user);
+const isAdminRole = (user) => getRoleIdFromUser(user) === 2;
+const isEmployeeRole = (user) => !isAdminRole(user);
+const canManageOfficeResources = (user) => isAdminRole(user);
 
 const toggleHidden = (node, hidden) => {
   if (!node) {
@@ -1834,8 +1834,6 @@ const closeResponsibilitiesModal = () => {
     document.body.classList.remove("modal-open");
   }
 };
-
-const isAdminRole = (user) => getRoleIdFromUser(user) === 2;
 
 const getSpaceResponsibleEmployeeId = (space) =>
   String(
@@ -4779,10 +4777,12 @@ const fetchCoworkingResponsibleOptions = async (buildingId = null) => {
   return coworkingResponsibleOptions.get(cacheKey) || [];
 };
 
-const updateSpaceResponsibleVisibility = (kind) => {
-  const canAssign =
-    kind === "coworking" &&
-    canManageBuildingResources(getUserInfo(), resolveBuildingForFloor(currentFloor));
+const getCoworkingResponsibleFloor = (space = null) =>
+  resolveFloorForSpace(space) || currentFloor;
+
+const updateSpaceResponsibleVisibility = (kind, space = null) => {
+  const floor = getCoworkingResponsibleFloor(space);
+  const canAssign = kind === "coworking" && canManageFloorResources(getUserInfo(), floor);
   if (spaceResponsibleFieldRow) {
     spaceResponsibleFieldRow.classList.toggle("is-hidden", !canAssign);
     spaceResponsibleFieldRow.setAttribute("aria-hidden", String(!canAssign));
@@ -4898,15 +4898,16 @@ const openSpaceModal = (space = null) => {
   const currentKind = spaceKindField ? spaceKindField.value : defaultSpaceKind;
   updateSpaceCapacityVisibility(currentKind);
   updateSpaceSubdivisionVisibility(currentKind);
-  updateSpaceResponsibleVisibility(currentKind);
+  updateSpaceResponsibleVisibility(currentKind, space);
   updateSpaceModalCopy(currentKind, Boolean(space));
   if (spaceColorInput) {
     const initialColor = space?.color || getSpaceColor(space) || "#60a5fa";
     spaceColorInput.value = initialColor;
     updateSpaceColorPreview(initialColor);
   }
-  const buildingForModal = resolveBuildingForFloor(currentFloor);
-  if (currentKind === "coworking" && canManageBuildingResources(user, buildingForModal)) {
+  const floorForModal = getCoworkingResponsibleFloor(space);
+  const buildingForModal = resolveBuildingForFloor(floorForModal);
+  if (currentKind === "coworking" && canManageFloorResources(user, floorForModal)) {
     const selectedResponsible = getSpaceResponsibleEmployeeId(space);
     void populateSpaceResponsibleOptions(selectedResponsible, buildingForModal?.id);
   } else if (spaceResponsibleField) {
@@ -5086,12 +5087,10 @@ if (spaceKindField) {
     }
     updateSpaceCapacityVisibility(event.target.value);
     updateSpaceSubdivisionVisibility(event.target.value);
-    updateSpaceResponsibleVisibility(event.target.value);
-    const buildingForModal = resolveBuildingForFloor(currentFloor);
-    if (
-      event.target.value === "coworking" &&
-      canManageBuildingResources(getUserInfo(), buildingForModal)
-    ) {
+    updateSpaceResponsibleVisibility(event.target.value, editingSpace);
+    const floorForModal = getCoworkingResponsibleFloor(editingSpace);
+    const buildingForModal = resolveBuildingForFloor(floorForModal);
+    if (event.target.value === "coworking" && canManageFloorResources(getUserInfo(), floorForModal)) {
       void populateSpaceResponsibleOptions(spaceResponsibleField?.value || "", buildingForModal?.id);
     }
   });
@@ -9518,13 +9517,13 @@ const setFormMode = (mode) => {
       buildingImageInput.disabled = false;
     }
     if (floorsFields) {
-      floorsFields.classList.add("is-hidden");
+      floorsFields.classList.remove("is-hidden");
     }
     if (buildingUndergroundFloorsInput) {
-      buildingUndergroundFloorsInput.disabled = true;
+      buildingUndergroundFloorsInput.disabled = false;
     }
     if (buildingAbovegroundFloorsInput) {
-      buildingAbovegroundFloorsInput.disabled = true;
+      buildingAbovegroundFloorsInput.disabled = false;
     }
     if (currentBuilding && currentBuilding.image_url) {
       showImagePreview(currentBuilding.image_url);
@@ -9823,6 +9822,23 @@ const resetForm = (mode = "create") => {
   setFormMode(mode);
 };
 
+const getFloorCounts = (floors = []) => {
+  let underground = 0;
+  let aboveground = 0;
+  floors.forEach((floor) => {
+    const level = Number(floor?.level);
+    if (!Number.isFinite(level)) {
+      return;
+    }
+    if (level < 0) {
+      underground += 1;
+    } else if (level > 0) {
+      aboveground += 1;
+    }
+  });
+  return { underground, aboveground };
+};
+
 const openModal = (mode = "create") => {
   buildingModal.classList.add("is-open");
   buildingModal.setAttribute("aria-hidden", "false");
@@ -9847,6 +9863,27 @@ const openEditModal = async () => {
   buildingAddressInput.value = currentBuilding.address || "";
   if (buildingTimezoneInput) {
     buildingTimezoneInput.value = currentBuilding.timezone || defaultBuildingTimezone;
+  }
+  if (buildingUndergroundFloorsInput || buildingAbovegroundFloorsInput) {
+    try {
+      const floorsResponse = await apiRequest(`/api/buildings/${currentBuilding.id}/floors`);
+      const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
+      const { underground, aboveground } = getFloorCounts(floors);
+      if (buildingUndergroundFloorsInput) {
+        buildingUndergroundFloorsInput.value = String(underground);
+      }
+      if (buildingAbovegroundFloorsInput) {
+        buildingAbovegroundFloorsInput.value = String(aboveground);
+      }
+    } catch (error) {
+      if (buildingUndergroundFloorsInput) {
+        buildingUndergroundFloorsInput.value = "0";
+      }
+      if (buildingAbovegroundFloorsInput) {
+        buildingAbovegroundFloorsInput.value = "0";
+      }
+      setStatus(error.message, "error");
+    }
   }
   editingId = currentBuilding.id;
   removeImage = false;
@@ -10345,6 +10382,25 @@ buildingForm.addEventListener("submit", async (event) => {
     setStatus("Выберите часовой пояс здания.", "error");
     return;
   }
+  const undergroundFloorsRaw = buildingUndergroundFloorsInput
+    ? buildingUndergroundFloorsInput.value.trim()
+    : "";
+  const abovegroundFloorsRaw = buildingAbovegroundFloorsInput
+    ? buildingAbovegroundFloorsInput.value.trim()
+    : "";
+  const undergroundFloors = undergroundFloorsRaw === "" ? 0 : Number(undergroundFloorsRaw);
+  const abovegroundFloors = abovegroundFloorsRaw === "" ? 0 : Number(abovegroundFloorsRaw);
+  if (
+    !Number.isFinite(undergroundFloors) ||
+    !Number.isFinite(abovegroundFloors) ||
+    undergroundFloors < 0 ||
+    abovegroundFloors < 0 ||
+    !Number.isInteger(undergroundFloors) ||
+    !Number.isInteger(abovegroundFloors)
+  ) {
+    setStatus("Количество этажей должно быть целым числом от 0.", "error");
+    return;
+  }
 
   try {
     let created = false;
@@ -10353,7 +10409,13 @@ buildingForm.addEventListener("submit", async (event) => {
         showTopAlert("Недостаточно прав для редактирования зданий.", "error");
         return;
       }
-      const payload = { name, address, timezone };
+      const payload = {
+        name,
+        address,
+        timezone,
+        underground_floors: undergroundFloors,
+        aboveground_floors: abovegroundFloors,
+      };
       if (isAdminRole(user)) {
         payload.responsible_employee_id = responsibleEmployeeID;
       }
@@ -10380,25 +10442,6 @@ buildingForm.addEventListener("submit", async (event) => {
     } else {
       if (!canCreate) {
         showTopAlert("Недостаточно прав для добавления зданий.", "error");
-        return;
-      }
-      const undergroundFloorsRaw = buildingUndergroundFloorsInput
-        ? buildingUndergroundFloorsInput.value.trim()
-        : "";
-      const abovegroundFloorsRaw = buildingAbovegroundFloorsInput
-        ? buildingAbovegroundFloorsInput.value.trim()
-        : "";
-      const undergroundFloors = undergroundFloorsRaw === "" ? 0 : Number(undergroundFloorsRaw);
-      const abovegroundFloors = abovegroundFloorsRaw === "" ? 0 : Number(abovegroundFloorsRaw);
-      if (
-        !Number.isFinite(undergroundFloors) ||
-        !Number.isFinite(abovegroundFloors) ||
-        undergroundFloors < 0 ||
-        abovegroundFloors < 0 ||
-        !Number.isInteger(undergroundFloors) ||
-        !Number.isInteger(abovegroundFloors)
-      ) {
-        setStatus("Количество этажей должно быть целым числом от 0.", "error");
         return;
       }
       const formData = new FormData();
@@ -10448,6 +10491,18 @@ buildingForm.addEventListener("submit", async (event) => {
       }
       if (pageSubtitle) {
         pageSubtitle.textContent = address;
+      }
+      if (currentBuilding) {
+        try {
+          const floorsResponse = await apiRequest(`/api/buildings/${currentBuilding.id}/floors`);
+          const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
+          if (floorsCount) {
+            floorsCount.textContent = `${floors.length}`;
+          }
+          renderFloors(floors);
+        } catch (error) {
+          setBuildingStatus(error.message, "error");
+        }
       }
       closeModal();
       resetForm();
@@ -11031,10 +11086,10 @@ if (spaceForm) {
   spaceForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const user = getUserInfo();
-    const responsibilityBuilding = editingSpace
-      ? resolveBuildingForSpace(editingSpace)
-      : resolveBuildingForFloor(currentFloor);
-    const canAssignCoworkingResponsible = canManageBuildingResources(user, responsibilityBuilding);
+    const responsibilityFloor = editingSpace
+      ? resolveFloorForSpace(editingSpace)
+      : currentFloor;
+    const canAssignCoworkingResponsible = canManageFloorResources(user, responsibilityFloor);
     if (editingSpace && editingSpace.id) {
       if (!canManageSpaceResources(user, editingSpace)) {
         showTopAlert("Недостаточно прав для изменения пространств.", "error");
