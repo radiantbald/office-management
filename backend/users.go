@@ -1,7 +1,9 @@
 package main
 
 import (
+	"database/sql"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -21,7 +23,45 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
 		return
 	}
-	if role != roleAdmin {
+	if role == roleEmployee {
+		buildingIDRaw := strings.TrimSpace(r.URL.Query().Get("building_id"))
+		if buildingIDRaw == "" {
+			respondError(w, http.StatusForbidden, "Недостаточно прав")
+			return
+		}
+		buildingID, err := strconv.ParseInt(buildingIDRaw, 10, 64)
+		if err != nil || buildingID <= 0 {
+			respondError(w, http.StatusBadRequest, "building_id must be a number")
+			return
+		}
+		employeeID, err := extractEmployeeIDFromRequest(r, a.db)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		employeeID = strings.TrimSpace(employeeID)
+		if employeeID == "" {
+			respondError(w, http.StatusForbidden, "Недостаточно прав")
+			return
+		}
+		var responsibleID string
+		row := a.db.QueryRow(
+			`SELECT COALESCE(responsible_employee_id, '') FROM office_buildings WHERE id = $1`,
+			buildingID,
+		)
+		if err := row.Scan(&responsibleID); err != nil {
+			if err == sql.ErrNoRows {
+				respondError(w, http.StatusNotFound, "building not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if strings.TrimSpace(responsibleID) == "" || strings.TrimSpace(responsibleID) != employeeID {
+			respondError(w, http.StatusForbidden, "Недостаточно прав")
+			return
+		}
+	} else if role != roleAdmin {
 		respondError(w, http.StatusForbidden, "Недостаточно прав")
 		return
 	}

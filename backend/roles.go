@@ -9,21 +9,18 @@ import (
 )
 
 const (
-	roleEmployee  = 1
-	roleSecretary = 2
-	roleAdmin     = 3
+	roleEmployee = 1
+	roleAdmin    = 2
 )
 
 func isValidRole(role int) bool {
-	return role == roleEmployee || role == roleSecretary || role == roleAdmin
+	return role == roleEmployee || role == roleAdmin
 }
 
 func roleTokenFor(role int) string {
 	switch role {
 	case roleEmployee:
 		return strings.TrimSpace(os.Getenv("ROLE_TOKEN_EMPLOYEE"))
-	case roleSecretary:
-		return strings.TrimSpace(os.Getenv("ROLE_TOKEN_SECRETARY"))
 	case roleAdmin:
 		return strings.TrimSpace(os.Getenv("ROLE_TOKEN_ADMIN"))
 	default:
@@ -47,9 +44,6 @@ func resolveRoleFromRequest(r *http.Request, queryer rowQueryer) (int, error) {
 	if token != "" {
 		if adminToken := roleTokenFor(roleAdmin); adminToken != "" && token == adminToken {
 			return roleAdmin, nil
-		}
-		if secretaryToken := roleTokenFor(roleSecretary); secretaryToken != "" && token == secretaryToken {
-			return roleSecretary, nil
 		}
 		if employeeToken := roleTokenFor(roleEmployee); employeeToken != "" && token == employeeToken {
 			return roleEmployee, nil

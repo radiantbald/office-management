@@ -34,6 +34,13 @@
               <button class="breadcrumb-menu-item" type="button" data-role="breadcrumb-bookings">
                 Мои бронирования
               </button>
+              <button
+                class="breadcrumb-menu-item is-hidden"
+                type="button"
+                data-role="breadcrumb-responsibilities"
+              >
+                Мои зоны ответственности
+              </button>
               <button class="breadcrumb-menu-item is-logout" type="button" data-role="breadcrumb-logout">
                 Выйти
               </button>
@@ -357,6 +364,29 @@
       </div>
     </div>
 
+    <div id="responsibilitiesModal" class="modal responsibilities-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div
+        class="modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="responsibilitiesModalTitle"
+      >
+        <div class="modal-header">
+          <h2 id="responsibilitiesModalTitle">Мои зоны ответственности</h2>
+          <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">
+            ✕
+          </button>
+        </div>
+        <div id="responsibilitiesModalBody" class="responsibilities-body">
+          <div id="responsibilitiesList" class="responsibilities-list"></div>
+          <div id="responsibilitiesEmpty" class="placeholder app-empty is-hidden">
+            Зон ответственности пока нет.
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="buildingModal" class="modal" aria-hidden="true">
       <div class="modal-backdrop" data-modal-close="true"></div>
       <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
@@ -396,6 +426,22 @@
               <option value="Asia/Magadan">Asia/Magadan (UTC+11)</option>
               <option value="Asia/Kamchatka">Asia/Kamchatka (UTC+12)</option>
             </select>
+          </label>
+          <label id="buildingResponsibleFieldRow" class="field is-hidden" aria-hidden="true">
+            <span>Ответственный за здание</span>
+            <div class="responsible-picker">
+              <input
+                id="buildingResponsibleField"
+                type="text"
+                placeholder="ФИО или employee id"
+                autocomplete="off"
+              />
+              <div
+                class="responsible-suggestions is-hidden"
+                data-responsible-suggestions-for="buildingResponsibleField"
+                role="listbox"
+              ></div>
+            </div>
           </label>
           <label class="field">
             <span>Изображение здания (необязательно)</span>
@@ -473,9 +519,19 @@
           </div>
           <label id="spaceResponsibleFieldRow" class="field is-hidden" aria-hidden="true">
             <span>Ответственный за коворкинг</span>
-            <select id="spaceResponsibleField">
-              <option value="">Не назначать</option>
-            </select>
+            <div class="responsible-picker">
+              <input
+                id="spaceResponsibleField"
+                type="text"
+                placeholder="ФИО или employee id"
+                autocomplete="off"
+              />
+              <div
+                class="responsible-suggestions is-hidden"
+                data-responsible-suggestions-for="spaceResponsibleField"
+                role="listbox"
+              ></div>
+            </div>
           </label>
           <label id="spaceCapacityFieldRow" class="field is-hidden">
             <span>Количество человек</span>
@@ -503,6 +559,44 @@
           </div>
         </form>
         <div id="spaceStatus" class="status" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+    <div id="floorInfoModal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="floorInfoModalTitle">
+        <div class="modal-header">
+          <h2 id="floorInfoModalTitle">Редактировать этаж</h2>
+          <button id="floorInfoModalCloseBtn" class="icon-button" type="button" data-modal-close="true">
+            ✕
+          </button>
+        </div>
+        <form id="floorInfoForm" class="form">
+          <label class="field">
+            <span>Название этажа</span>
+            <input id="floorInfoNameField" type="text" placeholder="Например, Этаж 1" required />
+          </label>
+          <label class="field">
+            <span>Ответственный за этаж</span>
+            <div class="responsible-picker">
+              <input
+                id="floorInfoResponsibleField"
+                type="text"
+                placeholder="ФИО или employee id"
+                autocomplete="off"
+              />
+              <div
+                class="responsible-suggestions is-hidden"
+                data-responsible-suggestions-for="floorInfoResponsibleField"
+                role="listbox"
+              ></div>
+            </div>
+          </label>
+          <div class="form-actions">
+            <button id="floorInfoSaveBtn" class="primary" type="submit">Сохранить</button>
+            <button id="floorInfoDeleteBtn" class="danger" type="button">Удалить этаж</button>
+          </div>
+        </form>
+        <div id="floorInfoStatus" class="status" role="status" aria-live="polite"></div>
       </div>
     </div>
     <div id="deskModal" class="modal" aria-hidden="true">

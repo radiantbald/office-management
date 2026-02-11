@@ -34,23 +34,25 @@ type app struct {
 }
 
 type building struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Address   string    `json:"address"`
-	Timezone  string    `json:"timezone"`
-	ImageURL  string    `json:"image_url,omitempty"`
-	Floors    []int64   `json:"floors"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                    int64     `json:"id"`
+	Name                  string    `json:"name"`
+	Address               string    `json:"address"`
+	Timezone              string    `json:"timezone"`
+	ImageURL              string    `json:"image_url,omitempty"`
+	ResponsibleEmployeeID string    `json:"responsible_employee_id,omitempty"`
+	Floors                []int64   `json:"floors"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type floor struct {
-	ID          int64     `json:"id"`
-	BuildingID  int64     `json:"building_id"`
-	Name        string    `json:"name"`
-	Level       int       `json:"level"`
-	SpacesCount int       `json:"spaces_count"`
-	PlanSVG     string    `json:"plan_svg,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID                    int64     `json:"id"`
+	BuildingID            int64     `json:"building_id"`
+	Name                  string    `json:"name"`
+	Level                 int       `json:"level"`
+	SpacesCount           int       `json:"spaces_count"`
+	ResponsibleEmployeeID string    `json:"responsible_employee_id,omitempty"`
+	PlanSVG               string    `json:"plan_svg,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type space struct {
@@ -290,6 +292,7 @@ func migrate(db *sql.DB) error {
 			name TEXT NOT NULL,
 			address TEXT NOT NULL,
 			timezone TEXT NOT NULL DEFAULT 'Europe/Moscow',
+			responsible_employee_id TEXT NOT NULL DEFAULT '',
 			image_url TEXT,
 			floors TEXT NOT NULL DEFAULT '[]',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -300,6 +303,7 @@ func migrate(db *sql.DB) error {
 			name TEXT NOT NULL,
 			level INTEGER NOT NULL,
 			plan_svg TEXT NOT NULL,
+			responsible_employee_id TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(building_id) REFERENCES office_buildings(id) ON DELETE CASCADE
 		);`,
@@ -387,6 +391,12 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "office_buildings", "timezone", "TEXT NOT NULL DEFAULT 'Europe/Moscow'"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "office_buildings", "responsible_employee_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "floors", "responsible_employee_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "coworkings", "points_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
@@ -1590,11 +1600,12 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var payload struct {
-			Name              string `json:"name"`
-			Address           string `json:"address"`
-			Timezone          string `json:"timezone"`
-			UndergroundFloors int    `json:"underground_floors"`
-			AbovegroundFloors int    `json:"aboveground_floors"`
+			Name                  string `json:"name"`
+			Address               string `json:"address"`
+			Timezone              string `json:"timezone"`
+			ResponsibleEmployeeID string `json:"responsible_employee_id"`
+			UndergroundFloors     int    `json:"underground_floors"`
+			AbovegroundFloors     int    `json:"aboveground_floors"`
 		}
 		if err := decodeJSON(r, &payload); err != nil {
 			respondError(w, http.StatusBadRequest, err.Error())
@@ -1602,6 +1613,7 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 		}
 		payload.Name = strings.TrimSpace(payload.Name)
 		payload.Address = strings.TrimSpace(payload.Address)
+		payload.ResponsibleEmployeeID = strings.TrimSpace(payload.ResponsibleEmployeeID)
 		if payload.Name == "" || payload.Address == "" {
 			respondError(w, http.StatusBadRequest, "name and address are required")
 			return
@@ -1615,7 +1627,7 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "invalid timezone")
 			return
 		}
-		result, err := a.createBuildingWithFloors(payload.Name, payload.Address, timezone, "", payload.UndergroundFloors, payload.AbovegroundFloors)
+		result, err := a.createBuildingWithFloors(payload.Name, payload.Address, timezone, "", payload.UndergroundFloors, payload.AbovegroundFloors, payload.ResponsibleEmployeeID)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1633,6 +1645,7 @@ func (a *app) createBuildingFromMultipart(w http.ResponseWriter, r *http.Request
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	address := strings.TrimSpace(r.FormValue("address"))
+	responsibleEmployeeID := strings.TrimSpace(r.FormValue("responsible_employee_id"))
 	if name == "" || address == "" {
 		return building{}, http.StatusBadRequest, errors.New("name and address are required")
 	}
@@ -1655,7 +1668,7 @@ func (a *app) createBuildingFromMultipart(w http.ResponseWriter, r *http.Request
 	file, header, err := r.FormFile("image")
 	if err != nil {
 		if errors.Is(err, http.ErrMissingFile) {
-			created, createErr := a.createBuildingWithFloors(name, address, timezone, "", undergroundFloors, abovegroundFloors)
+			created, createErr := a.createBuildingWithFloors(name, address, timezone, "", undergroundFloors, abovegroundFloors, responsibleEmployeeID)
 			if createErr != nil {
 				return building{}, http.StatusInternalServerError, createErr
 			}
@@ -1664,7 +1677,7 @@ func (a *app) createBuildingFromMultipart(w http.ResponseWriter, r *http.Request
 		return building{}, http.StatusBadRequest, err
 	}
 
-	created, err := a.createBuildingWithFloors(name, address, timezone, "", undergroundFloors, abovegroundFloors)
+	created, err := a.createBuildingWithFloors(name, address, timezone, "", undergroundFloors, abovegroundFloors, responsibleEmployeeID)
 	if err != nil {
 		return building{}, http.StatusInternalServerError, err
 	}
@@ -1703,13 +1716,14 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, item)
 		case http.MethodPut:
-			if !ensureNotEmployeeRole(w, r, a.db) {
+			if !a.ensureCanManageBuilding(w, r, id) {
 				return
 			}
 			var payload struct {
-				Name     string  `json:"name"`
-				Address  string  `json:"address"`
-				Timezone *string `json:"timezone"`
+				Name                  string  `json:"name"`
+				Address               string  `json:"address"`
+				Timezone              *string `json:"timezone"`
+				ResponsibleEmployeeID *string `json:"responsible_employee_id"`
 			}
 			if err := decodeJSON(r, &payload); err != nil {
 				respondError(w, http.StatusBadRequest, err.Error())
@@ -1720,6 +1734,19 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			if payload.Name == "" || payload.Address == "" {
 				respondError(w, http.StatusBadRequest, "name and address are required")
 				return
+			}
+			if payload.ResponsibleEmployeeID != nil {
+				trimmed := strings.TrimSpace(*payload.ResponsibleEmployeeID)
+				payload.ResponsibleEmployeeID = &trimmed
+				role, err := resolveRoleFromRequest(r, a.db)
+				if err != nil {
+					respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+					return
+				}
+				if role != roleAdmin {
+					respondError(w, http.StatusForbidden, "Недостаточно прав")
+					return
+				}
 			}
 			timezone := ""
 			if payload.Timezone == nil {
@@ -1741,7 +1768,7 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				}
 				timezone = normalized
 			}
-			result, err := a.updateBuilding(id, payload.Name, payload.Address, timezone)
+			result, err := a.updateBuilding(id, payload.Name, payload.Address, timezone, payload.ResponsibleEmployeeID)
 			if err != nil {
 				if errors.Is(err, errNotFound) {
 					respondError(w, http.StatusNotFound, "building not found")
@@ -1772,7 +1799,7 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 	if suffix == "/image" {
 		switch r.Method {
 		case http.MethodPost:
-			if !ensureNotEmployeeRole(w, r, a.db) {
+			if !a.ensureCanManageBuilding(w, r, id) {
 				return
 			}
 			existing, err := a.getBuilding(id)
@@ -1822,7 +1849,7 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, updated)
 		case http.MethodDelete:
-			if !ensureNotEmployeeRole(w, r, a.db) {
+			if !a.ensureCanManageBuilding(w, r, id) {
 				return
 			}
 			updated, err := a.clearBuildingImage(id)
@@ -1862,9 +1889,6 @@ func (a *app) handleFloors(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if !ensureNotEmployeeRole(w, r, a.db) {
-		return
-	}
 	var payload struct {
 		BuildingID int64  `json:"building_id"`
 		Name       string `json:"name"`
@@ -1879,6 +1903,9 @@ func (a *app) handleFloors(w http.ResponseWriter, r *http.Request) {
 	payload.PlanSVG = strings.TrimSpace(payload.PlanSVG)
 	if payload.BuildingID == 0 || payload.Name == "" || payload.PlanSVG == "" {
 		respondError(w, http.StatusBadRequest, "building_id, name, and plan_svg are required")
+		return
+	}
+	if !a.ensureCanManageBuilding(w, r, payload.BuildingID) {
 		return
 	}
 	result, err := a.createFloor(payload.BuildingID, payload.Name, payload.Level, payload.PlanSVG)
@@ -1910,19 +1937,79 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			respondJSON(w, http.StatusOK, item)
 		case http.MethodPut:
-			if !ensureNotEmployeeRole(w, r, a.db) {
+			if !a.ensureCanManageFloor(w, r, id) {
 				return
 			}
 			var payload struct {
-				PlanSVG string `json:"plan_svg"`
+				Name                  *string `json:"name"`
+				PlanSVG               *string `json:"plan_svg"`
+				ResponsibleEmployeeID *string `json:"responsible_employee_id"`
 			}
 			if err := decodeJSON(r, &payload); err != nil {
 				respondError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			payload.PlanSVG = strings.TrimSpace(payload.PlanSVG)
-			updated, err := a.updateFloorPlan(id, payload.PlanSVG)
-			if err != nil {
+			if payload.Name != nil {
+				trimmed := strings.TrimSpace(*payload.Name)
+				if trimmed == "" {
+					respondError(w, http.StatusBadRequest, "name is required")
+					return
+				}
+				payload.Name = &trimmed
+			}
+			if payload.PlanSVG != nil {
+				trimmed := strings.TrimSpace(*payload.PlanSVG)
+				payload.PlanSVG = &trimmed
+			}
+			if payload.ResponsibleEmployeeID != nil {
+				trimmed := strings.TrimSpace(*payload.ResponsibleEmployeeID)
+				payload.ResponsibleEmployeeID = &trimmed
+			}
+			if payload.Name == nil && payload.PlanSVG == nil && payload.ResponsibleEmployeeID == nil {
+				respondError(w, http.StatusBadRequest, "no fields to update")
+				return
+			}
+			if payload.Name != nil || payload.ResponsibleEmployeeID != nil {
+				if !a.ensureCanManageBuildingByFloor(w, r, id) {
+					return
+				}
+			}
+			var (
+				updated floor
+				err     error
+			)
+			if payload.PlanSVG != nil {
+				updated, err = a.updateFloorPlan(id, *payload.PlanSVG)
+				if err != nil {
+					if errors.Is(err, errNotFound) {
+						respondError(w, http.StatusNotFound, "floor not found")
+						return
+					}
+					respondError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
+			if payload.Name != nil || payload.ResponsibleEmployeeID != nil {
+				updated, err = a.updateFloorDetails(id, payload.Name, payload.ResponsibleEmployeeID)
+				if err != nil {
+					if errors.Is(err, errNotFound) {
+						respondError(w, http.StatusNotFound, "floor not found")
+						return
+					}
+					if err.Error() == "name is required" {
+						respondError(w, http.StatusBadRequest, err.Error())
+						return
+					}
+					respondError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
+			respondJSON(w, http.StatusOK, updated)
+		case http.MethodDelete:
+			if !a.ensureCanManageBuildingByFloor(w, r, id) {
+				return
+			}
+			if err := a.deleteFloorAndShift(id); err != nil {
 				if errors.Is(err, errNotFound) {
 					respondError(w, http.StatusNotFound, "floor not found")
 					return
@@ -1930,7 +2017,7 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			respondJSON(w, http.StatusOK, updated)
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
@@ -1956,19 +2043,17 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if !ensureNotEmployeeRole(w, r, a.db) {
-		return
-	}
 	var payload struct {
-		FloorID               int64   `json:"floor_id"`
-		Name                  string  `json:"name"`
-		Kind                  string  `json:"kind"`
-		Capacity              *int    `json:"capacity"`
-		Color                 string  `json:"color"`
-		SubdivisionLevel1     string  `json:"subdivision_level_1"`
-		SubdivisionLevel2     string  `json:"subdivision_level_2"`
-		ResponsibleEmployeeID string  `json:"responsible_employee_id"`
-		Points                []point `json:"points"`
+		FloorID                    int64   `json:"floor_id"`
+		Name                       string  `json:"name"`
+		Kind                       string  `json:"kind"`
+		Capacity                   *int    `json:"capacity"`
+		Color                      string  `json:"color"`
+		SubdivisionLevel1          string  `json:"subdivision_level_1"`
+		SubdivisionLevel2          string  `json:"subdivision_level_2"`
+		ResponsibleEmployeeID      string  `json:"responsible_employee_id"`
+		FloorResponsibleEmployeeID string  `json:"floor_responsible_employee_id"`
+		Points                     []point `json:"points"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
@@ -1980,8 +2065,12 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 	payload.SubdivisionLevel1 = strings.TrimSpace(payload.SubdivisionLevel1)
 	payload.SubdivisionLevel2 = strings.TrimSpace(payload.SubdivisionLevel2)
 	payload.ResponsibleEmployeeID = strings.TrimSpace(payload.ResponsibleEmployeeID)
+	payload.FloorResponsibleEmployeeID = strings.TrimSpace(payload.FloorResponsibleEmployeeID)
 	if payload.FloorID == 0 || payload.Name == "" || payload.Kind == "" {
 		respondError(w, http.StatusBadRequest, "floor_id, name, and kind are required")
+		return
+	}
+	if !a.ensureCanManageFloor(w, r, payload.FloorID) {
 		return
 	}
 	if len(payload.Points) < 3 {
@@ -2005,13 +2094,12 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		payload.ResponsibleEmployeeID = ""
 	}
 	if payload.ResponsibleEmployeeID != "" {
-		role, err := resolveRoleFromRequest(r, a.db)
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		if !a.ensureCanManageBuildingByFloor(w, r, payload.FloorID) {
 			return
 		}
-		if role != roleAdmin {
-			respondError(w, http.StatusForbidden, "Недостаточно прав")
+	}
+	if payload.FloorResponsibleEmployeeID != "" {
+		if !a.ensureCanManageBuildingByFloor(w, r, payload.FloorID) {
 			return
 		}
 	}
@@ -2029,6 +2117,16 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if payload.FloorResponsibleEmployeeID != "" {
+		if err := a.updateFloorResponsibleEmployeeID(payload.FloorID, payload.FloorResponsibleEmployeeID); err != nil {
+			if errors.Is(err, errNotFound) {
+				respondError(w, http.StatusNotFound, "floor not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	respondJSON(w, http.StatusCreated, result)
 }
@@ -2058,15 +2156,16 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var payload struct {
-				Name                  string  `json:"name"`
-				Kind                  string  `json:"kind"`
-				Capacity              *int    `json:"capacity"`
-				Color                 string  `json:"color"`
-				SubdivisionLevel1     string  `json:"subdivision_level_1"`
-				SubdivisionLevel2     string  `json:"subdivision_level_2"`
-				ResponsibleEmployeeID *string `json:"responsible_employee_id"`
-				Points                []point `json:"points"`
-				SnapshotHidden        *bool   `json:"snapshot_hidden"`
+				Name                       string  `json:"name"`
+				Kind                       string  `json:"kind"`
+				Capacity                   *int    `json:"capacity"`
+				Color                      string  `json:"color"`
+				SubdivisionLevel1          string  `json:"subdivision_level_1"`
+				SubdivisionLevel2          string  `json:"subdivision_level_2"`
+				ResponsibleEmployeeID      *string `json:"responsible_employee_id"`
+				FloorResponsibleEmployeeID *string `json:"floor_responsible_employee_id"`
+				Points                     []point `json:"points"`
+				SnapshotHidden             *bool   `json:"snapshot_hidden"`
 			}
 			if err := decodeJSON(r, &payload); err != nil {
 				respondError(w, http.StatusBadRequest, err.Error())
@@ -2080,13 +2179,14 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			if payload.ResponsibleEmployeeID != nil {
 				trimmed := strings.TrimSpace(*payload.ResponsibleEmployeeID)
 				payload.ResponsibleEmployeeID = &trimmed
-				role, err := resolveRoleFromRequest(r, a.db)
-				if err != nil {
-					respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+				if !a.ensureCanManageBuildingBySpace(w, r, id) {
 					return
 				}
-				if role != roleAdmin {
-					respondError(w, http.StatusForbidden, "Недостаточно прав")
+			}
+			if payload.FloorResponsibleEmployeeID != nil {
+				trimmed := strings.TrimSpace(*payload.FloorResponsibleEmployeeID)
+				payload.FloorResponsibleEmployeeID = &trimmed
+				if !a.ensureCanManageBuildingBySpace(w, r, id) {
 					return
 				}
 			}
@@ -2167,6 +2267,25 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 				}
 				respondError(w, http.StatusInternalServerError, err.Error())
 				return
+			}
+			if payload.FloorResponsibleEmployeeID != nil {
+				floorID, floorErr := a.getSpaceFloorID(id)
+				if floorErr != nil {
+					if errors.Is(floorErr, errNotFound) {
+						respondError(w, http.StatusNotFound, "space not found")
+						return
+					}
+					respondError(w, http.StatusInternalServerError, floorErr.Error())
+					return
+				}
+				if err := a.updateFloorResponsibleEmployeeID(floorID, *payload.FloorResponsibleEmployeeID); err != nil {
+					if errors.Is(err, errNotFound) {
+						respondError(w, http.StatusNotFound, "floor not found")
+						return
+					}
+					respondError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
 			}
 			respondJSON(w, http.StatusOK, result)
 		case http.MethodDelete:
@@ -2461,9 +2580,6 @@ func (a *app) handleMeetingRooms(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if !ensureNotEmployeeRole(w, r, a.db) {
-		return
-	}
 	var payload struct {
 		SpaceID  int64  `json:"space_id"`
 		Name     string `json:"name"`
@@ -2496,6 +2612,9 @@ func (a *app) handleMeetingRooms(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !a.ensureCanManageFloor(w, r, floorID) {
+		return
+	}
 	result, err := a.createMeetingRoom(floorID, payload.Name, payload.Capacity)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -2506,7 +2625,7 @@ func (a *app) handleMeetingRooms(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) listBuildings() ([]building, error) {
 	rows, err := a.db.Query(
-		`SELECT id, name, address, COALESCE(timezone, ''), COALESCE(image_url, ''), COALESCE(floors, '[]'), created_at
+		`SELECT id, name, address, COALESCE(timezone, ''), COALESCE(responsible_employee_id, ''), COALESCE(image_url, ''), COALESCE(floors, '[]'), created_at
 		FROM office_buildings
 		ORDER BY id DESC`,
 	)
@@ -2519,7 +2638,16 @@ func (a *app) listBuildings() ([]building, error) {
 	for rows.Next() {
 		var b building
 		var floorsJSON string
-		if err := rows.Scan(&b.ID, &b.Name, &b.Address, &b.Timezone, &b.ImageURL, &floorsJSON, &b.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&b.ID,
+			&b.Name,
+			&b.Address,
+			&b.Timezone,
+			&b.ResponsibleEmployeeID,
+			&b.ImageURL,
+			&floorsJSON,
+			&b.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(b.Timezone) == "" {
@@ -2535,10 +2663,10 @@ var errNotFound = errors.New("not found")
 var errSnapshotHiddenNotAllowed = errors.New("snapshot can only be hidden for coworking")
 
 func (a *app) createBuilding(name, address, imageURL string) (building, error) {
-	return a.createBuildingWithFloors(name, address, defaultBuildingTimezone, imageURL, 0, 0)
+	return a.createBuildingWithFloors(name, address, defaultBuildingTimezone, imageURL, 0, 0, "")
 }
 
-func (a *app) createBuildingWithFloors(name, address, timezone, imageURL string, undergroundFloors, abovegroundFloors int) (building, error) {
+func (a *app) createBuildingWithFloors(name, address, timezone, imageURL string, undergroundFloors, abovegroundFloors int, responsibleEmployeeID string) (building, error) {
 	tx, err := a.db.Begin()
 	if err != nil {
 		return building{}, err
@@ -2551,12 +2679,13 @@ func (a *app) createBuildingWithFloors(name, address, timezone, imageURL string,
 
 	var buildingID int64
 	if err = tx.QueryRow(
-		`INSERT INTO office_buildings (name, address, timezone, image_url, floors)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO office_buildings (name, address, timezone, responsible_employee_id, image_url, floors)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id`,
 		name,
 		address,
 		timezone,
+		strings.TrimSpace(responsibleEmployeeID),
 		imageURL,
 		"[]",
 	).Scan(&buildingID); err != nil {
@@ -2594,26 +2723,36 @@ func (a *app) createBuildingWithFloors(name, address, timezone, imageURL string,
 		return building{}, err
 	}
 	return building{
-		ID:        buildingID,
-		Name:      name,
-		Address:   address,
-		Timezone:  timezone,
-		ImageURL:  imageURL,
-		Floors:    floorIDs,
-		CreatedAt: time.Now().UTC(),
+		ID:                    buildingID,
+		Name:                  name,
+		Address:               address,
+		Timezone:              timezone,
+		ResponsibleEmployeeID: strings.TrimSpace(responsibleEmployeeID),
+		ImageURL:              imageURL,
+		Floors:                floorIDs,
+		CreatedAt:             time.Now().UTC(),
 	}, nil
 }
 
 func (a *app) getBuilding(id int64) (building, error) {
 	row := a.db.QueryRow(
-		`SELECT id, name, address, COALESCE(timezone, ''), COALESCE(image_url, ''), COALESCE(floors, '[]'), created_at
+		`SELECT id, name, address, COALESCE(timezone, ''), COALESCE(responsible_employee_id, ''), COALESCE(image_url, ''), COALESCE(floors, '[]'), created_at
 		FROM office_buildings
 		WHERE id = $1`,
 		id,
 	)
 	var b building
 	var floorsJSON string
-	if err := row.Scan(&b.ID, &b.Name, &b.Address, &b.Timezone, &b.ImageURL, &floorsJSON, &b.CreatedAt); err != nil {
+	if err := row.Scan(
+		&b.ID,
+		&b.Name,
+		&b.Address,
+		&b.Timezone,
+		&b.ResponsibleEmployeeID,
+		&b.ImageURL,
+		&floorsJSON,
+		&b.CreatedAt,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return building{}, errNotFound
 		}
@@ -2626,12 +2765,23 @@ func (a *app) getBuilding(id int64) (building, error) {
 	return b, nil
 }
 
-func (a *app) updateBuilding(id int64, name, address, timezone string) (building, error) {
+func (a *app) updateBuilding(id int64, name, address, timezone string, responsibleEmployeeID *string) (building, error) {
+	responsibleValue := ""
+	if responsibleEmployeeID == nil {
+		existing, err := a.getBuilding(id)
+		if err != nil {
+			return building{}, err
+		}
+		responsibleValue = strings.TrimSpace(existing.ResponsibleEmployeeID)
+	} else {
+		responsibleValue = strings.TrimSpace(*responsibleEmployeeID)
+	}
 	result, err := a.db.Exec(
-		`UPDATE office_buildings SET name = $1, address = $2, timezone = $3 WHERE id = $4`,
+		`UPDATE office_buildings SET name = $1, address = $2, timezone = $3, responsible_employee_id = $4 WHERE id = $5`,
 		name,
 		address,
 		timezone,
+		responsibleValue,
 		id,
 	)
 	if err != nil {
@@ -2701,6 +2851,7 @@ func (a *app) listFloorsByBuilding(buildingID int64) ([]floor, error) {
 		        f.building_id,
 		        f.name,
 		        f.level,
+		        COALESCE(f.responsible_employee_id, '') AS responsible_employee_id,
 		        f.created_at,
 		        (SELECT COUNT(*) FROM coworkings c WHERE c.floor_id = f.id)
 		        + (SELECT COUNT(*) FROM meeting_rooms m WHERE m.floor_id = f.id) AS spaces_count
@@ -2717,7 +2868,15 @@ func (a *app) listFloorsByBuilding(buildingID int64) ([]floor, error) {
 	var items []floor
 	for rows.Next() {
 		var f floor
-		if err := rows.Scan(&f.ID, &f.BuildingID, &f.Name, &f.Level, &f.CreatedAt, &f.SpacesCount); err != nil {
+		if err := rows.Scan(
+			&f.ID,
+			&f.BuildingID,
+			&f.Name,
+			&f.Level,
+			&f.ResponsibleEmployeeID,
+			&f.CreatedAt,
+			&f.SpacesCount,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, f)
@@ -2727,17 +2886,53 @@ func (a *app) listFloorsByBuilding(buildingID int64) ([]floor, error) {
 
 func (a *app) getFloor(id int64) (floor, error) {
 	row := a.db.QueryRow(
-		`SELECT id, building_id, name, level, plan_svg, created_at FROM floors WHERE id = $1`,
+		`SELECT id,
+		        building_id,
+		        name,
+		        level,
+		        plan_svg,
+		        COALESCE(responsible_employee_id, '') AS responsible_employee_id,
+		        created_at
+		   FROM floors
+		  WHERE id = $1`,
 		id,
 	)
 	var f floor
-	if err := row.Scan(&f.ID, &f.BuildingID, &f.Name, &f.Level, &f.PlanSVG, &f.CreatedAt); err != nil {
+	if err := row.Scan(
+		&f.ID,
+		&f.BuildingID,
+		&f.Name,
+		&f.Level,
+		&f.PlanSVG,
+		&f.ResponsibleEmployeeID,
+		&f.CreatedAt,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return floor{}, errNotFound
 		}
 		return floor{}, err
 	}
 	return f, nil
+}
+
+func (a *app) updateFloorResponsibleEmployeeID(id int64, employeeID string) error {
+	trimmed := strings.TrimSpace(employeeID)
+	result, err := a.db.Exec(
+		`UPDATE floors SET responsible_employee_id = $1 WHERE id = $2`,
+		trimmed,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return errNotFound
+	}
+	return nil
 }
 
 func (a *app) updateFloorPlan(id int64, planSVG string) (floor, error) {
@@ -2775,6 +2970,113 @@ func (a *app) updateFloorPlan(id int64, planSVG string) (floor, error) {
 	return a.getFloor(id)
 }
 
+func (a *app) updateFloorDetails(id int64, name *string, responsibleEmployeeID *string) (floor, error) {
+	current, err := a.getFloor(id)
+	if err != nil {
+		return floor{}, err
+	}
+	newName := current.Name
+	if name != nil {
+		trimmed := strings.TrimSpace(*name)
+		if trimmed == "" {
+			return floor{}, errors.New("name is required")
+		}
+		newName = trimmed
+	}
+	newResponsible := strings.TrimSpace(current.ResponsibleEmployeeID)
+	if responsibleEmployeeID != nil {
+		newResponsible = strings.TrimSpace(*responsibleEmployeeID)
+	}
+	result, err := a.db.Exec(
+		`UPDATE floors SET name = $1, responsible_employee_id = $2 WHERE id = $3`,
+		newName,
+		newResponsible,
+		id,
+	)
+	if err != nil {
+		return floor{}, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return floor{}, err
+	}
+	if rows == 0 {
+		return floor{}, errNotFound
+	}
+	return a.getFloor(id)
+}
+
+func (a *app) deleteFloorAndShift(id int64) error {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	var buildingID int64
+	var level int
+	row := tx.QueryRow(`SELECT building_id, level FROM floors WHERE id = $1`, id)
+	if err = row.Scan(&buildingID, &level); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errNotFound
+		}
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM floors WHERE id = $1`, id); err != nil {
+		return err
+	}
+	if level >= 0 {
+		if _, err = tx.Exec(
+			`UPDATE floors SET level = level - 1 WHERE building_id = $1 AND level > $2`,
+			buildingID,
+			level,
+		); err != nil {
+			return err
+		}
+	} else {
+		if _, err = tx.Exec(
+			`UPDATE floors SET level = level + 1 WHERE building_id = $1 AND level < $2`,
+			buildingID,
+			level,
+		); err != nil {
+			return err
+		}
+	}
+	rows, err := tx.Query(
+		`SELECT id FROM floors WHERE building_id = $1 ORDER BY id`,
+		buildingID,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var floorID int64
+		if err := rows.Scan(&floorID); err != nil {
+			return err
+		}
+		ids = append(ids, floorID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	floorsJSON, err := encodeFloorIDs(ids)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE office_buildings SET floors = $1 WHERE id = $2`, floorsJSON, buildingID); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (a *app) createFloor(buildingID int64, name string, level int, planSVG string) (floor, error) {
 	var id int64
 	if err := a.db.QueryRow(
@@ -2789,12 +3091,13 @@ func (a *app) createFloor(buildingID int64, name string, level int, planSVG stri
 		return floor{}, err
 	}
 	return floor{
-		ID:         id,
-		BuildingID: buildingID,
-		Name:       name,
-		Level:      level,
-		PlanSVG:    planSVG,
-		CreatedAt:  time.Now().UTC(),
+		ID:                    id,
+		BuildingID:            buildingID,
+		Name:                  name,
+		Level:                 level,
+		ResponsibleEmployeeID: "",
+		PlanSVG:               planSVG,
+		CreatedAt:             time.Now().UTC(),
 	}, nil
 }
 
