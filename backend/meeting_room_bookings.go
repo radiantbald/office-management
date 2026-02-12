@@ -39,6 +39,141 @@ func (a *app) handleMeetingRoomBookings(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func (a *app) handleMeetingRoomBookingsSubroutes(w http.ResponseWriter, r *http.Request) {
+	suffix := strings.TrimPrefix(r.URL.Path, "/api/meeting-room-bookings")
+	if !strings.HasPrefix(suffix, "/") {
+		respondError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	switch suffix {
+	case "/me":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		a.handleListMyMeetingRoomBookings(w, r)
+	case "/all":
+		if r.Method != http.MethodDelete {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		a.handleCancelAllMyMeetingRoomBookings(w, r)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+type myMeetingRoomBooking struct {
+	ID              int64  `json:"id"`
+	MeetingRoomID   int64  `json:"meeting_room_id"`
+	MeetingRoomName string `json:"meeting_room_name"`
+	BuildingID      int64  `json:"building_id"`
+	BuildingName    string `json:"building_name"`
+	FloorLevel      int    `json:"floor_level"`
+	StartTime       string `json:"start_time"`
+	EndTime         string `json:"end_time"`
+}
+
+func (a *app) handleListMyMeetingRoomBookings(w http.ResponseWriter, r *http.Request) {
+	employeeID, err := extractMeetingRoomBookingEmployeeID(r, a.db)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if employeeID == "" {
+		respondError(w, http.StatusBadRequest, "employee_id is required")
+		return
+	}
+
+	rows, err := a.db.Query(
+		`SELECT b.id,
+		        b.meeting_room_id,
+		        m.name,
+		        f.building_id,
+		        ob.name,
+		        f.level,
+		        b.start_at,
+		        b.end_at,
+		        COALESCE(ob.timezone, '')
+		   FROM meeting_room_bookings b
+		   JOIN meeting_rooms m ON m.id = b.meeting_room_id
+		   JOIN floors f ON f.id = m.floor_id
+		   JOIN office_buildings ob ON ob.id = f.building_id
+		  WHERE b.employee_id = $1 AND b.end_at > now()
+		  ORDER BY b.start_at ASC`,
+		employeeID,
+	)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	items := make([]myMeetingRoomBooking, 0)
+	for rows.Next() {
+		var item myMeetingRoomBooking
+		var startAt time.Time
+		var endAt time.Time
+		var timezone string
+		if err := rows.Scan(
+			&item.ID,
+			&item.MeetingRoomID,
+			&item.MeetingRoomName,
+			&item.BuildingID,
+			&item.BuildingName,
+			&item.FloorLevel,
+			&startAt,
+			&endAt,
+			&timezone,
+		); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		tz := strings.TrimSpace(timezone)
+		if tz == "" {
+			tz = defaultBuildingTimezone
+		}
+		location, locErr := time.LoadLocation(tz)
+		if locErr != nil {
+			location = time.Local
+		}
+		item.StartTime = formatDateTimeInLocation(startAt, location)
+		item.EndTime = formatDateTimeInLocation(endAt, location)
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{"bookings": items, "success": true})
+}
+
+func (a *app) handleCancelAllMyMeetingRoomBookings(w http.ResponseWriter, r *http.Request) {
+	employeeID, err := extractMeetingRoomBookingEmployeeID(r, a.db)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if employeeID == "" {
+		respondError(w, http.StatusBadRequest, "employee_id is required")
+		return
+	}
+
+	result, err := a.db.Exec(
+		`DELETE FROM meeting_room_bookings WHERE employee_id = $1 AND end_at > now()`,
+		employeeID,
+	)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	count, _ := result.RowsAffected()
+	respondJSON(w, http.StatusOK, map[string]any{"success": true, "deletedCount": count})
+}
+
 func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Request) {
 	meetingRoomIDRaw := strings.TrimSpace(r.URL.Query().Get("meeting_room_id"))
 	dateRaw := strings.TrimSpace(r.URL.Query().Get("date"))

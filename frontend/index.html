@@ -629,19 +629,35 @@
         <div class="modal-header">
           <div class="space-bookings-header">
             <h2 id="spaceBookingsModalTitle">Мои бронирования</h2>
-            <button id="spaceBookingsCancelAllBtn" class="context-action danger" type="button">
-              Отменить все
-            </button>
           </div>
           <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">
             ✕
           </button>
         </div>
-        <div id="spaceBookingsSection" class="space-bookings-section is-hidden" aria-hidden="true">
+        <div class="bookings-tabs" role="tablist">
+          <button id="bookingsTabCoworking" class="bookings-tab is-active" type="button" role="tab" aria-selected="true" data-bookings-tab="coworking">
+            Коворкинги
+          </button>
+          <button id="bookingsTabMeeting" class="bookings-tab" type="button" role="tab" aria-selected="false" data-bookings-tab="meeting">
+            Переговорки
+          </button>
+        </div>
+        <div id="spaceBookingsSection" class="space-bookings-section is-hidden" aria-hidden="true" data-bookings-panel="coworking">
           <div id="spaceBookingsList" class="space-bookings-list"></div>
           <div id="spaceBookingsEmpty" class="placeholder app-empty is-hidden">
             У вас нет активных бронирований
           </div>
+        </div>
+        <div id="meetingBookingsSection" class="space-bookings-section is-hidden" aria-hidden="true" data-bookings-panel="meeting">
+          <div id="meetingBookingsList" class="space-bookings-list"></div>
+          <div id="meetingBookingsEmpty" class="placeholder app-empty is-hidden">
+            У вас нет активных бронирований переговорок
+          </div>
+        </div>
+        <div class="space-bookings-footer">
+          <button id="spaceBookingsCancelAllBtn" class="context-action danger" type="button">
+            Отменить все
+          </button>
         </div>
       </div>
     </div>

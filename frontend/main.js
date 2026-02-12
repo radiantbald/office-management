@@ -151,6 +151,11 @@ const spaceBookingsSection = document.getElementById("spaceBookingsSection");
 const spaceBookingsList = document.getElementById("spaceBookingsList");
 const spaceBookingsEmpty = document.getElementById("spaceBookingsEmpty");
 const spaceBookingsCancelAllBtn = document.getElementById("spaceBookingsCancelAllBtn");
+const bookingsTabCoworking = document.getElementById("bookingsTabCoworking");
+const bookingsTabMeeting = document.getElementById("bookingsTabMeeting");
+const meetingBookingsSection = document.getElementById("meetingBookingsSection");
+const meetingBookingsList = document.getElementById("meetingBookingsList");
+const meetingBookingsEmpty = document.getElementById("meetingBookingsEmpty");
 const responsibilitiesModal = document.getElementById("responsibilitiesModal");
 const responsibilitiesList = document.getElementById("responsibilitiesList");
 const responsibilitiesEmpty = document.getElementById("responsibilitiesEmpty");
@@ -244,8 +249,10 @@ const bookingState = {
   currentMonth: new Date(),
   bookingsByDeskId: new Map(),
   myBookings: [],
+  myMeetingBookings: [],
   isLoading: false,
   isListOpen: false,
+  activeBookingsTab: "coworking",
   longPressTimer: null,
   longPressTriggered: false,
 };
@@ -1665,6 +1672,8 @@ const fetchResponsibilitiesForUser = async ({ force = false } = {}) => {
           buildingId: floor.building?.id || floor.building_id || null,
           buildingName: floor.building?.name || "",
           buildingAddress: floor.building?.address || "",
+          subdivisionLevel1: space.subdivision_level_1 || "",
+          subdivisionLevel2: space.subdivision_level_2 || "",
         });
       });
     });
@@ -1738,59 +1747,64 @@ const renderResponsibilitiesList = (data) => {
 
   appendSection("Здания", data.buildings, (building) => {
     const title = getBuildingLabel(building);
-    const address = typeof building?.address === "string" ? building.address.trim() : "";
     const item = document.createElement("div");
-    item.className = "responsibilities-item";
+    item.className = "responsibilities-item responsibilities-item--clickable";
     const label = document.createElement("div");
     label.className = "responsibilities-item-title";
     label.textContent = title;
     item.appendChild(label);
-    if (address) {
-      const meta = document.createElement("div");
-      meta.className = "responsibilities-item-meta";
-      meta.textContent = address;
-      item.appendChild(meta);
-    }
+    item.addEventListener("click", () => {
+      closeResponsibilitiesModal();
+      window.location.assign(`/buildings/${encodeURIComponent(building.id)}`);
+    });
     return item;
   });
 
   appendSection("Этажи", data.floors, (floor) => {
-    const title = getFloorLabel(floor);
     const buildingName = typeof floor?.buildingName === "string" ? floor.buildingName.trim() : "";
-    const buildingAddress =
-      typeof floor?.buildingAddress === "string" ? floor.buildingAddress.trim() : "";
-    const metaParts = [buildingName, buildingAddress].filter(Boolean);
+    const level = Number(floor?.level);
+    const floorLabel = Number.isFinite(level) ? `Этаж ${level}` : getFloorLabel(floor);
+    const pathParts = [buildingName, floorLabel].filter(Boolean);
     const item = document.createElement("div");
-    item.className = "responsibilities-item";
+    item.className = "responsibilities-item responsibilities-item--clickable";
     const label = document.createElement("div");
     label.className = "responsibilities-item-title";
-    label.textContent = title;
+    label.textContent = pathParts.join(" · ");
     item.appendChild(label);
-    if (metaParts.length > 0) {
-      const meta = document.createElement("div");
-      meta.className = "responsibilities-item-meta";
-      meta.textContent = metaParts.join(" / ");
-      item.appendChild(meta);
+    if (floor.buildingId && Number.isFinite(floor.level)) {
+      item.addEventListener("click", () => {
+        closeResponsibilitiesModal();
+        window.location.assign(
+          `/buildings/${encodeURIComponent(floor.buildingId)}/floors/${encodeURIComponent(floor.level)}`
+        );
+      });
     }
     return item;
   });
 
   appendSection("Коворкинги", data.coworkings, (space) => {
-    const title = getCoworkingLabel(space);
     const buildingName = typeof space?.buildingName === "string" ? space.buildingName.trim() : "";
-    const floorLabel = getFloorLabel(space);
-    const metaParts = [buildingName, floorLabel].filter(Boolean);
+    const floorLevel = Number(space?.floorLevel);
+    const floorLabel = Number.isFinite(floorLevel) ? `Этаж ${floorLevel}` : getFloorLabel(space);
+    const sub1 = typeof space?.subdivisionLevel1 === "string" ? space.subdivisionLevel1.trim() : "";
+    const sub2 = typeof space?.subdivisionLevel2 === "string" ? space.subdivisionLevel2.trim() : "";
+    const coworkingName = getCoworkingLabel(space);
+    const pathParts = [buildingName, floorLabel, sub1, sub2, coworkingName].filter(Boolean);
     const item = document.createElement("div");
-    item.className = "responsibilities-item";
+    item.className = "responsibilities-item responsibilities-item--clickable";
     const label = document.createElement("div");
     label.className = "responsibilities-item-title";
-    label.textContent = title;
+    label.textContent = pathParts.join(" · ");
     item.appendChild(label);
-    if (metaParts.length > 0) {
-      const meta = document.createElement("div");
-      meta.className = "responsibilities-item-meta";
-      meta.textContent = metaParts.join(" / ");
-      item.appendChild(meta);
+    if (space.buildingId && Number.isFinite(space.floorLevel) && space.id) {
+      item.addEventListener("click", () => {
+        closeResponsibilitiesModal();
+        window.location.assign(
+          `/buildings/${encodeURIComponent(space.buildingId)}/floors/${encodeURIComponent(
+            space.floorLevel
+          )}/spaces/${encodeURIComponent(space.id)}`
+        );
+      });
     }
     return item;
   });
@@ -3667,17 +3681,36 @@ const renderBookingsList = () => {
     const date = document.createElement("div");
     date.className = "space-booking-date";
     date.textContent = `${formatBookingWeekday(booking.date)} ${formatBookingDate(booking.date)}`;
+
+    const pathParts = [];
+    if (booking.building_name) {
+      pathParts.push(booking.building_name);
+    }
+    if (booking.floor_level != null) {
+      pathParts.push(`Этаж ${booking.floor_level}`);
+    }
+    if (booking.subdivision_level_1) {
+      pathParts.push(booking.subdivision_level_1);
+    }
+    if (booking.subdivision_level_2) {
+      pathParts.push(booking.subdivision_level_2);
+    }
     const spaceLabel =
       booking?.space_name || (booking?.space_id ? `Пространство ${booking.space_id}` : "");
-    const space = document.createElement("div");
-    space.className = "space-booking-space";
-    space.textContent = spaceLabel;
+    if (spaceLabel) {
+      pathParts.push(spaceLabel);
+    }
+
+    const locationEl = document.createElement("div");
+    locationEl.className = "space-booking-location";
+    locationEl.textContent = pathParts.join(" · ");
+
     const desk = document.createElement("div");
     desk.className = "space-booking-desk";
     desk.textContent = booking.desk_label || `Стол ${booking.workplace_id}`;
     info.appendChild(date);
-    if (spaceLabel) {
-      info.appendChild(space);
+    if (pathParts.length > 0) {
+      info.appendChild(locationEl);
     }
     info.appendChild(desk);
 
@@ -3721,6 +3754,204 @@ const renderBookingsList = () => {
     item.appendChild(cancelBtn);
     spaceBookingsList.appendChild(item);
   });
+};
+
+const loadMyMeetingBookings = async () => {
+  if (!meetingBookingsList || !meetingBookingsEmpty) {
+    return;
+  }
+  const headers = getBookingHeaders();
+  try {
+    const response = await apiRequest("/api/meeting-room-bookings/me", { headers });
+    const bookings = Array.isArray(response?.bookings) ? response.bookings : [];
+    bookingState.myMeetingBookings = bookings;
+    renderMeetingBookingsList();
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const formatMeetingBookingTime = (raw) => {
+  if (!raw) {
+    return "";
+  }
+  const parts = String(raw).trim().split(" ");
+  if (parts.length < 2) {
+    return raw;
+  }
+  return parts[1];
+};
+
+const formatMeetingBookingDate = (raw) => {
+  if (!raw) {
+    return "";
+  }
+  const datePart = String(raw).trim().split(" ")[0];
+  return formatBookingDate(datePart);
+};
+
+const formatMeetingBookingWeekday = (raw) => {
+  if (!raw) {
+    return "";
+  }
+  const datePart = String(raw).trim().split(" ")[0];
+  return formatBookingWeekday(datePart);
+};
+
+const renderMeetingBookingsList = () => {
+  if (!meetingBookingsList || !meetingBookingsEmpty) {
+    return;
+  }
+  meetingBookingsList.innerHTML = "";
+  if (!bookingState.myMeetingBookings || bookingState.myMeetingBookings.length === 0) {
+    meetingBookingsEmpty.classList.remove("is-hidden");
+    return;
+  }
+  meetingBookingsEmpty.classList.add("is-hidden");
+  const sorted = [...bookingState.myMeetingBookings].sort((a, b) => {
+    const aTime = a?.start_time || "";
+    const bTime = b?.start_time || "";
+    return aTime.localeCompare(bTime);
+  });
+  sorted.forEach((booking) => {
+    const item = document.createElement("div");
+    item.className = "space-booking-item";
+    item.tabIndex = 0;
+    const info = document.createElement("div");
+    info.className = "space-booking-info";
+    const date = document.createElement("div");
+    date.className = "space-booking-date";
+    const weekday = formatMeetingBookingWeekday(booking.start_time);
+    const dateStr = formatMeetingBookingDate(booking.start_time);
+    date.textContent = weekday ? `${weekday} ${dateStr}` : dateStr;
+    const startT = formatMeetingBookingTime(booking.start_time);
+    const endT = formatMeetingBookingTime(booking.end_time);
+    const timeRange = document.createElement("div");
+    timeRange.className = "space-booking-space";
+    timeRange.textContent = startT && endT ? `${startT} – ${endT}` : "";
+
+    const meetingPathParts = [];
+    if (booking.building_name) {
+      meetingPathParts.push(booking.building_name);
+    }
+    if (booking.floor_level != null) {
+      meetingPathParts.push(`Этаж ${booking.floor_level}`);
+    }
+
+    const meetingLocationEl = document.createElement("div");
+    meetingLocationEl.className = "space-booking-location";
+    meetingLocationEl.textContent = meetingPathParts.join(" · ");
+
+    const roomEl = document.createElement("div");
+    roomEl.className = "space-booking-desk";
+    roomEl.textContent = booking.meeting_room_name || `Переговорка ${booking.meeting_room_id}`;
+
+    info.appendChild(date);
+    if (timeRange.textContent) {
+      info.appendChild(timeRange);
+    }
+    if (meetingPathParts.length > 0) {
+      info.appendChild(meetingLocationEl);
+    }
+    info.appendChild(roomEl);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "space-booking-cancel";
+    cancelBtn.textContent = "Отменить";
+    cancelBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void handleCancelMyMeetingBooking(booking);
+    });
+
+    item.addEventListener("click", () => {
+      const datePart = String(booking.start_time || "").trim().split(" ")[0];
+      const space = {
+        id: Number(booking.meeting_room_id),
+        name: booking.meeting_room_name || "Переговорка",
+        kind: "meeting",
+      };
+      closeBookingsModal();
+      openMeetingBookingModal(space);
+      if (isValidBookingDate(datePart)) {
+        setMeetingBookingSelectedDate(datePart);
+      }
+    });
+
+    item.appendChild(info);
+    item.appendChild(cancelBtn);
+    meetingBookingsList.appendChild(item);
+  });
+};
+
+const handleCancelMyMeetingBooking = async (booking) => {
+  const headers = getBookingHeaders();
+  const roomName = booking.meeting_room_name || "переговорка";
+  const startT = formatMeetingBookingTime(booking.start_time);
+  const endT = formatMeetingBookingTime(booking.end_time);
+  const dateStr = formatMeetingBookingDate(booking.start_time);
+  const confirmed = window.confirm(
+    `Вы уверены, что хотите отменить бронирование "${roomName}" на ${dateStr} ${startT}–${endT}?`
+  );
+  if (!confirmed) {
+    return;
+  }
+  try {
+    await apiRequest("/api/meeting-room-bookings", {
+      method: "DELETE",
+      headers,
+      body: JSON.stringify({
+        meeting_room_id: Number(booking.meeting_room_id),
+        start_time: booking.start_time,
+        end_time: booking.end_time,
+      }),
+    });
+    await loadMyMeetingBookings();
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const handleCancelAllMyMeetingBookings = async () => {
+  const headers = getBookingHeaders();
+  const confirmed = window.confirm(
+    "Вы уверены, что хотите отменить все ваши бронирования переговорок?"
+  );
+  if (!confirmed) {
+    return;
+  }
+  try {
+    await apiRequest("/api/meeting-room-bookings/all", { method: "DELETE", headers });
+    bookingState.myMeetingBookings = [];
+    renderMeetingBookingsList();
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const switchBookingsTab = (tab) => {
+  bookingState.activeBookingsTab = tab;
+  if (bookingsTabCoworking) {
+    bookingsTabCoworking.classList.toggle("is-active", tab === "coworking");
+    bookingsTabCoworking.setAttribute("aria-selected", tab === "coworking" ? "true" : "false");
+  }
+  if (bookingsTabMeeting) {
+    bookingsTabMeeting.classList.toggle("is-active", tab === "meeting");
+    bookingsTabMeeting.setAttribute("aria-selected", tab === "meeting" ? "true" : "false");
+  }
+  if (spaceBookingsSection) {
+    spaceBookingsSection.classList.toggle("is-hidden", tab !== "coworking");
+    spaceBookingsSection.setAttribute("aria-hidden", tab !== "coworking" ? "true" : "false");
+  }
+  if (meetingBookingsSection) {
+    meetingBookingsSection.classList.toggle("is-hidden", tab !== "meeting");
+    meetingBookingsSection.setAttribute("aria-hidden", tab !== "meeting" ? "true" : "false");
+  }
+  if (tab === "coworking") {
+    void loadMyBookings();
+  } else {
+    void loadMyMeetingBookings();
+  }
 };
 
 const getDeskBookingWbBand = (desk) => {
@@ -3942,15 +4173,13 @@ const renderSpaceAttendeesList = (desks = []) => {
 };
 
 const openBookingsModal = () => {
-  if (!spaceBookingsModal || !spaceBookingsSection) {
+  if (!spaceBookingsModal) {
     return;
   }
   bookingState.isListOpen = true;
   spaceBookingsModal.classList.add("is-open");
   spaceBookingsModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("modal-open");
-  spaceBookingsSection.classList.remove("is-hidden");
-  spaceBookingsSection.setAttribute("aria-hidden", "false");
   const baseTitle = "Мои бронирования";
   if (spaceBookingsModalTitle) {
     spaceBookingsModalTitle.textContent = baseTitle;
@@ -3958,18 +4187,24 @@ const openBookingsModal = () => {
   if (spaceBookingsToggleBtn) {
     spaceBookingsToggleBtn.textContent = baseTitle;
   }
-  void loadMyBookings();
+  switchBookingsTab(bookingState.activeBookingsTab || "coworking");
 };
 
 const closeBookingsModal = () => {
-  if (!spaceBookingsModal || !spaceBookingsSection) {
+  if (!spaceBookingsModal) {
     return;
   }
   bookingState.isListOpen = false;
   spaceBookingsModal.classList.remove("is-open");
   spaceBookingsModal.setAttribute("aria-hidden", "true");
-  spaceBookingsSection.classList.add("is-hidden");
-  spaceBookingsSection.setAttribute("aria-hidden", "true");
+  if (spaceBookingsSection) {
+    spaceBookingsSection.classList.add("is-hidden");
+    spaceBookingsSection.setAttribute("aria-hidden", "true");
+  }
+  if (meetingBookingsSection) {
+    meetingBookingsSection.classList.add("is-hidden");
+    meetingBookingsSection.setAttribute("aria-hidden", "true");
+  }
   if (
     !(buildingModal && buildingModal.classList.contains("is-open")) &&
     !(spaceModal && spaceModal.classList.contains("is-open")) &&
@@ -3983,7 +4218,7 @@ const closeBookingsModal = () => {
 };
 
 const toggleBookingsList = () => {
-  if (!spaceBookingsModal || !spaceBookingsSection || !spaceBookingsToggleBtn) {
+  if (!spaceBookingsModal || !spaceBookingsToggleBtn) {
     return;
   }
   if (bookingState.isListOpen) {
@@ -10218,7 +10453,9 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   bookingState.currentMonth = new Date();
   bookingState.bookingsByDeskId = new Map();
   bookingState.myBookings = [];
+  bookingState.myMeetingBookings = [];
   bookingState.isListOpen = false;
+  bookingState.activeBookingsTab = "coworking";
   closeBookingsModal();
   if (spaceBookingsToggleBtn) {
     spaceBookingsToggleBtn.textContent = "Мои бронирования";
@@ -10228,6 +10465,12 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   }
   if (spaceBookingsEmpty) {
     spaceBookingsEmpty.classList.add("is-hidden");
+  }
+  if (meetingBookingsList) {
+    meetingBookingsList.innerHTML = "";
+  }
+  if (meetingBookingsEmpty) {
+    meetingBookingsEmpty.classList.add("is-hidden");
   }
   if (spaceAttendeesList) {
     spaceAttendeesList.innerHTML = "";
@@ -10314,7 +10557,9 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     if (pageSubtitle) {
       const buildingName = building?.name || "";
       const floorLabel = Number.isFinite(floor?.level) ? `Этаж ${floor.level}` : "";
-      const parts = [buildingName, floorLabel].filter(Boolean);
+      const subdivisionL1 = (space.subdivision_level_1 || "").trim();
+      const subdivisionL2 = (space.subdivision_level_2 || "").trim();
+      const parts = [buildingName, floorLabel, subdivisionL1, subdivisionL2].filter(Boolean);
       pageSubtitle.textContent = parts.length > 0 ? parts.join(" · ") : "Просмотр пространства.";
     }
 
@@ -10817,7 +11062,23 @@ if (spaceBookingsToggleBtn) {
 if (spaceBookingsCancelAllBtn) {
   spaceBookingsCancelAllBtn.addEventListener("click", () => {
     clearBookingStatus();
-    void handleCancelAllBookings();
+    if (bookingState.activeBookingsTab === "meeting") {
+      void handleCancelAllMyMeetingBookings();
+    } else {
+      void handleCancelAllBookings();
+    }
+  });
+}
+
+if (bookingsTabCoworking) {
+  bookingsTabCoworking.addEventListener("click", () => {
+    switchBookingsTab("coworking");
+  });
+}
+
+if (bookingsTabMeeting) {
+  bookingsTabMeeting.addEventListener("click", () => {
+    switchBookingsTab("meeting");
   });
 }
 

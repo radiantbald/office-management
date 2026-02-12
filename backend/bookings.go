@@ -12,20 +12,23 @@ import (
 )
 
 type booking struct {
-	ID          int64     `json:"id"`
-	WorkplaceID int64     `json:"workplace_id"`
-	BuildingID  int64     `json:"building_id,omitempty"`
-	FloorLevel  int       `json:"floor_level,omitempty"`
-	WbUserID    string    `json:"wb_user_id"`
-	UserName    string    `json:"user_name"`
-	EmployeeID  string    `json:"employeeID,omitempty"`
-	AvatarURL   string    `json:"avatar_url,omitempty"`
-	WbBand      string    `json:"wb_band,omitempty"`
-	Date        string    `json:"date"`
-	CreatedAt   time.Time `json:"created_at"`
-	DeskLabel   string    `json:"desk_label,omitempty"`
-	SpaceID     int64     `json:"space_id,omitempty"`
-	SpaceName   string    `json:"space_name,omitempty"`
+	ID              int64     `json:"id"`
+	WorkplaceID     int64     `json:"workplace_id"`
+	BuildingID      int64     `json:"building_id,omitempty"`
+	BuildingName    string    `json:"building_name,omitempty"`
+	FloorLevel      int       `json:"floor_level,omitempty"`
+	WbUserID        string    `json:"wb_user_id"`
+	UserName        string    `json:"user_name"`
+	EmployeeID      string    `json:"employeeID,omitempty"`
+	AvatarURL       string    `json:"avatar_url,omitempty"`
+	WbBand          string    `json:"wb_band,omitempty"`
+	Date            string    `json:"date"`
+	CreatedAt       time.Time `json:"created_at"`
+	DeskLabel       string    `json:"desk_label,omitempty"`
+	SpaceID         int64     `json:"space_id,omitempty"`
+	SpaceName       string    `json:"space_name,omitempty"`
+	SubdivisionL1   string    `json:"subdivision_level_1,omitempty"`
+	SubdivisionL2   string    `json:"subdivision_level_2,omitempty"`
 }
 
 type bookingCreatePayload struct {
@@ -305,11 +308,16 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 		        COALESCE(NULLIF(u.wb_user_id, ''), b.employee_id),
 		        COALESCE(NULLIF(u.full_name, ''), ''),
 		        COALESCE(b.employee_id, ''),
-		        d.label, d.coworking_id, s.name, f.building_id, f.level
+		        d.label, d.coworking_id, s.name,
+		        f.building_id, f.level,
+		        ob.name,
+		        COALESCE(s.subdivision_level_1, ''),
+		        COALESCE(s.subdivision_level_2, '')
 		  FROM workplace_bookings b
 		  JOIN workplaces d ON d.id = b.workplace_id
 		   JOIN coworkings s ON s.id = d.coworking_id
 		   JOIN floors f ON f.id = s.floor_id
+		   JOIN office_buildings ob ON ob.id = f.building_id
 		   LEFT JOIN users u ON u.employee_id = b.employee_id
 		  WHERE b.employee_id = $1 AND b.date >= CURRENT_DATE::text
 		  ORDER BY b.date DESC, b.created_at DESC`,
@@ -337,6 +345,9 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 			&item.SpaceName,
 			&item.BuildingID,
 			&item.FloorLevel,
+			&item.BuildingName,
+			&item.SubdivisionL1,
+			&item.SubdivisionL2,
 		); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return

@@ -205,6 +205,7 @@ func main() {
 	mux.HandleFunc("/api/desks/", app.handleDeskSubroutes)
 	mux.HandleFunc("/api/meeting-rooms", app.handleMeetingRooms)
 	mux.HandleFunc("/api/meeting-room-bookings", app.handleMeetingRoomBookings)
+	mux.HandleFunc("/api/meeting-room-bookings/", app.handleMeetingRoomBookingsSubroutes)
 	mux.HandleFunc("/api/bookings", app.handleBookings)
 	mux.HandleFunc("/api/bookings/", app.handleBookingsSubroutes)
 	mux.HandleFunc("/api/users", app.handleUsers)
