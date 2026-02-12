@@ -3655,9 +3655,15 @@ const renderBookingsList = () => {
   spaceBookingsList.innerHTML = "";
   if (!bookingState.myBookings || bookingState.myBookings.length === 0) {
     spaceBookingsEmpty.classList.remove("is-hidden");
+    if (spaceBookingsCancelAllBtn) {
+      spaceBookingsCancelAllBtn.classList.add("is-hidden");
+    }
     return;
   }
   spaceBookingsEmpty.classList.add("is-hidden");
+  if (spaceBookingsCancelAllBtn) {
+    spaceBookingsCancelAllBtn.classList.remove("is-hidden");
+  }
   const sortedBookings = [...bookingState.myBookings].sort((a, b) => {
     const aDate = normalizeBookingDate(a?.date);
     const bDate = normalizeBookingDate(b?.date);
@@ -3805,9 +3811,15 @@ const renderMeetingBookingsList = () => {
   meetingBookingsList.innerHTML = "";
   if (!bookingState.myMeetingBookings || bookingState.myMeetingBookings.length === 0) {
     meetingBookingsEmpty.classList.remove("is-hidden");
+    if (spaceBookingsCancelAllBtn) {
+      spaceBookingsCancelAllBtn.classList.add("is-hidden");
+    }
     return;
   }
   meetingBookingsEmpty.classList.add("is-hidden");
+  if (spaceBookingsCancelAllBtn) {
+    spaceBookingsCancelAllBtn.classList.remove("is-hidden");
+  }
   const sorted = [...bookingState.myMeetingBookings].sort((a, b) => {
     const aTime = a?.start_time || "";
     const bTime = b?.start_time || "";

@@ -1188,16 +1188,20 @@ body.space-editing .space-booking-panel {
 
 .space-bookings-modal .modal-dialog {
   width: min(850px, 100%);
-  max-height: min(80vh, 680px);
+  height: min(80vh, 680px);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .space-bookings-modal .space-bookings-section {
-  max-height: min(60vh, 520px);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .space-bookings-modal .space-bookings-list {
-  max-height: min(50vh, 420px);
+  max-height: 100%;
 }
 
 .space-bookings-header {
@@ -2013,34 +2017,35 @@ body.space-editing .space-booking-panel {
 
 .space-kind-filter {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px;
-  background: #f1f5f9;
-  border-radius: 999px;
-  border: 1px solid #e2e8f0;
+  gap: 0;
+  border-bottom: 2px solid #e2e8f0;
   flex: 1 1 auto;
   min-width: 0;
 }
 
 .space-kind-filter-btn {
-  border: none;
-  background: transparent;
-  color: #475569;
-  border-radius: 999px;
-  padding: 8px 12px;
-  font-size: 12px;
+  flex: 1;
+  padding: 10px 16px;
+  font-size: 14px;
   font-weight: 600;
+  color: #64748b;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
   cursor: pointer;
-  flex: 1 1 0;
+  transition: color 0.2s ease, border-color 0.2s ease;
+  border-radius: 0;
   text-align: center;
-  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.space-kind-filter-btn:hover {
+  color: #1e40af;
 }
 
 .space-kind-filter-btn.is-active {
-  background: #ffffff;
-  color: #1d4ed8;
-  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.12);
+  color: #2563eb;
+  border-bottom-color: #2563eb;
 }
 
 .space-kind-filter-btn:focus-visible {
