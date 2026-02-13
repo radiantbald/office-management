@@ -156,6 +156,11 @@ const bookingsTabMeeting = document.getElementById("bookingsTabMeeting");
 const meetingBookingsSection = document.getElementById("meetingBookingsSection");
 const meetingBookingsList = document.getElementById("meetingBookingsList");
 const meetingBookingsEmpty = document.getElementById("meetingBookingsEmpty");
+const adminBookingsModal = document.getElementById("adminBookingsModal");
+const adminBookingsModalTitle = document.getElementById("adminBookingsModalTitle");
+const adminBookingsList = document.getElementById("adminBookingsList");
+const adminBookingsEmpty = document.getElementById("adminBookingsEmpty");
+const adminBookingsCancelAllBtn = document.getElementById("adminBookingsCancelAllBtn");
 const responsibilitiesModal = document.getElementById("responsibilitiesModal");
 const responsibilitiesList = document.getElementById("responsibilitiesList");
 const responsibilitiesEmpty = document.getElementById("responsibilitiesEmpty");
@@ -266,6 +271,8 @@ const bookingState = {
   activeBookingsTab: "coworking",
   longPressTimer: null,
   longPressTriggered: false,
+  adminBookings: [],
+  isAdminBookingsOpen: false,
 };
 const bookForOtherState = {
   desk: null,
@@ -2278,6 +2285,17 @@ const renderDatePicker = () => {
     footer.appendChild(spaceBookingsToggleBtn);
   }
 
+  if (canManageActiveSpaceResources(getUserInfo())) {
+    const adminBookingsBtn = document.createElement("button");
+    adminBookingsBtn.type = "button";
+    adminBookingsBtn.className = "today-button bookings-toggle-button";
+    adminBookingsBtn.textContent = "Бронирования коворкинга";
+    adminBookingsBtn.addEventListener("click", () => {
+      openAdminBookingsModal();
+    });
+    footer.appendChild(adminBookingsBtn);
+  }
+
   spaceDatePicker.appendChild(header);
   spaceDatePicker.appendChild(grid);
   spaceDatePicker.appendChild(footer);
@@ -4253,7 +4271,8 @@ const closeBookingsModal = () => {
     !(deskModal && deskModal.classList.contains("is-open")) &&
     !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
     !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
-    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open"))
+    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open")) &&
+    !(adminBookingsModal && adminBookingsModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -4308,6 +4327,227 @@ const handleCancelAllBookings = async () => {
     await apiRequest("/api/bookings/all", { method: "DELETE", headers });
     bookingState.myBookings = [];
     renderBookingsList();
+    if (currentSpace?.id && bookingState.selectedDate) {
+      void loadSpaceDesks(currentSpace.id);
+    }
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const openAdminBookingsModal = () => {
+  if (!adminBookingsModal) {
+    return;
+  }
+  bookingState.isAdminBookingsOpen = true;
+  adminBookingsModal.classList.add("is-open");
+  adminBookingsModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  if (adminBookingsModalTitle) {
+    const spaceName = currentSpace?.name || "";
+    adminBookingsModalTitle.textContent = spaceName
+      ? `Бронирования коворкинга — ${spaceName}`
+      : "Бронирования коворкинга";
+  }
+  void loadAdminBookings();
+};
+
+const closeAdminBookingsModal = () => {
+  if (!adminBookingsModal) {
+    return;
+  }
+  bookingState.isAdminBookingsOpen = false;
+  adminBookingsModal.classList.remove("is-open");
+  adminBookingsModal.setAttribute("aria-hidden", "true");
+  if (
+    !(buildingModal && buildingModal.classList.contains("is-open")) &&
+    !(spaceModal && spaceModal.classList.contains("is-open")) &&
+    !(deskModal && deskModal.classList.contains("is-open")) &&
+    !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
+    !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) &&
+    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
+    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open"))
+  ) {
+    document.body.classList.remove("modal-open");
+  }
+};
+
+const loadAdminBookings = async () => {
+  if (!adminBookingsList || !adminBookingsEmpty) {
+    return;
+  }
+  const spaceId = currentSpace?.id;
+  if (!spaceId) {
+    return;
+  }
+  const headers = getBookingHeaders();
+  try {
+    const response = await apiRequest(
+      `/api/bookings/space-bookings?space_id=${encodeURIComponent(spaceId)}`,
+      { headers }
+    );
+    const bookings = Array.isArray(response?.bookings) ? response.bookings : [];
+    bookingState.adminBookings = bookings;
+    renderAdminBookingsList();
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const renderAdminBookingsList = () => {
+  if (!adminBookingsList || !adminBookingsEmpty) {
+    return;
+  }
+  adminBookingsList.innerHTML = "";
+  if (!bookingState.adminBookings || bookingState.adminBookings.length === 0) {
+    adminBookingsEmpty.classList.remove("is-hidden");
+    if (adminBookingsCancelAllBtn) {
+      adminBookingsCancelAllBtn.classList.add("is-hidden");
+    }
+    return;
+  }
+  adminBookingsEmpty.classList.add("is-hidden");
+  if (adminBookingsCancelAllBtn) {
+    adminBookingsCancelAllBtn.classList.remove("is-hidden");
+  }
+
+  const table = document.createElement("table");
+  table.className = "admin-bookings-table";
+
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  const headers = ["Дата бронирования", "Кому забронирован", "Кто забронировал", ""];
+  headers.forEach((text) => {
+    const th = document.createElement("th");
+    th.textContent = text;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  const sortedBookings = [...bookingState.adminBookings].sort((a, b) => {
+    const aDate = normalizeBookingDate(a?.date);
+    const bDate = normalizeBookingDate(b?.date);
+    if (!aDate && !bDate) return 0;
+    if (!aDate) return 1;
+    if (!bDate) return -1;
+    return aDate.localeCompare(bDate);
+  });
+
+  sortedBookings.forEach((booking) => {
+    const row = document.createElement("tr");
+    row.style.cursor = "pointer";
+    row.addEventListener("click", (e) => {
+      if (e.target.closest(".admin-booking-cancel-btn")) {
+        return;
+      }
+      const normalized = normalizeBookingDate(booking.date);
+      if (normalized) {
+        closeAdminBookingsModal();
+        setBookingSelectedDate(normalized);
+      }
+    });
+
+    const dateCell = document.createElement("td");
+    dateCell.textContent = formatBookingDate(booking.date);
+    row.appendChild(dateCell);
+
+    const applierCell = document.createElement("td");
+    const isGuest = String(booking.applier_employee_id || "").trim() === "0";
+    if (isGuest) {
+      applierCell.textContent = "Гость";
+    } else {
+      const name = (booking.user_name || "").trim();
+      const eid = (booking.applier_employee_id || "").trim();
+      if (name && eid) {
+        applierCell.textContent = `${name} (${eid})`;
+      } else if (name) {
+        applierCell.textContent = name;
+      } else if (eid) {
+        applierCell.textContent = eid;
+      } else {
+        applierCell.textContent = "—";
+      }
+    }
+    row.appendChild(applierCell);
+
+    const tenantCell = document.createElement("td");
+    const tenantName = (booking.tenant_user_name || "").trim();
+    const tenantEid = (booking.tenant_employee_id || "").trim();
+    if (tenantName && tenantEid) {
+      tenantCell.textContent = `${tenantName} (${tenantEid})`;
+    } else if (tenantName) {
+      tenantCell.textContent = tenantName;
+    } else if (tenantEid) {
+      tenantCell.textContent = tenantEid;
+    } else {
+      tenantCell.textContent = "—";
+    }
+    row.appendChild(tenantCell);
+
+    const cancelCell = document.createElement("td");
+    cancelCell.className = "admin-booking-cancel-cell";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "admin-booking-cancel-btn";
+    cancelBtn.textContent = "Отменить";
+    cancelBtn.addEventListener("click", () => {
+      void handleCancelAdminBooking(booking);
+    });
+    cancelCell.appendChild(cancelBtn);
+    row.appendChild(cancelCell);
+
+    tbody.appendChild(row);
+  });
+
+  table.appendChild(tbody);
+  adminBookingsList.appendChild(table);
+};
+
+const handleCancelAdminBooking = async (booking) => {
+  const confirmed = window.confirm(
+    `Отменить бронирование на ${formatBookingDate(booking.date)} (${booking.user_name || booking.applier_employee_id || "сотрудник"})?`
+  );
+  if (!confirmed) {
+    return;
+  }
+  const headers = getBookingHeaders();
+  try {
+    await apiRequest("/api/bookings", {
+      method: "DELETE",
+      headers,
+      body: JSON.stringify({
+        date: normalizeBookingDate(booking.date),
+        workplace_id: Number(booking.workplace_id),
+      }),
+    });
+    await loadAdminBookings();
+    if (currentSpace?.id && bookingState.selectedDate) {
+      void loadSpaceDesks(currentSpace.id);
+    }
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const handleCancelAllAdminBookings = async () => {
+  const confirmed = window.confirm("Вы уверены, что хотите отменить все бронирования этого коворкинга?");
+  if (!confirmed) {
+    return;
+  }
+  const spaceId = currentSpace?.id;
+  if (!spaceId) {
+    return;
+  }
+  const headers = getBookingHeaders();
+  try {
+    await apiRequest(
+      `/api/bookings/space-bookings-all?space_id=${encodeURIComponent(spaceId)}`,
+      { method: "DELETE", headers }
+    );
+    bookingState.adminBookings = [];
+    renderAdminBookingsList();
     if (currentSpace?.id && bookingState.selectedDate) {
       void loadSpaceDesks(currentSpace.id);
     }
@@ -10674,7 +10914,10 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   bookingState.myMeetingBookings = [];
   bookingState.isListOpen = false;
   bookingState.activeBookingsTab = "coworking";
+  bookingState.adminBookings = [];
+  bookingState.isAdminBookingsOpen = false;
   closeBookingsModal();
+  closeAdminBookingsModal();
   if (spaceBookingsToggleBtn) {
     spaceBookingsToggleBtn.textContent = "Мои бронирования";
   }
@@ -10689,6 +10932,12 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   }
   if (meetingBookingsEmpty) {
     meetingBookingsEmpty.classList.add("is-hidden");
+  }
+  if (adminBookingsList) {
+    adminBookingsList.innerHTML = "";
+  }
+  if (adminBookingsEmpty) {
+    adminBookingsEmpty.classList.add("is-hidden");
   }
   if (spaceAttendeesList) {
     spaceAttendeesList.innerHTML = "";
@@ -11300,6 +11549,20 @@ if (bookingsTabCoworking) {
 if (bookingsTabMeeting) {
   bookingsTabMeeting.addEventListener("click", () => {
     switchBookingsTab("meeting");
+  });
+}
+
+if (adminBookingsCancelAllBtn) {
+  adminBookingsCancelAllBtn.addEventListener("click", () => {
+    void handleCancelAllAdminBookings();
+  });
+}
+
+if (adminBookingsModal) {
+  adminBookingsModal.querySelectorAll("[data-modal-close]").forEach((el) => {
+    el.addEventListener("click", () => {
+      closeAdminBookingsModal();
+    });
   });
 }
 
@@ -12663,6 +12926,10 @@ document.addEventListener("keydown", (event) => {
     }
     if (meetingBookingModal && meetingBookingModal.classList.contains("is-open")) {
       closeMeetingBookingModal();
+      return;
+    }
+    if (adminBookingsModal && adminBookingsModal.classList.contains("is-open")) {
+      closeAdminBookingsModal();
       return;
     }
     if (spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) {

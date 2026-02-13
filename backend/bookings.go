@@ -21,6 +21,7 @@ type booking struct {
 	UserName          string    `json:"user_name"`
 	ApplierEmployeeID string    `json:"applier_employee_id,omitempty"`
 	TenantEmployeeID  string    `json:"tenant_employee_id,omitempty"`
+	TenantUserName    string    `json:"tenant_user_name,omitempty"`
 	AvatarURL         string    `json:"avatar_url,omitempty"`
 	WbBand            string    `json:"wb_band,omitempty"`
 	Date              string    `json:"date"`
@@ -83,6 +84,18 @@ func (a *app) handleBookingsSubroutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.handleCreateMultipleBookings(w, r)
+	case "/space-bookings":
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		a.handleListSpaceBookings(w, r)
+	case "/space-bookings-all":
+		if r.Method != http.MethodDelete {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		a.handleCancelAllSpaceBookings(w, r)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -427,6 +440,105 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := a.db.Exec(`DELETE FROM workplace_bookings WHERE applier_employee_id = $1`, employeeID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	count, _ := result.RowsAffected()
+	respondJSON(w, http.StatusOK, map[string]any{"success": true, "deletedCount": count})
+}
+
+func (a *app) handleListSpaceBookings(w http.ResponseWriter, r *http.Request) {
+	spaceID := strings.TrimSpace(r.URL.Query().Get("space_id"))
+	if spaceID == "" {
+		respondError(w, http.StatusBadRequest, "space_id is required")
+		return
+	}
+	spaceIDValue, err := strconv.ParseInt(spaceID, 10, 64)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "space_id must be a number")
+		return
+	}
+
+	if !a.ensureCanManageCoworking(w, r, spaceIDValue) {
+		return
+	}
+
+	rows, err := a.db.Query(
+		`SELECT b.id, b.workplace_id, b.date, b.created_at,
+		        COALESCE(b.applier_employee_id, ''),
+		        COALESCE(b.tenant_employee_id, ''),
+		        COALESCE(NULLIF(u.full_name, ''), ''),
+		        COALESCE(NULLIF(ut.full_name, ''), ''),
+		        d.label, d.coworking_id
+		  FROM workplace_bookings b
+		  JOIN workplaces d ON d.id = b.workplace_id
+		  LEFT JOIN users u ON u.employee_id = b.applier_employee_id
+		  LEFT JOIN users ut ON ut.employee_id = b.tenant_employee_id
+		  WHERE d.coworking_id = $1 AND b.date >= CURRENT_DATE::text
+		  ORDER BY b.date ASC, b.created_at DESC`,
+		spaceIDValue,
+	)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	items := make([]booking, 0)
+	for rows.Next() {
+		var item booking
+		if err := rows.Scan(
+			&item.ID,
+			&item.WorkplaceID,
+			&item.Date,
+			&item.CreatedAt,
+			&item.ApplierEmployeeID,
+			&item.TenantEmployeeID,
+			&item.UserName,
+			&item.TenantUserName,
+			&item.DeskLabel,
+			&item.SpaceID,
+		); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if strings.TrimSpace(item.ApplierEmployeeID) == "0" {
+			item.UserName = "Гость"
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{"bookings": items, "success": true})
+}
+
+func (a *app) handleCancelAllSpaceBookings(w http.ResponseWriter, r *http.Request) {
+	spaceID := strings.TrimSpace(r.URL.Query().Get("space_id"))
+	if spaceID == "" {
+		respondError(w, http.StatusBadRequest, "space_id is required")
+		return
+	}
+	spaceIDValue, err := strconv.ParseInt(spaceID, 10, 64)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "space_id must be a number")
+		return
+	}
+
+	if !a.ensureCanManageCoworking(w, r, spaceIDValue) {
+		return
+	}
+
+	result, err := a.db.Exec(
+		`DELETE FROM workplace_bookings
+		  WHERE workplace_id IN (SELECT id FROM workplaces WHERE coworking_id = $1)
+		    AND date >= CURRENT_DATE::text`,
+		spaceIDValue,
+	)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return

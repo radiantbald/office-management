@@ -661,6 +661,28 @@
         </div>
       </div>
     </div>
+    <div id="adminBookingsModal" class="modal admin-bookings-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="adminBookingsModalTitle">
+        <div class="modal-header">
+          <h2 id="adminBookingsModalTitle">Бронирования коворкинга</h2>
+          <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">
+            ✕
+          </button>
+        </div>
+        <div class="admin-bookings-body">
+          <div id="adminBookingsList" class="admin-bookings-list"></div>
+          <div id="adminBookingsEmpty" class="placeholder app-empty is-hidden">
+            Нет активных бронирований
+          </div>
+        </div>
+        <div class="admin-bookings-footer">
+          <button id="adminBookingsCancelAllBtn" class="context-action danger" type="button">
+            Отменить все
+          </button>
+        </div>
+      </div>
+    </div>
     <div id="meetingSearchModal" class="modal meeting-search-modal" aria-hidden="true">
       <div class="modal-backdrop" data-modal-close="true"></div>
       <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="meetingSearchModalTitle">

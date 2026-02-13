@@ -1334,6 +1334,107 @@ body.space-editing .space-booking-panel {
   background: #fecaca;
 }
 
+.admin-bookings-modal .modal-dialog {
+  width: min(900px, 100%);
+  height: min(80vh, 700px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-bookings-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.admin-bookings-list {
+  max-height: 100%;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.admin-bookings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.admin-bookings-table th,
+.admin-bookings-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+
+.admin-bookings-table th {
+  font-weight: 700;
+  font-size: 12px;
+  color: #64748b;
+  background: #f8fafc;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.admin-bookings-table td {
+  color: #1e293b;
+}
+
+.admin-bookings-table tr:hover td {
+  background: #f1f5f9;
+}
+
+.admin-bookings-table .admin-booking-cancel-cell {
+  text-align: right;
+}
+
+.admin-booking-cancel-btn {
+  border: none;
+  background: #fee2e2;
+  color: #b91c1c;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.admin-booking-cancel-btn:hover {
+  background: #fecaca;
+}
+
+.admin-bookings-footer {
+  padding: 12px 0 0;
+  border-top: 1px solid #e2e8f0;
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.admin-bookings-toggle-btn {
+  font-size: 12px;
+  font-weight: 600;
+  color: #2563eb;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  white-space: nowrap;
+}
+
+.admin-bookings-toggle-btn:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
+.date-picker-footer .bookings-toggle-button:last-child {
+  flex: 1 1 100%;
+}
+
 .date-picker {
   background: #ffffff;
   padding: 12px;
@@ -1418,8 +1519,9 @@ body.space-editing .space-booking-panel {
 .date-picker-footer {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   width: 100%;
+  flex-wrap: wrap;
 }
 
 .today-button {
@@ -1441,7 +1543,7 @@ body.space-editing .space-booking-panel {
 .bookings-toggle-button {
   background: #e2e8f0;
   color: #1f2937;
-  flex: 1.4 1 0;
+  flex: 1 1 0;
   white-space: nowrap;
 }
 
