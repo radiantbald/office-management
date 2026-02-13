@@ -1182,10 +1182,6 @@ const fetchOfficeToken = async (accessToken) => {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     };
-    const cookies = getAuthCookies();
-    if (cookies) {
-      headers["X-Cookie"] = cookies;
-    }
     const response = await fetch("/api/auth/office-token", {
       method: "POST",
       headers,
@@ -1578,17 +1574,17 @@ const expandResponsibilitiesFromIDs = async (tokenResp) => {
   }
 
   try {
-    // Fetch buildings if needed
-    if (needsBuildings) {
-      const allBuildings = await apiRequest("/api/buildings");
-      if (Array.isArray(allBuildings)) {
+    // Fetch buildings if needed (for buildings, floors, or coworkings)
+    let allBuildings = null;
+    if (needsBuildings || needsFloors || needsCoworkings) {
+      allBuildings = await apiRequest("/api/buildings");
+      if (Array.isArray(allBuildings) && needsBuildings) {
         result.buildings = allBuildings.filter((b) => tokenResp.buildings.includes(b.id));
       }
     }
 
     // Fetch all floors (we need building context for floors)
     if (needsFloors || needsCoworkings) {
-      const allBuildings = await apiRequest("/api/buildings");
       if (Array.isArray(allBuildings)) {
         for (const building of allBuildings) {
           if (Array.isArray(building.floors)) {
