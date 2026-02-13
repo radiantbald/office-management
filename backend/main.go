@@ -88,11 +88,12 @@ type desk struct {
 }
 
 type deskBookingUser struct {
-	WbUserID   string `json:"wb_user_id"`
-	UserName   string `json:"user_name"`
-	EmployeeID string `json:"employee_id,omitempty"`
-	AvatarURL  string `json:"avatar_url,omitempty"`
-	WbBand     string `json:"wb_band,omitempty"`
+	WbUserID          string `json:"wb_user_id"`
+	UserName          string `json:"user_name"`
+	ApplierEmployeeID string `json:"applier_employee_id,omitempty"`
+	TenantEmployeeID  string `json:"tenant_employee_id,omitempty"`
+	AvatarURL         string `json:"avatar_url,omitempty"`
+	WbBand            string `json:"wb_band,omitempty"`
 }
 
 type deskBookingInfo struct {
@@ -355,12 +356,12 @@ func migrate(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS workplace_bookings (
 			id BIGSERIAL PRIMARY KEY,
 			workplace_id BIGINT NOT NULL,
-			employee_id TEXT NOT NULL,
+			applier_employee_id TEXT NOT NULL,
+			tenant_employee_id TEXT NOT NULL DEFAULT '',
 			date TEXT NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(workplace_id) REFERENCES workplaces(id) ON DELETE CASCADE,
-			UNIQUE(workplace_id, date),
-			UNIQUE(employee_id, date)
+			UNIQUE(workplace_id, date)
 		);`,
 	}
 
@@ -533,6 +534,157 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureUsersView(db); err != nil {
+		return err
+	}
+	if err := migrateWorkplaceBookingsApplierTenant(db); err != nil {
+		return err
+	}
+	if err := migrateWorkplaceBookingsGuestConstraint(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateWorkplaceBookingsApplierTenant(db *sql.DB) error {
+	hasTable, err := tableExists(db, "workplace_bookings")
+	if err != nil || !hasTable {
+		return err
+	}
+	hasEmployeeID, err := columnExists(db, "workplace_bookings", "employee_id")
+	if err != nil {
+		return err
+	}
+	if hasEmployeeID {
+		// Drop all indexes/constraints referencing employee_id before rename.
+		if _, err := db.Exec(`DROP INDEX IF EXISTS workplace_bookings_employee_date_uidx`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`DROP INDEX IF EXISTS workplace_bookings_wb_user_id_date_unique`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(
+			`ALTER TABLE workplace_bookings RENAME COLUMN employee_id TO applier_employee_id`,
+		); err != nil {
+			return err
+		}
+	}
+	if err := ensureColumn(db, "workplace_bookings", "tenant_employee_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// Backfill: for existing bookings the booker is the same as the applier.
+	if _, err := db.Exec(
+		`UPDATE workplace_bookings SET tenant_employee_id = applier_employee_id WHERE tenant_employee_id = ''`,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateWorkplaceBookingsGuestConstraint(db *sql.DB) error {
+	hasTable, err := tableExists(db, "workplace_bookings")
+	if err != nil || !hasTable {
+		return err
+	}
+
+	// Determine current column name (applier_employee_id after rename, employee_id on legacy).
+	colName := "applier_employee_id"
+	hasApplier, err := columnExists(db, "workplace_bookings", "applier_employee_id")
+	if err != nil {
+		return err
+	}
+	if !hasApplier {
+		colName = "employee_id"
+	}
+
+	// Find and drop any unique constraint on (colName, date) regardless of name.
+	rows, err := db.Query(
+		`SELECT c.conname
+		   FROM pg_constraint c
+		   JOIN pg_class t ON c.conrelid = t.oid
+		  WHERE t.relname = 'workplace_bookings'
+		    AND c.contype = 'u'
+		    AND array_length(c.conkey, 1) = 2
+		    AND c.conkey @> (
+		        SELECT ARRAY[
+		            (SELECT a1.attnum FROM pg_attribute a1 WHERE a1.attrelid = t.oid AND a1.attname = $1),
+		            (SELECT a2.attnum FROM pg_attribute a2 WHERE a2.attrelid = t.oid AND a2.attname = 'date')
+		        ]
+		    )`,
+		colName,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var constraintNames []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		constraintNames = append(constraintNames, name)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, name := range constraintNames {
+		if _, err := db.Exec(
+			fmt.Sprintf(`ALTER TABLE workplace_bookings DROP CONSTRAINT %s`, name),
+		); err != nil {
+			return err
+		}
+	}
+
+	// Also drop any non-partial unique index on (colName, date).
+	idxRows, err := db.Query(
+		fmt.Sprintf(
+			`SELECT i.relname
+			   FROM pg_index ix
+			   JOIN pg_class i ON i.oid = ix.indexrelid
+			   JOIN pg_class t ON t.oid = ix.indrelid
+			   JOIN pg_attribute a1 ON a1.attrelid = t.oid
+			   JOIN pg_attribute a2 ON a2.attrelid = t.oid
+			  WHERE t.relname = 'workplace_bookings'
+			    AND ix.indisunique = true
+			    AND a1.attname = '%s' AND a1.attnum = ANY(ix.indkey)
+			    AND a2.attname = 'date' AND a2.attnum = ANY(ix.indkey)
+			    AND array_length(ix.indkey, 1) = 2
+			    AND ix.indpred IS NULL
+			    AND i.relname <> 'workplace_bookings_applier_date_uidx'`, colName),
+	)
+	if err != nil {
+		return err
+	}
+	defer idxRows.Close()
+	var indexNames []string
+	for idxRows.Next() {
+		var name string
+		if err := idxRows.Scan(&name); err != nil {
+			return err
+		}
+		indexNames = append(indexNames, name)
+	}
+	if err := idxRows.Err(); err != nil {
+		return err
+	}
+	for _, name := range indexNames {
+		if _, err := db.Exec(fmt.Sprintf(`DROP INDEX IF EXISTS %s`, name)); err != nil {
+			return err
+		}
+	}
+
+	// Drop old index name if it exists (from before rename).
+	if _, err := db.Exec(`DROP INDEX IF EXISTS workplace_bookings_employee_date_uidx`); err != nil {
+		return err
+	}
+
+	// Create partial unique index that allows multiple applier_employee_id='0' (guest) bookings.
+	if _, err := db.Exec(
+		fmt.Sprintf(
+			`CREATE UNIQUE INDEX IF NOT EXISTS workplace_bookings_applier_date_uidx
+			 ON workplace_bookings (%s, date)
+			 WHERE %s <> '0'`, colName, colName),
+	); err != nil {
 		return err
 	}
 	return nil
@@ -1073,11 +1225,15 @@ func migrateUserKeyColumns(db *sql.DB) error {
 		}
 	}
 
-	if _, err := db.Exec(
-		`CREATE UNIQUE INDEX IF NOT EXISTS workplace_bookings_wb_user_id_date_unique
-		 ON workplace_bookings (employee_id, date)`,
-	); err != nil {
-		return err
+	// Create unique index only if old column name still exists (before rename migration).
+	hasOldCol, _ := columnExists(db, "workplace_bookings", "employee_id")
+	if hasOldCol {
+		if _, err := db.Exec(
+			`CREATE UNIQUE INDEX IF NOT EXISTS workplace_bookings_wb_user_id_date_unique
+			 ON workplace_bookings (employee_id, date)`,
+		); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1721,8 +1877,8 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var payload struct {
-				Name                  string `json:"name"`
-				Address               string `json:"address"`
+				Name                  string  `json:"name"`
+				Address               string  `json:"address"`
 				Timezone              *string `json:"timezone"`
 				ResponsibleEmployeeID *string `json:"responsible_employee_id"`
 				UndergroundFloors     *int    `json:"underground_floors"`
@@ -3888,18 +4044,19 @@ func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWithBooking, error) {
 	rows, err := a.db.Query(
 		`SELECT d.id, d.coworking_id, d.label, d.x, d.y, d.width, d.height, d.rotation, d.created_at,
-		        b.employee_id,
+		        b.applier_employee_id,
 		        COALESCE(NULLIF(u.full_name, ''), ''),
-		        COALESCE(NULLIF(u.employee_id, ''), b.employee_id, ''),
+		        COALESCE(NULLIF(u.employee_id, ''), b.applier_employee_id, ''),
 		        COALESCE(u.wb_user_id, ''),
 		        COALESCE(u.avatar_url, ''),
-		        COALESCE(u.wb_band, '')
+		        COALESCE(u.wb_band, ''),
+		        COALESCE(b.tenant_employee_id, '')
 		   FROM workplaces d
 		   LEFT JOIN workplace_bookings b ON b.workplace_id = d.id AND b.date = $2
 		   LEFT JOIN LATERAL (
 		     SELECT full_name, employee_id, wb_user_id, avatar_url, wb_band
 		       FROM users
-		      WHERE employee_id = b.employee_id
+		      WHERE employee_id = b.applier_employee_id
 		      LIMIT 1
 		   ) u ON true
 		  WHERE d.coworking_id = $1
@@ -3915,12 +4072,13 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 	var items []deskWithBooking
 	for rows.Next() {
 		var d deskWithBooking
-		var bookingWbUserID sql.NullString
+		var bookingApplierID sql.NullString
 		var userName sql.NullString
-		var employeeID sql.NullString
+		var resolvedApplierID sql.NullString
 		var userWbUserID sql.NullString
 		var avatarURL sql.NullString
 		var wbBand sql.NullString
+		var tenantEmployeeID sql.NullString
 		if err := rows.Scan(
 			&d.ID,
 			&d.SpaceID,
@@ -3931,32 +4089,39 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 			&d.Height,
 			&d.Rotation,
 			&d.CreatedAt,
-			&bookingWbUserID,
+			&bookingApplierID,
 			&userName,
-			&employeeID,
+			&resolvedApplierID,
 			&userWbUserID,
 			&avatarURL,
 			&wbBand,
+			&tenantEmployeeID,
 		); err != nil {
 			return nil, err
 		}
-		d.Booking.IsBooked = bookingWbUserID.Valid && strings.TrimSpace(bookingWbUserID.String) != ""
+		d.Booking.IsBooked = bookingApplierID.Valid && strings.TrimSpace(bookingApplierID.String) != ""
 		if d.Booking.IsBooked {
-			wbUserIDValue := strings.TrimSpace(bookingWbUserID.String)
+			applierValue := strings.TrimSpace(bookingApplierID.String)
 			resolvedWbUserID := strings.TrimSpace(userWbUserID.String)
 			if resolvedWbUserID == "" {
-				resolvedWbUserID = wbUserIDValue
+				resolvedWbUserID = applierValue
 			}
 			userNameValue := strings.TrimSpace(userName.String)
 			if userNameValue == "" {
-				userNameValue = wbUserIDValue
+				userNameValue = applierValue
+			}
+			resolvedApplier := strings.TrimSpace(resolvedApplierID.String)
+			if resolvedApplier == "0" {
+				userNameValue = "Гость"
+				resolvedWbUserID = "0"
 			}
 			d.Booking.User = &deskBookingUser{
-				WbUserID:   resolvedWbUserID,
-				UserName:   userNameValue,
-				EmployeeID: strings.TrimSpace(employeeID.String),
-				AvatarURL:  strings.TrimSpace(avatarURL.String),
-				WbBand:     strings.TrimSpace(wbBand.String),
+				WbUserID:          resolvedWbUserID,
+				UserName:          userNameValue,
+				ApplierEmployeeID: resolvedApplier,
+				TenantEmployeeID:  strings.TrimSpace(tenantEmployeeID.String),
+				AvatarURL:         strings.TrimSpace(avatarURL.String),
+				WbBand:            strings.TrimSpace(wbBand.String),
 			}
 		}
 		items = append(items, d)

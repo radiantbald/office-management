@@ -12,33 +12,36 @@ import (
 )
 
 type booking struct {
-	ID              int64     `json:"id"`
-	WorkplaceID     int64     `json:"workplace_id"`
-	BuildingID      int64     `json:"building_id,omitempty"`
-	BuildingName    string    `json:"building_name,omitempty"`
-	FloorLevel      int       `json:"floor_level,omitempty"`
-	WbUserID        string    `json:"wb_user_id"`
-	UserName        string    `json:"user_name"`
-	EmployeeID      string    `json:"employeeID,omitempty"`
-	AvatarURL       string    `json:"avatar_url,omitempty"`
-	WbBand          string    `json:"wb_band,omitempty"`
-	Date            string    `json:"date"`
-	CreatedAt       time.Time `json:"created_at"`
-	DeskLabel       string    `json:"desk_label,omitempty"`
-	SpaceID         int64     `json:"space_id,omitempty"`
-	SpaceName       string    `json:"space_name,omitempty"`
-	SubdivisionL1   string    `json:"subdivision_level_1,omitempty"`
-	SubdivisionL2   string    `json:"subdivision_level_2,omitempty"`
+	ID                int64     `json:"id"`
+	WorkplaceID       int64     `json:"workplace_id"`
+	BuildingID        int64     `json:"building_id,omitempty"`
+	BuildingName      string    `json:"building_name,omitempty"`
+	FloorLevel        int       `json:"floor_level,omitempty"`
+	WbUserID          string    `json:"wb_user_id"`
+	UserName          string    `json:"user_name"`
+	ApplierEmployeeID string    `json:"applier_employee_id,omitempty"`
+	TenantEmployeeID  string    `json:"tenant_employee_id,omitempty"`
+	AvatarURL         string    `json:"avatar_url,omitempty"`
+	WbBand            string    `json:"wb_band,omitempty"`
+	Date              string    `json:"date"`
+	CreatedAt         time.Time `json:"created_at"`
+	DeskLabel         string    `json:"desk_label,omitempty"`
+	SpaceID           int64     `json:"space_id,omitempty"`
+	SpaceName         string    `json:"space_name,omitempty"`
+	SubdivisionL1     string    `json:"subdivision_level_1,omitempty"`
+	SubdivisionL2     string    `json:"subdivision_level_2,omitempty"`
 }
 
 type bookingCreatePayload struct {
-	Date        string `json:"date"`
-	WorkplaceID int64  `json:"workplace_id"`
+	Date             string `json:"date"`
+	WorkplaceID      int64  `json:"workplace_id"`
+	TargetEmployeeID string `json:"target_employee_id,omitempty"`
 }
 
 type bookingMultiPayload struct {
-	Dates       []string `json:"dates"`
-	WorkplaceID int64    `json:"workplace_id"`
+	Dates            []string `json:"dates"`
+	WorkplaceID      int64    `json:"workplace_id"`
+	TargetEmployeeID string   `json:"target_employee_id,omitempty"`
 }
 
 func (a *app) handleBookings(w http.ResponseWriter, r *http.Request) {
@@ -106,15 +109,16 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 
 	rows, err := a.db.Query(
 		`SELECT b.id, b.workplace_id,
-		        COALESCE(NULLIF(u.wb_user_id, ''), b.employee_id),
+		        COALESCE(NULLIF(u.wb_user_id, ''), b.applier_employee_id),
 		        COALESCE(NULLIF(u.full_name, ''), ''),
-		        COALESCE(b.employee_id, ''),
+		        COALESCE(b.applier_employee_id, ''),
+		        COALESCE(b.tenant_employee_id, ''),
 		        COALESCE(u.avatar_url, ''),
 		        COALESCE(u.wb_band, ''),
 		        b.date, b.created_at, d.label, d.coworking_id
 		  FROM workplace_bookings b
 		  JOIN workplaces d ON d.id = b.workplace_id
-		   LEFT JOIN users u ON u.employee_id = b.employee_id
+		   LEFT JOIN users u ON u.employee_id = b.applier_employee_id
 		  WHERE d.coworking_id = $1 AND b.date = $2
 		  ORDER BY b.created_at DESC`,
 		spaceIDValue,
@@ -134,7 +138,8 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 			&item.WorkplaceID,
 			&item.WbUserID,
 			&item.UserName,
-			&item.EmployeeID,
+			&item.ApplierEmployeeID,
+			&item.TenantEmployeeID,
 			&item.AvatarURL,
 			&item.WbBand,
 			&item.Date,
@@ -144,6 +149,9 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 		); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if strings.TrimSpace(item.ApplierEmployeeID) == "0" {
+			item.UserName = "Гость"
 		}
 		items = append(items, item)
 	}
@@ -195,22 +203,41 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	employeeID, err := extractEmployeeIDFromRequest(r, tx)
+	requesterEmployeeID, err := extractEmployeeIDFromRequest(r, tx)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if employeeID == "" {
+	if requesterEmployeeID == "" {
 		respondError(w, http.StatusBadRequest, "employee_id is required")
 		return
 	}
-	if _, err = tx.Exec(
-		`DELETE FROM workplace_bookings WHERE employee_id = $1 AND date = $2`,
-		employeeID,
-		date,
-	); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return
+
+	targetEmployeeID := strings.TrimSpace(payload.TargetEmployeeID)
+	bookingForOther := targetEmployeeID != "" && targetEmployeeID != requesterEmployeeID
+	isGuestBooking := targetEmployeeID == "0"
+
+	if bookingForOther {
+		if !a.canManageCoworkingByWorkplaceID(r, payload.WorkplaceID) {
+			respondError(w, http.StatusForbidden, "Недостаточно прав для бронирования другому сотруднику")
+			return
+		}
+	}
+
+	employeeID := requesterEmployeeID
+	if bookingForOther {
+		employeeID = targetEmployeeID
+	}
+
+	if !isGuestBooking {
+		if _, err = tx.Exec(
+			`DELETE FROM workplace_bookings WHERE applier_employee_id = $1 AND date = $2`,
+			employeeID,
+			date,
+		); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 
 	var existing int
@@ -226,10 +253,11 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO workplace_bookings (workplace_id, employee_id, date)
-		 VALUES ($1, $2, $3)`,
+		`INSERT INTO workplace_bookings (workplace_id, applier_employee_id, tenant_employee_id, date)
+		 VALUES ($1, $2, $3, $4)`,
 		payload.WorkplaceID,
 		employeeID,
+		requesterEmployeeID,
 		date,
 	); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -272,8 +300,9 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Try to cancel own booking first.
 	result, err := a.db.Exec(
-		`DELETE FROM workplace_bookings WHERE employee_id = $1 AND workplace_id = $2 AND date = $3`,
+		`DELETE FROM workplace_bookings WHERE applier_employee_id = $1 AND workplace_id = $2 AND date = $3`,
 		employeeID,
 		payload.WorkplaceID,
 		date,
@@ -284,6 +313,28 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	affected, _ := result.RowsAffected()
+	if affected > 0 {
+		respondJSON(w, http.StatusOK, map[string]any{"success": true})
+		return
+	}
+
+	// Own booking not found — check if user can manage this coworking and cancel any booking.
+	if !a.canManageCoworkingByWorkplaceID(r, payload.WorkplaceID) {
+		respondError(w, http.StatusNotFound, "booking not found")
+		return
+	}
+
+	result, err = a.db.Exec(
+		`DELETE FROM workplace_bookings WHERE workplace_id = $1 AND date = $2`,
+		payload.WorkplaceID,
+		date,
+	)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	affected, _ = result.RowsAffected()
 	if affected == 0 {
 		respondError(w, http.StatusNotFound, "booking not found")
 		return
@@ -305,9 +356,10 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := a.db.Query(
 		`SELECT b.id, b.date, b.created_at, b.workplace_id,
-		        COALESCE(NULLIF(u.wb_user_id, ''), b.employee_id),
+		        COALESCE(NULLIF(u.wb_user_id, ''), b.applier_employee_id),
 		        COALESCE(NULLIF(u.full_name, ''), ''),
-		        COALESCE(b.employee_id, ''),
+		        COALESCE(b.applier_employee_id, ''),
+		        COALESCE(b.tenant_employee_id, ''),
 		        d.label, d.coworking_id, s.name,
 		        f.building_id, f.level,
 		        ob.name,
@@ -318,8 +370,8 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 		   JOIN coworkings s ON s.id = d.coworking_id
 		   JOIN floors f ON f.id = s.floor_id
 		   JOIN office_buildings ob ON ob.id = f.building_id
-		   LEFT JOIN users u ON u.employee_id = b.employee_id
-		  WHERE b.employee_id = $1 AND b.date >= CURRENT_DATE::text
+		   LEFT JOIN users u ON u.employee_id = b.applier_employee_id
+		  WHERE b.applier_employee_id = $1 AND b.date >= CURRENT_DATE::text
 		  ORDER BY b.date DESC, b.created_at DESC`,
 		employeeID,
 	)
@@ -339,7 +391,8 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 			&item.WorkplaceID,
 			&item.WbUserID,
 			&item.UserName,
-			&item.EmployeeID,
+			&item.ApplierEmployeeID,
+			&item.TenantEmployeeID,
 			&item.DeskLabel,
 			&item.SpaceID,
 			&item.SpaceName,
@@ -373,7 +426,7 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := a.db.Exec(`DELETE FROM workplace_bookings WHERE employee_id = $1`, employeeID)
+	result, err := a.db.Exec(`DELETE FROM workplace_bookings WHERE applier_employee_id = $1`, employeeID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -422,14 +475,30 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	}
 	defer tx.Rollback()
 
-	employeeID, err := extractEmployeeIDFromRequest(r, tx)
+	requesterEmployeeID, err := extractEmployeeIDFromRequest(r, tx)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if employeeID == "" {
+	if requesterEmployeeID == "" {
 		respondError(w, http.StatusBadRequest, "employee_id is required")
 		return
+	}
+
+	targetEmployeeID := strings.TrimSpace(payload.TargetEmployeeID)
+	bookingForOther := targetEmployeeID != "" && targetEmployeeID != requesterEmployeeID
+	isGuestBooking := targetEmployeeID == "0"
+
+	if bookingForOther {
+		if !a.canManageCoworkingByWorkplaceID(r, payload.WorkplaceID) {
+			respondError(w, http.StatusForbidden, "Недостаточно прав для бронирования другому сотруднику")
+			return
+		}
+	}
+
+	employeeID := requesterEmployeeID
+	if bookingForOther {
+		employeeID = targetEmployeeID
 	}
 
 	bookedByOthers, err := findBookedDates(tx, payload.WorkplaceID, employeeID, validDates)
@@ -445,7 +514,7 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	if len(available) > 0 {
+	if len(available) > 0 && !isGuestBooking {
 		if err := deleteUserBookingsForDates(tx, employeeID, available); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -456,10 +525,11 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	failed := make([]string, 0, len(validDates))
 	for _, date := range available {
 		if _, err := tx.Exec(
-			`INSERT INTO workplace_bookings (workplace_id, employee_id, date)
-			 VALUES ($1, $2, $3)`,
+			`INSERT INTO workplace_bookings (workplace_id, applier_employee_id, tenant_employee_id, date)
+			 VALUES ($1, $2, $3, $4)`,
 			payload.WorkplaceID,
 			employeeID,
+			requesterEmployeeID,
 			date,
 		); err != nil {
 			failed = append(failed, date)
@@ -497,6 +567,45 @@ func (a *app) ensureWorkplaceExists(workplaceID int64) error {
 		return err
 	}
 	return nil
+}
+
+func (a *app) canManageCoworkingByWorkplaceID(r *http.Request, workplaceID int64) bool {
+	role, err := resolveRoleFromRequest(r, a.db)
+	if err != nil {
+		return false
+	}
+	if role != roleEmployee {
+		return true
+	}
+	coworkingID, err := a.getCoworkingIDByDeskID(workplaceID)
+	if err != nil {
+		return false
+	}
+	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
+	if err != nil || strings.TrimSpace(employeeID) == "" {
+		return false
+	}
+	floorID, err := a.getSpaceFloorID(coworkingID)
+	if err != nil {
+		return false
+	}
+	buildingID, err := a.getBuildingIDByFloorID(floorID)
+	if err != nil {
+		return false
+	}
+	buildingResponsibleID, err := a.getBuildingResponsibleEmployeeID(buildingID)
+	if err == nil && buildingResponsibleID != "" && buildingResponsibleID == strings.TrimSpace(employeeID) {
+		return true
+	}
+	floorResponsibleID, err := a.getFloorResponsibleEmployeeID(floorID)
+	if err == nil && floorResponsibleID != "" && floorResponsibleID == strings.TrimSpace(employeeID) {
+		return true
+	}
+	coworkingResponsibleID, err := a.getCoworkingResponsibleEmployeeID(coworkingID)
+	if err == nil && coworkingResponsibleID != "" && coworkingResponsibleID == strings.TrimSpace(employeeID) {
+		return true
+	}
+	return false
 }
 
 func extractBookingUser(r *http.Request) (string, string) {
@@ -584,7 +693,7 @@ func findBookedDates(tx *sql.Tx, workplaceID int64, employeeID string, dates []s
 		args = append(args, date)
 	}
 	query := fmt.Sprintf(
-		`SELECT date, employee_id FROM workplace_bookings WHERE workplace_id = $1 AND date IN (%s)`,
+		`SELECT date, applier_employee_id FROM workplace_bookings WHERE workplace_id = $1 AND date IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 	rows, err := tx.Query(query, args...)
@@ -622,7 +731,7 @@ func deleteUserBookingsForDates(tx *sql.Tx, employeeID string, dates []string) e
 		args = append(args, date)
 	}
 	query := fmt.Sprintf(
-		`DELETE FROM workplace_bookings WHERE employee_id = $1 AND date IN (%s)`,
+		`DELETE FROM workplace_bookings WHERE applier_employee_id = $1 AND date IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 	_, err := tx.Exec(query, args...)
@@ -660,8 +769,7 @@ func migrateBookingsTable(db *sql.DB) error {
 			date TEXT NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(workplace_id) REFERENCES workplaces(id) ON DELETE CASCADE,
-			UNIQUE(workplace_id, date),
-			UNIQUE(employee_id, date)
+			UNIQUE(workplace_id, date)
 		);`,
 	); err != nil {
 		return err

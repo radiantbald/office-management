@@ -739,6 +739,63 @@
         </div>
       </div>
     </div>
+    <div id="bookForChoiceModal" class="modal book-for-choice-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog modal-dialog-sm" role="dialog" aria-modal="true" aria-labelledby="bookForChoiceTitle">
+        <div class="modal-header">
+          <h2 id="bookForChoiceTitle">Забронировать стол</h2>
+          <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">✕</button>
+        </div>
+        <div class="book-for-choice-body">
+          <p class="book-for-choice-hint">Для кого вы бронируете?</p>
+          <div class="book-for-choice-actions">
+            <button id="bookForSelfBtn" class="primary book-for-choice-btn" type="button">Себе</button>
+            <button id="bookForOtherBtn" class="ghost book-for-choice-btn" type="button">Другому</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="bookForOtherModal" class="modal book-for-other-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog modal-dialog-sm" role="dialog" aria-modal="true" aria-labelledby="bookForOtherTitle">
+        <div class="modal-header">
+          <h2 id="bookForOtherTitle">Бронирование для другого</h2>
+          <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">✕</button>
+        </div>
+        <div class="book-for-other-body">
+          <div class="book-for-other-type-actions">
+            <button id="bookForGuestBtn" class="ghost book-for-other-type-btn" type="button">
+              <span class="book-for-other-type-icon">👤</span>
+              Гость
+            </button>
+          </div>
+          <div class="book-for-other-search">
+            <label class="field">
+              <span>Сотрудник</span>
+              <div class="responsible-picker">
+                <input
+                  id="bookForOtherEmployeeField"
+                  type="text"
+                  placeholder="ФИО или employee id"
+                  autocomplete="off"
+                />
+                <div
+                  class="responsible-suggestions is-hidden"
+                  data-responsible-suggestions-for="bookForOtherEmployeeField"
+                  role="listbox"
+                ></div>
+              </div>
+            </label>
+          </div>
+          <div id="bookForOtherStatus" class="status" role="status" aria-live="polite"></div>
+          <div class="book-for-other-footer">
+            <button id="bookForOtherSubmitBtn" class="primary" type="button" disabled>Забронировать</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="/imagetracer.js"></script>
     <script src="/main.js"></script>
   </body>

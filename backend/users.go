@@ -75,6 +75,26 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !canAccess {
+			var exists int
+			coworkingRow := a.db.QueryRow(
+				`SELECT 1 FROM coworkings c
+				   JOIN floors f ON f.id = c.floor_id
+				  WHERE f.building_id = $1
+				    AND COALESCE(c.responsible_employee_id, '') = $2
+				  LIMIT 1`,
+				buildingID,
+				employeeID,
+			)
+			if err := coworkingRow.Scan(&exists); err != nil {
+				if err != sql.ErrNoRows {
+					respondError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			} else {
+				canAccess = true
+			}
+		}
+		if !canAccess {
 			respondError(w, http.StatusForbidden, "Недостаточно прав")
 			return
 		}

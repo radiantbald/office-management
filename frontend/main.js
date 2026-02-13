@@ -191,6 +191,17 @@ const copyDeskBtn = document.getElementById("copyDeskBtn");
 const pasteDeskBtn = document.getElementById("pasteDeskBtn");
 const shrinkDeskBtn = document.getElementById("shrinkDeskBtn");
 const rotateDeskBtn = document.getElementById("rotateDeskBtn");
+const bookForChoiceModal = document.getElementById("bookForChoiceModal");
+const bookForSelfBtn = document.getElementById("bookForSelfBtn");
+const bookForOtherBtn = document.getElementById("bookForOtherBtn");
+const bookForOtherModal = document.getElementById("bookForOtherModal");
+const bookForGuestBtn = document.getElementById("bookForGuestBtn");
+const bookForOtherEmployeeField = document.getElementById("bookForOtherEmployeeField");
+const bookForOtherSuggestions = document.querySelector(
+  '[data-responsible-suggestions-for="bookForOtherEmployeeField"]'
+);
+const bookForOtherStatus = document.getElementById("bookForOtherStatus");
+const bookForOtherSubmitBtn = document.getElementById("bookForOtherSubmitBtn");
 
 let buildings = [];
 let editingId = null;
@@ -255,6 +266,11 @@ const bookingState = {
   activeBookingsTab: "coworking",
   longPressTimer: null,
   longPressTriggered: false,
+};
+const bookForOtherState = {
+  desk: null,
+  selectedType: null,
+  selectedEmployeeId: "",
 };
 const meetingBookingState = {
   selectedDate: null,
@@ -2066,23 +2082,26 @@ const applyDeskBookingPayload = (desk) => {
     desk.bookingStatus = "free";
     desk.bookingUserName = "";
     desk.bookingUserKey = "";
+    desk.bookingTenantEmployeeID = "";
     return true;
   }
   if (!booking.is_booked) {
     desk.bookingStatus = "free";
     desk.bookingUserName = "";
     desk.bookingUserKey = "";
+    desk.bookingTenantEmployeeID = "";
     return true;
   }
   const user = booking.user || {};
-  const userEmployeeID = String(user.employee_id || user.employeeId || user.employeeID || "").trim();
-  const userKey = userEmployeeID;
+  const userApplierID = String(user.applier_employee_id || user.employee_id || user.employeeId || user.employeeID || "").trim();
+  const userKey = userApplierID;
   const userName = String(
     user.user_name || user.userName || user.full_name || user.fullName || userKey || ""
   ).trim();
   const { employeeId: currentEmployeeID } = getBookingUserInfo();
   desk.bookingUserKey = userKey;
   desk.bookingUserName = formatUserNameInitials(userName);
+  desk.bookingTenantEmployeeID = String(user.tenant_employee_id || "").trim();
   desk.bookingStatus =
     currentEmployeeID && userKey && userKey === currentEmployeeID ? "my" : "booked";
   return true;
@@ -2099,6 +2118,7 @@ const mergeDeskBookingState = (desk, previous = null) => {
     desk.bookingStatus = previous.bookingStatus;
     desk.bookingUserName = previous.bookingUserName;
     desk.bookingUserKey = previous.bookingUserKey;
+    desk.bookingTenantEmployeeID = previous.bookingTenantEmployeeID;
   }
   return desk;
 };
@@ -3441,7 +3461,11 @@ const closeMeetingBookingModal = () => {
 
 const getDeskBookingTitle = (desk) => {
   if (desk.bookingStatus === "booked") {
-    return `Занято: ${desk.bookingUserName || "сотрудник"}`;
+    const name = desk.bookingUserName || "сотрудник";
+    if (canBookForOthers()) {
+      return `Занято: ${name}. Нажмите для отмены`;
+    }
+    return `Занято: ${name}`;
   }
   if (desk.bookingStatus === "my") {
     return "Ваше место";
@@ -3532,7 +3556,7 @@ const syncBookingsFromDesks = (desks = []) => {
       return;
     }
     const user = booking.user || {};
-    const userKey = String(user.employee_id || user.employeeId || user.employeeID || "").trim();
+    const userKey = String(user.applier_employee_id || user.employee_id || user.employeeId || user.employeeID || "").trim();
     if (!userKey) {
       return;
     }
@@ -3542,6 +3566,7 @@ const syncBookingsFromDesks = (desks = []) => {
     byDesk.set(String(desk.id), {
       wb_user_id: userKey,
       user_name: formatUserNameInitials(userName),
+      tenant_employee_id: String(user.tenant_employee_id || "").trim(),
     });
   });
   bookingState.bookingsByDeskId = byDesk;
@@ -3562,21 +3587,26 @@ const applyBookingsToDesks = (bookings = []) => {
       desk.bookingStatus = "free";
       desk.bookingUserName = "";
       desk.bookingUserKey = "";
+      desk.bookingTenantEmployeeID = "";
       desk.booking = null;
       return;
     }
-    const bookingEmployeeID = String(booking.employee_id || booking.employeeId || "").trim();
-    const bookingUserKey = bookingEmployeeID;
+    const bookingApplierID = String(booking.applier_employee_id || booking.employee_id || booking.employeeId || "").trim();
+    const bookingTenantID = String(booking.tenant_employee_id || "").trim();
+    const bookingUserKey = bookingApplierID;
     const bookingUserName = String(booking.user_name || booking.userName || bookingUserKey || "").trim();
     const avatarUrl = String(booking.avatar_url || booking.avatarUrl || "").trim();
     const wbBand = String(booking.wb_band || booking.wbBand || booking.wbband || "").trim();
     desk.bookingUserName = formatUserNameInitials(bookingUserName);
     desk.bookingUserKey = bookingUserKey;
+    desk.bookingTenantEmployeeID = bookingTenantID;
     desk.booking = {
       is_booked: true,
       user: {
         wb_user_id: bookingUserKey,
         user_name: bookingUserName,
+        applier_employee_id: bookingApplierID,
+        tenant_employee_id: bookingTenantID,
         avatar_url: avatarUrl,
         wb_band: wbBand,
       },
@@ -4286,6 +4316,163 @@ const handleCancelAllBookings = async () => {
   }
 };
 
+const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
+  if (!bookingState.selectedDate) {
+    ensureBookingDate();
+  }
+  const headers = getBookingHeaders();
+  try {
+    const body = {
+      date: bookingState.selectedDate,
+      workplace_id: Number(desk.id),
+    };
+    if (targetEmployeeId != null && targetEmployeeId !== "") {
+      body.target_employee_id = String(targetEmployeeId);
+    }
+    await apiRequest("/api/bookings", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    const isGuest = targetEmployeeId === "0";
+    const isOther = targetEmployeeId != null && targetEmployeeId !== "";
+    if (isGuest) {
+      setBookingStatus("Место забронировано для гостя.", "success");
+    } else if (isOther) {
+      setBookingStatus("Место забронировано для сотрудника.", "success");
+    } else {
+      setBookingStatus("Место успешно забронировано.", "success");
+    }
+    if (currentSpace?.id) {
+      await loadSpaceDesks(currentSpace.id);
+    }
+    if (bookingState.isListOpen) {
+      await loadMyBookings();
+    }
+  } catch (error) {
+    setBookingStatus(error.message, "error");
+  }
+};
+
+const canBookForOthers = () => {
+  const user = getUserInfo();
+  return canManageSpaceResources(user, getActiveSpaceForPermissions());
+};
+
+const openBookForChoiceModal = (desk) => {
+  if (!bookForChoiceModal) {
+    return;
+  }
+  bookForOtherState.desk = desk;
+  bookForChoiceModal.classList.add("is-open");
+  bookForChoiceModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+};
+
+const closeBookForChoiceModal = () => {
+  if (!bookForChoiceModal) {
+    return;
+  }
+  bookForChoiceModal.classList.remove("is-open");
+  bookForChoiceModal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+};
+
+const openBookForOtherModal = (desk) => {
+  if (!bookForOtherModal) {
+    return;
+  }
+  bookForOtherState.desk = desk;
+  bookForOtherState.selectedType = null;
+  bookForOtherState.selectedEmployeeId = "";
+  if (bookForOtherEmployeeField) {
+    bookForOtherEmployeeField.value = "";
+  }
+  if (bookForOtherStatus) {
+    bookForOtherStatus.textContent = "";
+    bookForOtherStatus.dataset.tone = "";
+  }
+  if (bookForOtherSubmitBtn) {
+    bookForOtherSubmitBtn.disabled = true;
+  }
+  if (bookForGuestBtn) {
+    bookForGuestBtn.classList.remove("is-selected");
+  }
+  bookForOtherModal.classList.add("is-open");
+  bookForOtherModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  void populateBookForOtherOptions();
+};
+
+const closeBookForOtherModal = () => {
+  if (!bookForOtherModal) {
+    return;
+  }
+  bookForOtherModal.classList.remove("is-open");
+  bookForOtherModal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+};
+
+const populateBookForOtherOptions = async () => {
+  if (!bookForOtherEmployeeField) {
+    return;
+  }
+  const buildingId = currentBuilding?.id || 0;
+  const options = await fetchCoworkingResponsibleOptions(buildingId);
+  setResponsibleOptionsForField(bookForOtherEmployeeField, options);
+};
+
+const updateBookForOtherSubmitState = () => {
+  if (!bookForOtherSubmitBtn) {
+    return;
+  }
+  const type = bookForOtherState.selectedType;
+  if (type === "guest") {
+    bookForOtherSubmitBtn.disabled = false;
+    return;
+  }
+  if (type === "employee") {
+    const raw = normalizeResponsibleValue(bookForOtherEmployeeField?.value);
+    const resolved = resolveResponsibleEmployeeId(
+      raw,
+      getResponsibleOptionsForField(bookForOtherEmployeeField)
+    );
+    bookForOtherSubmitBtn.disabled = !resolved;
+    return;
+  }
+  bookForOtherSubmitBtn.disabled = true;
+};
+
+const handleBookForOtherSubmit = async () => {
+  const desk = bookForOtherState.desk;
+  if (!desk) {
+    return;
+  }
+  const type = bookForOtherState.selectedType;
+  let targetEmployeeId = "";
+  if (type === "guest") {
+    targetEmployeeId = "0";
+  } else if (type === "employee") {
+    const raw = normalizeResponsibleValue(bookForOtherEmployeeField?.value);
+    const resolved = resolveResponsibleEmployeeId(
+      raw,
+      getResponsibleOptionsForField(bookForOtherEmployeeField)
+    );
+    if (!resolved) {
+      if (bookForOtherStatus) {
+        bookForOtherStatus.textContent = "Выберите сотрудника из списка.";
+        bookForOtherStatus.dataset.tone = "error";
+      }
+      return;
+    }
+    targetEmployeeId = resolved;
+  } else {
+    return;
+  }
+  closeBookForOtherModal();
+  await bookDeskForEmployee(desk, targetEmployeeId);
+};
+
 const handleDeskBookingClick = async (desk) => {
   if (!bookingState.selectedDate) {
     ensureBookingDate();
@@ -4315,24 +4502,39 @@ const handleDeskBookingClick = async (desk) => {
       }
       return;
     }
+    if (status === "booked" && canBookForOthers()) {
+      const bookedName = desk.bookingUserName || "сотрудник";
+      const confirmed = window.confirm(
+        `Отменить бронирование стола "${desk.label || "стол"}" (${bookedName})?`
+      );
+      if (!confirmed) {
+        return;
+      }
+      await apiRequest("/api/bookings", {
+        method: "DELETE",
+        headers,
+        body: JSON.stringify({
+          date: bookingState.selectedDate,
+          workplace_id: Number(desk.id),
+        }),
+      });
+      setBookingStatus("Бронирование отменено.", "success");
+      if (currentSpace?.id) {
+        await loadSpaceDesks(currentSpace.id);
+      }
+      if (bookingState.isListOpen) {
+        await loadMyBookings();
+      }
+      return;
+    }
     if (status !== "free") {
       return;
     }
-    await apiRequest("/api/bookings", {
-      method: "POST",
-      headers,
-    body: JSON.stringify({
-      date: bookingState.selectedDate,
-      workplace_id: Number(desk.id),
-    }),
-    });
-    setBookingStatus("Место успешно забронировано.", "success");
-    if (currentSpace?.id) {
-      await loadSpaceDesks(currentSpace.id);
+    if (canBookForOthers()) {
+      openBookForChoiceModal(desk);
+      return;
     }
-    if (bookingState.isListOpen) {
-      await loadMyBookings();
-    }
+    await bookDeskForEmployee(desk);
   } catch (error) {
     setBookingStatus(error.message, "error");
   }
@@ -7389,6 +7591,10 @@ const setSpaceEditMode = (editing) => {
   if (spaceSnapshot) {
     spaceSnapshot.classList.toggle("is-editing", editing);
     spaceSnapshot.classList.toggle("is-booking", !editing);
+    spaceSnapshot.classList.toggle(
+      "can-manage-bookings",
+      !editing && canBookForOthers()
+    );
   }
   if (spaceSnapshotToggleBtn) {
     const canToggleSnapshot = Boolean(
@@ -10601,6 +10807,9 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       spaceBookingPanel.setAttribute("aria-hidden", "false");
     }
     renderSpaceSnapshot(space, floorDetails?.plan_svg || "");
+    if (spaceSnapshot) {
+      spaceSnapshot.classList.toggle("can-manage-bookings", canBookForOthers());
+    }
     await loadSpaceDesks(space.id);
     ensureBookingDate();
   } catch (error) {
@@ -12333,11 +12542,119 @@ if (meetingBookingCancelBtn) {
   });
 }
 
+if (bookForChoiceModal) {
+  bookForChoiceModal.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (target.dataset.modalClose === "true") {
+      closeBookForChoiceModal();
+    }
+  });
+}
+
+if (bookForSelfBtn) {
+  bookForSelfBtn.addEventListener("click", () => {
+    const desk = bookForOtherState.desk;
+    closeBookForChoiceModal();
+    if (desk) {
+      void bookDeskForEmployee(desk);
+    }
+  });
+}
+
+if (bookForOtherBtn) {
+  bookForOtherBtn.addEventListener("click", () => {
+    const desk = bookForOtherState.desk;
+    closeBookForChoiceModal();
+    if (desk) {
+      openBookForOtherModal(desk);
+    }
+  });
+}
+
+if (bookForOtherModal) {
+  bookForOtherModal.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (target.dataset.modalClose === "true") {
+      closeBookForOtherModal();
+    }
+  });
+}
+
+if (bookForGuestBtn) {
+  bookForGuestBtn.addEventListener("click", () => {
+    if (bookForOtherState.selectedType === "guest") {
+      bookForOtherState.selectedType = null;
+      bookForGuestBtn.classList.remove("is-selected");
+    } else {
+      bookForOtherState.selectedType = "guest";
+      bookForGuestBtn.classList.add("is-selected");
+    }
+    if (bookForOtherEmployeeField) {
+      bookForOtherEmployeeField.value = "";
+      bookForOtherEmployeeField.disabled = bookForOtherState.selectedType === "guest";
+    }
+    updateBookForOtherSubmitState();
+  });
+}
+
+if (bookForOtherEmployeeField) {
+  const handleBookForOtherEmployeeInput = () => {
+    if (bookForOtherState.selectedType === "guest") {
+      bookForOtherState.selectedType = null;
+      if (bookForGuestBtn) {
+        bookForGuestBtn.classList.remove("is-selected");
+      }
+    }
+    if (bookForOtherEmployeeField.value.trim()) {
+      bookForOtherState.selectedType = "employee";
+    }
+    updateBookForOtherSubmitState();
+  };
+  bookForOtherEmployeeField.addEventListener("input", handleBookForOtherEmployeeInput);
+  bookForOtherEmployeeField.addEventListener("change", handleBookForOtherEmployeeInput);
+  bookForOtherEmployeeField.addEventListener("focus", handleBookForOtherEmployeeInput);
+}
+
+if (bookForOtherEmployeeField && bookForOtherSuggestions) {
+  setupResponsibleAutocomplete(bookForOtherEmployeeField, bookForOtherSuggestions);
+  bookForOtherSuggestions.addEventListener("mousedown", () => {
+    requestAnimationFrame(() => {
+      if (bookForOtherEmployeeField.value.trim()) {
+        bookForOtherState.selectedType = "employee";
+        if (bookForGuestBtn) {
+          bookForGuestBtn.classList.remove("is-selected");
+        }
+        updateBookForOtherSubmitState();
+      }
+    });
+  });
+}
+
+if (bookForOtherSubmitBtn) {
+  bookForOtherSubmitBtn.addEventListener("click", () => {
+    void handleBookForOtherSubmit();
+  });
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeBreadcrumbMenus();
     if (lassoState.active) {
       cancelLassoMode("Выделение отменено.");
+      return;
+    }
+    if (bookForOtherModal && bookForOtherModal.classList.contains("is-open")) {
+      closeBookForOtherModal();
+      return;
+    }
+    if (bookForChoiceModal && bookForChoiceModal.classList.contains("is-open")) {
+      closeBookForChoiceModal();
       return;
     }
     if (meetingSearchModal && meetingSearchModal.classList.contains("is-open")) {
