@@ -228,6 +228,7 @@ func main() {
 	mux.HandleFunc("/api/bookings/", app.handleBookingsSubroutes)
 	mux.HandleFunc("/api/users", app.handleUsers)
 	mux.HandleFunc("/api/users/role", app.handleUserRole)
+	mux.HandleFunc("/api/responsibilities", app.handleResponsibilities)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -4804,6 +4805,159 @@ func isAllowedImageType(ext, contentType string) bool {
 	default:
 		return false
 	}
+}
+
+func (a *app) handleResponsibilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	employeeID := strings.TrimSpace(r.URL.Query().Get("employee_id"))
+	if employeeID == "" {
+		respondJSON(w, http.StatusOK, map[string]any{
+			"buildings":  []any{},
+			"floors":     []any{},
+			"coworkings": []any{},
+		})
+		return
+	}
+
+	type respBuilding struct {
+		ID      int64  `json:"id"`
+		Name    string `json:"name"`
+		Address string `json:"address"`
+	}
+	type respFloor struct {
+		ID              int64  `json:"id"`
+		Name            string `json:"name"`
+		Level           int    `json:"level"`
+		BuildingID      int64  `json:"buildingId"`
+		BuildingName    string `json:"buildingName"`
+		BuildingAddress string `json:"buildingAddress"`
+	}
+	type respCoworking struct {
+		ID                 int64  `json:"id"`
+		Name               string `json:"name"`
+		FloorID            int64  `json:"floorId"`
+		FloorName          string `json:"floorName"`
+		FloorLevel         int    `json:"floorLevel"`
+		BuildingID         int64  `json:"buildingId"`
+		BuildingName       string `json:"buildingName"`
+		BuildingAddress    string `json:"buildingAddress"`
+		SubdivisionLevel1  string `json:"subdivisionLevel1"`
+		SubdivisionLevel2  string `json:"subdivisionLevel2"`
+	}
+
+	// Buildings where user is responsible.
+	buildingRows, err := a.db.Query(
+		`SELECT id, name, address FROM office_buildings WHERE responsible_employee_id = $1 ORDER BY name`,
+		employeeID,
+	)
+	if err != nil {
+		log.Printf("responsibilities: buildings query error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer buildingRows.Close()
+	var buildings []respBuilding
+	for buildingRows.Next() {
+		var b respBuilding
+		if err := buildingRows.Scan(&b.ID, &b.Name, &b.Address); err != nil {
+			log.Printf("responsibilities: buildings scan error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		buildings = append(buildings, b)
+	}
+	if err := buildingRows.Err(); err != nil {
+		log.Printf("responsibilities: buildings rows error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Floors where user is responsible (with building info).
+	floorRows, err := a.db.Query(
+		`SELECT f.id, f.name, f.level, b.id, b.name, b.address
+		   FROM floors f
+		   JOIN office_buildings b ON b.id = f.building_id
+		  WHERE f.responsible_employee_id = $1
+		  ORDER BY b.name, f.level`,
+		employeeID,
+	)
+	if err != nil {
+		log.Printf("responsibilities: floors query error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer floorRows.Close()
+	var floors []respFloor
+	for floorRows.Next() {
+		var fl respFloor
+		if err := floorRows.Scan(&fl.ID, &fl.Name, &fl.Level, &fl.BuildingID, &fl.BuildingName, &fl.BuildingAddress); err != nil {
+			log.Printf("responsibilities: floors scan error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		floors = append(floors, fl)
+	}
+	if err := floorRows.Err(); err != nil {
+		log.Printf("responsibilities: floors rows error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Coworkings where user is responsible (with floor+building info).
+	coworkingRows, err := a.db.Query(
+		`SELECT c.id, c.name, f.id, f.name, f.level, b.id, b.name, b.address,
+		        COALESCE(c.subdivision_level_1, ''), COALESCE(c.subdivision_level_2, '')
+		   FROM coworkings c
+		   JOIN floors f ON f.id = c.floor_id
+		   JOIN office_buildings b ON b.id = f.building_id
+		  WHERE c.responsible_employee_id = $1
+		  ORDER BY b.name, f.level, c.name`,
+		employeeID,
+	)
+	if err != nil {
+		log.Printf("responsibilities: coworkings query error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer coworkingRows.Close()
+	var coworkings []respCoworking
+	for coworkingRows.Next() {
+		var cw respCoworking
+		if err := coworkingRows.Scan(
+			&cw.ID, &cw.Name, &cw.FloorID, &cw.FloorName, &cw.FloorLevel,
+			&cw.BuildingID, &cw.BuildingName, &cw.BuildingAddress,
+			&cw.SubdivisionLevel1, &cw.SubdivisionLevel2,
+		); err != nil {
+			log.Printf("responsibilities: coworkings scan error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		coworkings = append(coworkings, cw)
+	}
+	if err := coworkingRows.Err(); err != nil {
+		log.Printf("responsibilities: coworkings rows error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if buildings == nil {
+		buildings = []respBuilding{}
+	}
+	if floors == nil {
+		floors = []respFloor{}
+	}
+	if coworkings == nil {
+		coworkings = []respCoworking{}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"buildings":  buildings,
+		"floors":     floors,
+		"coworkings": coworkings,
+	})
 }
 
 func respondJSON(w http.ResponseWriter, status int, payload any) {
