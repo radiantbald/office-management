@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,14 +12,14 @@ import (
 )
 
 type meetingRoomBooking struct {
-	ID            int64     `json:"id"`
-	MeetingRoomID int64     `json:"meeting_room_id"`
-	EmployeeID    string    `json:"employee_id"`
-	UserName      string    `json:"user_name"`
-	WbBand        string    `json:"wb_band,omitempty"`
-	StartTime     string    `json:"start_time"`
-	EndTime       string    `json:"end_time"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID                int64     `json:"id"`
+	MeetingRoomID     int64     `json:"meeting_room_id"`
+	ApplierEmployeeID string    `json:"applier_employee_id"`
+	UserName          string    `json:"user_name"`
+	WbBand            string    `json:"wb_band,omitempty"`
+	StartTime         string    `json:"start_time"`
+	EndTime           string    `json:"end_time"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 type meetingRoomBookingPayload struct {
@@ -78,7 +80,8 @@ type myMeetingRoomBooking struct {
 func (a *app) handleListMyMeetingRoomBookings(w http.ResponseWriter, r *http.Request) {
 	employeeID, err := extractMeetingRoomBookingEmployeeID(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if employeeID == "" {
@@ -100,12 +103,13 @@ func (a *app) handleListMyMeetingRoomBookings(w http.ResponseWriter, r *http.Req
 		   JOIN meeting_rooms m ON m.id = b.meeting_room_id
 		   JOIN floors f ON f.id = m.floor_id
 		   JOIN office_buildings ob ON ob.id = f.building_id
-		  WHERE b.employee_id = $1 AND b.end_at > now()
+		  WHERE b.applier_employee_id = $1 AND b.end_at > now() AND b.cancelled_at IS NULL
 		  ORDER BY b.start_at ASC`,
 		employeeID,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer rows.Close()
@@ -127,7 +131,8 @@ func (a *app) handleListMyMeetingRoomBookings(w http.ResponseWriter, r *http.Req
 			&endAt,
 			&timezone,
 		); err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		tz := strings.TrimSpace(timezone)
@@ -143,7 +148,8 @@ func (a *app) handleListMyMeetingRoomBookings(w http.ResponseWriter, r *http.Req
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -153,7 +159,8 @@ func (a *app) handleListMyMeetingRoomBookings(w http.ResponseWriter, r *http.Req
 func (a *app) handleCancelAllMyMeetingRoomBookings(w http.ResponseWriter, r *http.Request) {
 	employeeID, err := extractMeetingRoomBookingEmployeeID(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if employeeID == "" {
@@ -162,11 +169,14 @@ func (a *app) handleCancelAllMyMeetingRoomBookings(w http.ResponseWriter, r *htt
 	}
 
 	result, err := a.db.Exec(
-		`DELETE FROM meeting_room_bookings WHERE employee_id = $1 AND end_at > now()`,
+		`UPDATE meeting_room_bookings
+		    SET cancelled_at = now(), canceller_employee_id = $1
+		  WHERE applier_employee_id = $1 AND end_at > now() AND cancelled_at IS NULL`,
 		employeeID,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -197,7 +207,8 @@ func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Reque
 			respondError(w, http.StatusNotFound, "meeting room not found")
 			return
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	dayStart, dayEnd, err := getBookingDayBounds(date, timezone)
@@ -213,23 +224,25 @@ func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Reque
 	rows, err := a.db.Query(
 		`SELECT b.id,
 		        b.meeting_room_id,
-		        b.employee_id,
+		        b.applier_employee_id,
 		        COALESCE(NULLIF(u.full_name, ''), ''),
 		        COALESCE(u.wb_band, ''),
 		        b.start_at,
 		        b.end_at,
 		        b.created_at
 		   FROM meeting_room_bookings b
-		   LEFT JOIN users u ON u.employee_id = b.employee_id
+		   LEFT JOIN users u ON u.employee_id = b.applier_employee_id
 		  WHERE b.meeting_room_id = $1
 		    AND NOT (b.end_at <= $2::timestamptz OR b.start_at >= $3::timestamptz)
+		    AND b.cancelled_at IS NULL
 		  ORDER BY b.start_at ASC`,
 		meetingRoomID,
 		dayStart,
 		dayEnd,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer rows.Close()
@@ -242,14 +255,15 @@ func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Reque
 		if err := rows.Scan(
 			&item.ID,
 			&item.MeetingRoomID,
-			&item.EmployeeID,
+			&item.ApplierEmployeeID,
 			&item.UserName,
 			&item.WbBand,
 			&startAt,
 			&endAt,
 			&item.CreatedAt,
 		); err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		item.StartTime = formatDateTimeInLocation(startAt, location)
@@ -257,7 +271,8 @@ func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Reque
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -300,7 +315,8 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 			respondError(w, http.StatusNotFound, "meeting room not found")
 			return
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	startAt, err := parseLocalBookingDateTime(payload.StartTime, timezone)
@@ -322,19 +338,22 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	tx, err := a.db.Begin()
+	ctx := r.Context()
+	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer tx.Rollback()
 
 	var existing int
-	err = tx.QueryRow(
+	err = tx.QueryRowContext(ctx,
 		`SELECT 1
 		   FROM meeting_room_bookings
-		  WHERE meeting_room_id = $1 AND employee_id <> $2
+		  WHERE meeting_room_id = $1 AND applier_employee_id <> $2
 		    AND NOT (end_at <= $3 OR start_at >= $4)
+		    AND cancelled_at IS NULL
 		  LIMIT 1`,
 		payload.MeetingRoomID,
 		employeeID,
@@ -346,33 +365,38 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	replacedCount := int64(0)
-	result, err := tx.Exec(
-		`DELETE FROM meeting_room_bookings
-		  WHERE employee_id = $1 AND meeting_room_id <> $4
-		    AND NOT (end_at <= $2 OR start_at >= $3)`,
+	result, err := tx.ExecContext(ctx,
+		`UPDATE meeting_room_bookings
+		    SET cancelled_at = now(), canceller_employee_id = $1
+		  WHERE applier_employee_id = $1 AND meeting_room_id <> $4
+		    AND NOT (end_at <= $2 OR start_at >= $3)
+		    AND cancelled_at IS NULL`,
 		employeeID,
 		startAt,
 		endAt,
 		payload.MeetingRoomID,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if result != nil {
 		replacedCount, _ = result.RowsAffected()
 	}
 	var existingOwn int
-	err = tx.QueryRow(
+	err = tx.QueryRowContext(ctx,
 		`SELECT 1
 		 FROM meeting_room_bookings
-		WHERE meeting_room_id = $1 AND employee_id = $2
+		WHERE meeting_room_id = $1 AND applier_employee_id = $2
 		  AND start_at = $3 AND end_at = $4
+		  AND cancelled_at IS NULL
 		LIMIT 1`,
 		payload.MeetingRoomID,
 		employeeID,
@@ -380,25 +404,28 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		endAt,
 	).Scan(&existingOwn)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		if _, err := tx.Exec(
-			`INSERT INTO meeting_room_bookings (meeting_room_id, employee_id, start_at, end_at)
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO meeting_room_bookings (meeting_room_id, applier_employee_id, start_at, end_at)
 			 VALUES ($1, $2, $3, $4)`,
 			payload.MeetingRoomID,
 			employeeID,
 			startAt,
 			endAt,
 		); err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -436,7 +463,8 @@ func (a *app) handleCancelMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 			respondError(w, http.StatusNotFound, "meeting room not found")
 			return
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	startAt, err := parseLocalBookingDateTime(payload.StartTime, timezone)
@@ -451,15 +479,19 @@ func (a *app) handleCancelMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 	}
 
 	result, err := a.db.Exec(
-		`DELETE FROM meeting_room_bookings
-		  WHERE meeting_room_id = $1 AND employee_id = $2 AND start_at = $3 AND end_at = $4`,
+		`UPDATE meeting_room_bookings
+		    SET cancelled_at = now(), canceller_employee_id = $5
+		  WHERE meeting_room_id = $1 AND applier_employee_id = $2 AND start_at = $3 AND end_at = $4
+		    AND cancelled_at IS NULL`,
 		payload.MeetingRoomID,
 		employeeID,
 		startAt,
 		endAt,
+		employeeID,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -560,7 +592,7 @@ func formatDateTimeInLocation(value time.Time, location *time.Location) string {
 }
 
 type rowQueryer interface {
-	QueryRow(query string, args ...any) *sql.Row
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 func extractMeetingRoomBookingEmployeeID(r *http.Request, queryer rowQueryer) (string, error) {
@@ -570,11 +602,11 @@ func extractMeetingRoomBookingEmployeeID(r *http.Request, queryer rowQueryer) (s
 	return extractEmployeeIDFromRequest(r, queryer)
 }
 
-func getEmployeeIDByWbUserID(queryer rowQueryer, wbUserID string) (string, error) {
+func getEmployeeIDByWbUserID(ctx context.Context, queryer rowQueryer, wbUserID string) (string, error) {
 	if queryer == nil || strings.TrimSpace(wbUserID) == "" {
 		return "", nil
 	}
-	row := queryer.QueryRow(
+	row := queryer.QueryRowContext(ctx,
 		`SELECT COALESCE(NULLIF(employee_id, ''), '')
 		   FROM users
 		  WHERE wb_user_id = $1 OR wb_team_profile_id = $1 OR employee_id = $1

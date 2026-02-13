@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -53,7 +54,7 @@ func resolveRoleFromRequest(r *http.Request, queryer rowQueryer) (int, error) {
 	if strings.TrimSpace(wbUserID) == "" {
 		return roleEmployee, nil
 	}
-	return getUserRoleByWbUserID(queryer, wbUserID)
+	return getUserRoleByWbUserID(r.Context(), queryer, wbUserID)
 }
 
 func ensureNotEmployeeRole(w http.ResponseWriter, r *http.Request, queryer rowQueryer) bool {
@@ -69,11 +70,11 @@ func ensureNotEmployeeRole(w http.ResponseWriter, r *http.Request, queryer rowQu
 	return true
 }
 
-func getUserRoleByWbUserID(queryer rowQueryer, wbUserID string) (int, error) {
+func getUserRoleByWbUserID(ctx context.Context, queryer rowQueryer, wbUserID string) (int, error) {
 	if queryer == nil || strings.TrimSpace(wbUserID) == "" {
 		return roleEmployee, nil
 	}
-	row := queryer.QueryRow(
+	row := queryer.QueryRowContext(ctx,
 		`SELECT COALESCE(role, $2)
 		   FROM users
 		  WHERE wb_user_id = $1 OR wb_team_profile_id = $1 OR employee_id = $1
@@ -99,7 +100,10 @@ func defaultRoleForNewUser(tx *sql.Tx) (int, error) {
 	if tx == nil {
 		return roleEmployee, nil
 	}
-	if _, err := tx.Exec(`LOCK TABLE users IN EXCLUSIVE MODE`); err != nil {
+	// Use an advisory lock instead of LOCK TABLE IN EXCLUSIVE MODE to avoid
+	// blocking all concurrent reads/writes on the users table.
+	// Key 1 is an arbitrary application-level constant for "first user check".
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(1)`); err != nil {
 		return roleEmployee, err
 	}
 	var count int

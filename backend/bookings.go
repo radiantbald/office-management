@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -132,13 +134,14 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 		  FROM workplace_bookings b
 		  JOIN workplaces d ON d.id = b.workplace_id
 		   LEFT JOIN users u ON u.employee_id = b.applier_employee_id
-		  WHERE d.coworking_id = $1 AND b.date = $2
+		  WHERE d.coworking_id = $1 AND b.date = $2 AND b.cancelled_at IS NULL
 		  ORDER BY b.created_at DESC`,
 		spaceIDValue,
 		date,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer rows.Close()
@@ -160,7 +163,8 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 			&item.DeskLabel,
 			&item.SpaceID,
 		); err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if strings.TrimSpace(item.ApplierEmployeeID) == "0" {
@@ -170,7 +174,8 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 	}
 
 	if err := rows.Err(); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -205,20 +210,24 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusNotFound, "workplace not found")
 			return
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	tx, err := a.db.Begin()
+	ctx := r.Context()
+	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer tx.Rollback()
 
 	requesterEmployeeID, err := extractEmployeeIDFromRequest(r, tx)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if requesterEmployeeID == "" {
@@ -243,29 +252,33 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !isGuestBooking {
-		if _, err = tx.Exec(
-			`DELETE FROM workplace_bookings WHERE applier_employee_id = $1 AND date = $2`,
+		if _, err = tx.ExecContext(ctx,
+			`UPDATE workplace_bookings
+			    SET cancelled_at = now(), canceller_employee_id = $1
+			  WHERE applier_employee_id = $1 AND date = $2 AND cancelled_at IS NULL`,
 			employeeID,
 			date,
 		); err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 	}
 
 	var existing int
-	err = tx.QueryRow(`SELECT 1 FROM workplace_bookings WHERE workplace_id = $1 AND date = $2 LIMIT 1`, payload.WorkplaceID, date).
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM workplace_bookings WHERE workplace_id = $1 AND date = $2 AND cancelled_at IS NULL LIMIT 1`, payload.WorkplaceID, date).
 		Scan(&existing)
 	if err == nil {
 		respondError(w, http.StatusBadRequest, "Стол уже занят")
 		return
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO workplace_bookings (workplace_id, applier_employee_id, tenant_employee_id, date)
 		 VALUES ($1, $2, $3, $4)`,
 		payload.WorkplaceID,
@@ -273,12 +286,14 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 		requesterEmployeeID,
 		date,
 	); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -288,7 +303,8 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if employeeID == "" {
@@ -315,13 +331,17 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 
 	// Try to cancel own booking first.
 	result, err := a.db.Exec(
-		`DELETE FROM workplace_bookings WHERE applier_employee_id = $1 AND workplace_id = $2 AND date = $3`,
+		`UPDATE workplace_bookings
+		    SET cancelled_at = now(), canceller_employee_id = $1
+		  WHERE applier_employee_id = $1 AND workplace_id = $2 AND date = $3
+		    AND cancelled_at IS NULL`,
 		employeeID,
 		payload.WorkplaceID,
 		date,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -338,12 +358,17 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err = a.db.Exec(
-		`DELETE FROM workplace_bookings WHERE workplace_id = $1 AND date = $2`,
+		`UPDATE workplace_bookings
+		    SET cancelled_at = now(), canceller_employee_id = $3
+		  WHERE workplace_id = $1 AND date = $2
+		    AND cancelled_at IS NULL`,
 		payload.WorkplaceID,
 		date,
+		employeeID,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -359,7 +384,8 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if employeeID == "" {
@@ -384,12 +410,13 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 		   JOIN floors f ON f.id = s.floor_id
 		   JOIN office_buildings ob ON ob.id = f.building_id
 		   LEFT JOIN users u ON u.employee_id = b.applier_employee_id
-		  WHERE b.applier_employee_id = $1 AND b.date >= CURRENT_DATE::text
+		  WHERE b.applier_employee_id = $1 AND b.date >= CURRENT_DATE::text AND b.cancelled_at IS NULL
 		  ORDER BY b.date DESC, b.created_at DESC`,
 		employeeID,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer rows.Close()
@@ -415,13 +442,15 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 			&item.SubdivisionL1,
 			&item.SubdivisionL2,
 		); err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -431,7 +460,8 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if employeeID == "" {
@@ -439,9 +469,15 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := a.db.Exec(`DELETE FROM workplace_bookings WHERE applier_employee_id = $1`, employeeID)
+	result, err := a.db.Exec(
+		`UPDATE workplace_bookings
+		    SET cancelled_at = now(), canceller_employee_id = $1
+		  WHERE applier_employee_id = $1 AND cancelled_at IS NULL`,
+		employeeID,
+	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -476,12 +512,13 @@ func (a *app) handleListSpaceBookings(w http.ResponseWriter, r *http.Request) {
 		  JOIN workplaces d ON d.id = b.workplace_id
 		  LEFT JOIN users u ON u.employee_id = b.applier_employee_id
 		  LEFT JOIN users ut ON ut.employee_id = b.tenant_employee_id
-		  WHERE d.coworking_id = $1 AND b.date >= CURRENT_DATE::text
+		  WHERE d.coworking_id = $1 AND b.date >= CURRENT_DATE::text AND b.cancelled_at IS NULL
 		  ORDER BY b.date ASC, b.created_at DESC`,
 		spaceIDValue,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer rows.Close()
@@ -501,7 +538,8 @@ func (a *app) handleListSpaceBookings(w http.ResponseWriter, r *http.Request) {
 			&item.DeskLabel,
 			&item.SpaceID,
 		); err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if strings.TrimSpace(item.ApplierEmployeeID) == "0" {
@@ -510,7 +548,8 @@ func (a *app) handleListSpaceBookings(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -533,14 +572,19 @@ func (a *app) handleCancelAllSpaceBookings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	cancellerID, _ := extractEmployeeIDFromRequest(r, a.db)
 	result, err := a.db.Exec(
-		`DELETE FROM workplace_bookings
+		`UPDATE workplace_bookings
+		    SET cancelled_at = now(), canceller_employee_id = $2
 		  WHERE workplace_id IN (SELECT id FROM workplaces WHERE coworking_id = $1)
-		    AND date >= CURRENT_DATE::text`,
+		    AND date >= CURRENT_DATE::text
+		    AND cancelled_at IS NULL`,
 		spaceIDValue,
+		cancellerID,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -570,7 +614,8 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 			respondError(w, http.StatusNotFound, "workplace not found")
 			return
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -580,16 +625,19 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	tx, err := a.db.Begin()
+	ctx := r.Context()
+	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer tx.Rollback()
 
 	requesterEmployeeID, err := extractEmployeeIDFromRequest(r, tx)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if requesterEmployeeID == "" {
@@ -613,9 +661,10 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 		employeeID = targetEmployeeID
 	}
 
-	bookedByOthers, err := findBookedDates(tx, payload.WorkplaceID, employeeID, validDates)
+	bookedByOthers, err := findBookedDates(ctx, tx, payload.WorkplaceID, employeeID, validDates)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -627,8 +676,9 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	}
 
 	if len(available) > 0 && !isGuestBooking {
-		if err := deleteUserBookingsForDates(tx, employeeID, available); err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+		if err := deleteUserBookingsForDates(ctx, tx, employeeID, available); err != nil {
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 	}
@@ -636,17 +686,25 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	created := make([]string, 0, len(available))
 	failed := make([]string, 0, len(validDates))
 	for _, date := range available {
-		if _, err := tx.Exec(
+		result, err := tx.ExecContext(ctx,
 			`INSERT INTO workplace_bookings (workplace_id, applier_employee_id, tenant_employee_id, date)
-			 VALUES ($1, $2, $3, $4)`,
+			 VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (workplace_id, date) WHERE cancelled_at IS NULL DO NOTHING`,
 			payload.WorkplaceID,
 			employeeID,
 			requesterEmployeeID,
 			date,
-		); err != nil {
-			failed = append(failed, date)
-		} else {
+		)
+		if err != nil {
+			log.Printf("internal error inserting booking for date %s: %v", date, err)
+			respondError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		n, _ := result.RowsAffected()
+		if n > 0 {
 			created = append(created, date)
+		} else {
+			failed = append(failed, date)
 		}
 	}
 
@@ -655,7 +713,8 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	}
 
 	if err := tx.Commit(); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -689,35 +748,31 @@ func (a *app) canManageCoworkingByWorkplaceID(r *http.Request, workplaceID int64
 	if role != roleEmployee {
 		return true
 	}
-	coworkingID, err := a.getCoworkingIDByDeskID(workplaceID)
-	if err != nil {
-		return false
-	}
 	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil || strings.TrimSpace(employeeID) == "" {
 		return false
 	}
-	floorID, err := a.getSpaceFloorID(coworkingID)
+	eid := strings.TrimSpace(employeeID)
+
+	// Single query instead of 7 separate N+1 queries:
+	var buildingResp, floorResp, coworkingResp string
+	err = a.db.QueryRow(
+		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
+		        COALESCE(TRIM(f.responsible_employee_id), ''),
+		        COALESCE(TRIM(c.responsible_employee_id), '')
+		   FROM workplaces w
+		   JOIN coworkings c ON c.id = w.coworking_id
+		   JOIN floors f ON f.id = c.floor_id
+		   JOIN office_buildings b ON b.id = f.building_id
+		  WHERE w.id = $1`,
+		workplaceID,
+	).Scan(&buildingResp, &floorResp, &coworkingResp)
 	if err != nil {
 		return false
 	}
-	buildingID, err := a.getBuildingIDByFloorID(floorID)
-	if err != nil {
-		return false
-	}
-	buildingResponsibleID, err := a.getBuildingResponsibleEmployeeID(buildingID)
-	if err == nil && buildingResponsibleID != "" && buildingResponsibleID == strings.TrimSpace(employeeID) {
-		return true
-	}
-	floorResponsibleID, err := a.getFloorResponsibleEmployeeID(floorID)
-	if err == nil && floorResponsibleID != "" && floorResponsibleID == strings.TrimSpace(employeeID) {
-		return true
-	}
-	coworkingResponsibleID, err := a.getCoworkingResponsibleEmployeeID(coworkingID)
-	if err == nil && coworkingResponsibleID != "" && coworkingResponsibleID == strings.TrimSpace(employeeID) {
-		return true
-	}
-	return false
+	return (buildingResp != "" && buildingResp == eid) ||
+		(floorResp != "" && floorResp == eid) ||
+		(coworkingResp != "" && coworkingResp == eid)
 }
 
 func extractBookingUser(r *http.Request) (string, string) {
@@ -793,7 +848,7 @@ func normalizeBookingDates(dates []string) ([]string, error) {
 	return normalized, nil
 }
 
-func findBookedDates(tx *sql.Tx, workplaceID int64, employeeID string, dates []string) (map[string]bool, error) {
+func findBookedDates(ctx context.Context, tx *sql.Tx, workplaceID int64, employeeID string, dates []string) (map[string]bool, error) {
 	if len(dates) == 0 {
 		return map[string]bool{}, nil
 	}
@@ -805,10 +860,10 @@ func findBookedDates(tx *sql.Tx, workplaceID int64, employeeID string, dates []s
 		args = append(args, date)
 	}
 	query := fmt.Sprintf(
-		`SELECT date, applier_employee_id FROM workplace_bookings WHERE workplace_id = $1 AND date IN (%s)`,
+		`SELECT date, applier_employee_id FROM workplace_bookings WHERE workplace_id = $1 AND date IN (%s) AND cancelled_at IS NULL`,
 		strings.Join(placeholders, ","),
 	)
-	rows, err := tx.Query(query, args...)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -831,7 +886,7 @@ func findBookedDates(tx *sql.Tx, workplaceID int64, employeeID string, dates []s
 	return bookedByOthers, nil
 }
 
-func deleteUserBookingsForDates(tx *sql.Tx, employeeID string, dates []string) error {
+func deleteUserBookingsForDates(ctx context.Context, tx *sql.Tx, employeeID string, dates []string) error {
 	if len(dates) == 0 {
 		return nil
 	}
@@ -843,10 +898,12 @@ func deleteUserBookingsForDates(tx *sql.Tx, employeeID string, dates []string) e
 		args = append(args, date)
 	}
 	query := fmt.Sprintf(
-		`DELETE FROM workplace_bookings WHERE applier_employee_id = $1 AND date IN (%s)`,
+		`UPDATE workplace_bookings
+		    SET cancelled_at = now(), canceller_employee_id = $1
+		  WHERE applier_employee_id = $1 AND date IN (%s) AND cancelled_at IS NULL`,
 		strings.Join(placeholders, ","),
 	)
-	_, err := tx.Exec(query, args...)
+	_, err := tx.ExecContext(ctx, query, args...)
 	return err
 }
 

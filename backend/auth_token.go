@@ -47,7 +47,7 @@ func extractEmployeeIDFromRequest(r *http.Request, queryer rowQueryer) (string, 
 	if wbUserID == "" {
 		return "", nil
 	}
-	return getEmployeeIDByWbUserID(queryer, wbUserID)
+	return getEmployeeIDByWbUserID(r.Context(), queryer, wbUserID)
 }
 
 func parseAuthClaimsFromToken(token string) authClaims {

@@ -106,7 +106,7 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 			if err := a.upsertUserInfo(wbUserID, userName, fullName, employeeID, profileIDStr, avatarURL, wbBand); err != nil {
 				log.Printf("handleAuthUserInfo: failed to save user info: %v", err)
 			}
-			roleID, err := getUserRoleByWbUserID(a.db, wbUserID)
+			roleID, err := getUserRoleByWbUserID(r.Context(), a.db, wbUserID)
 			if err != nil {
 				log.Printf("handleAuthUserInfo: failed to resolve role: %v", err)
 				roleID = roleEmployee

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -76,7 +77,8 @@ func (a *app) ensureCanManageBuilding(w http.ResponseWriter, r *http.Request, bu
 	}
 	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	if strings.TrimSpace(employeeID) == "" {
@@ -89,7 +91,8 @@ func (a *app) ensureCanManageBuilding(w http.ResponseWriter, r *http.Request, bu
 			respondError(w, http.StatusNotFound, "building not found")
 			return false
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	if responsibleID == "" || responsibleID != strings.TrimSpace(employeeID) {
@@ -106,7 +109,8 @@ func (a *app) ensureCanManageBuildingByFloor(w http.ResponseWriter, r *http.Requ
 			respondError(w, http.StatusNotFound, "floor not found")
 			return false
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	return a.ensureCanManageBuilding(w, r, buildingID)
@@ -119,7 +123,8 @@ func (a *app) ensureCanManageBuildingBySpace(w http.ResponseWriter, r *http.Requ
 			respondError(w, http.StatusNotFound, "space not found")
 			return false
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	return a.ensureCanManageBuildingByFloor(w, r, floorID)
@@ -132,7 +137,8 @@ func (a *app) ensureCanManageFloorBySpace(w http.ResponseWriter, r *http.Request
 			respondError(w, http.StatusNotFound, "space not found")
 			return false
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	return a.ensureCanManageFloor(w, r, floorID)
@@ -149,7 +155,8 @@ func (a *app) ensureCanManageFloor(w http.ResponseWriter, r *http.Request, floor
 	}
 	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	if strings.TrimSpace(employeeID) == "" {
@@ -162,7 +169,8 @@ func (a *app) ensureCanManageFloor(w http.ResponseWriter, r *http.Request, floor
 			respondError(w, http.StatusNotFound, "floor not found")
 			return false
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	buildingResponsibleID, err := a.getBuildingResponsibleEmployeeID(buildingID)
@@ -171,7 +179,8 @@ func (a *app) ensureCanManageFloor(w http.ResponseWriter, r *http.Request, floor
 			respondError(w, http.StatusNotFound, "building not found")
 			return false
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	if buildingResponsibleID != "" && buildingResponsibleID == strings.TrimSpace(employeeID) {
@@ -183,7 +192,8 @@ func (a *app) ensureCanManageFloor(w http.ResponseWriter, r *http.Request, floor
 			respondError(w, http.StatusNotFound, "floor not found")
 			return false
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	if responsibleID == "" || responsibleID != strings.TrimSpace(employeeID) {
@@ -263,82 +273,65 @@ func (a *app) ensureCanManageSpace(w http.ResponseWriter, r *http.Request, space
 	}
 	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
-	if strings.TrimSpace(employeeID) == "" {
+	eid := strings.TrimSpace(employeeID)
+	if eid == "" {
 		respondError(w, http.StatusForbidden, "Недостаточно прав")
 		return false
 	}
-	kind, err := a.getSpaceKind(spaceID)
+	// Try coworking first (single query with full hierarchy).
+	var buildingResp, floorResp, coworkingResp string
+	err = a.db.QueryRow(
+		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
+		        COALESCE(TRIM(f.responsible_employee_id), ''),
+		        COALESCE(TRIM(c.responsible_employee_id), '')
+		   FROM coworkings c
+		   JOIN floors f ON f.id = c.floor_id
+		   JOIN office_buildings b ON b.id = f.building_id
+		  WHERE c.id = $1`,
+		spaceID,
+	).Scan(&buildingResp, &floorResp, &coworkingResp)
+	if err == nil {
+		if (buildingResp != "" && buildingResp == eid) ||
+			(floorResp != "" && floorResp == eid) ||
+			(coworkingResp != "" && coworkingResp == eid) {
+			return true
+		}
+		respondError(w, http.StatusForbidden, "Недостаточно прав")
+		return false
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
+		return false
+	}
+	// Maybe it's a meeting room.
+	err = a.db.QueryRow(
+		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
+		        COALESCE(TRIM(f.responsible_employee_id), '')
+		   FROM meeting_rooms mr
+		   JOIN floors f ON f.id = mr.floor_id
+		   JOIN office_buildings b ON b.id = f.building_id
+		  WHERE mr.id = $1`,
+		spaceID,
+	).Scan(&buildingResp, &floorResp)
 	if err != nil {
-		if errors.Is(err, errNotFound) {
+		if errors.Is(err, sql.ErrNoRows) {
 			respondError(w, http.StatusNotFound, "space not found")
-			return false
+		} else {
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
 		return false
 	}
-	floorID, err := a.getSpaceFloorID(spaceID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "space not found")
-			return false
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return false
-	}
-	buildingID, err := a.getBuildingIDByFloorID(floorID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "floor not found")
-			return false
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return false
-	}
-	buildingResponsibleID, err := a.getBuildingResponsibleEmployeeID(buildingID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "building not found")
-			return false
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return false
-	}
-	if buildingResponsibleID != "" && buildingResponsibleID == strings.TrimSpace(employeeID) {
+	if (buildingResp != "" && buildingResp == eid) || (floorResp != "" && floorResp == eid) {
 		return true
 	}
-	responsibleFloorID, err := a.getFloorResponsibleEmployeeID(floorID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "floor not found")
-			return false
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return false
-	}
-	if responsibleFloorID != "" && responsibleFloorID == strings.TrimSpace(employeeID) {
-		return true
-	}
-	if kind != "coworking" {
-		respondError(w, http.StatusForbidden, "Недостаточно прав")
-		return false
-	}
-	responsibleID, err := a.getCoworkingResponsibleEmployeeID(spaceID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "space not found")
-			return false
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return false
-	}
-	if responsibleID == "" || responsibleID != strings.TrimSpace(employeeID) {
-		respondError(w, http.StatusForbidden, "Недостаточно прав")
-		return false
-	}
-	return true
+	respondError(w, http.StatusForbidden, "Недостаточно прав")
+	return false
 }
 
 func (a *app) ensureCanManageCoworking(w http.ResponseWriter, r *http.Request, coworkingID int64) bool {
@@ -352,69 +345,43 @@ func (a *app) ensureCanManageCoworking(w http.ResponseWriter, r *http.Request, c
 	}
 	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
-	if strings.TrimSpace(employeeID) == "" {
+	eid := strings.TrimSpace(employeeID)
+	if eid == "" {
 		respondError(w, http.StatusForbidden, "Недостаточно прав")
 		return false
 	}
-	floorID, err := a.getSpaceFloorID(coworkingID)
+	// Single query: resolve hierarchy and all responsible employee IDs.
+	var buildingResp, floorResp, coworkingResp string
+	err = a.db.QueryRow(
+		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
+		        COALESCE(TRIM(f.responsible_employee_id), ''),
+		        COALESCE(TRIM(c.responsible_employee_id), '')
+		   FROM coworkings c
+		   JOIN floors f ON f.id = c.floor_id
+		   JOIN office_buildings b ON b.id = f.building_id
+		  WHERE c.id = $1`,
+		coworkingID,
+	).Scan(&buildingResp, &floorResp, &coworkingResp)
 	if err != nil {
-		if errors.Is(err, errNotFound) {
+		if errors.Is(err, sql.ErrNoRows) {
 			respondError(w, http.StatusNotFound, "space not found")
-			return false
+		} else {
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
 		return false
 	}
-	buildingID, err := a.getBuildingIDByFloorID(floorID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "floor not found")
-			return false
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return false
-	}
-	buildingResponsibleID, err := a.getBuildingResponsibleEmployeeID(buildingID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "building not found")
-			return false
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return false
-	}
-	if buildingResponsibleID != "" && buildingResponsibleID == strings.TrimSpace(employeeID) {
+	if (buildingResp != "" && buildingResp == eid) ||
+		(floorResp != "" && floorResp == eid) ||
+		(coworkingResp != "" && coworkingResp == eid) {
 		return true
 	}
-	responsibleFloorID, err := a.getFloorResponsibleEmployeeID(floorID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "floor not found")
-			return false
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return false
-	}
-	if responsibleFloorID != "" && responsibleFloorID == strings.TrimSpace(employeeID) {
-		return true
-	}
-	responsibleID, err := a.getCoworkingResponsibleEmployeeID(coworkingID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "space not found")
-			return false
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return false
-	}
-	if responsibleID == "" || responsibleID != strings.TrimSpace(employeeID) {
-		respondError(w, http.StatusForbidden, "Недостаточно прав")
-		return false
-	}
-	return true
+	respondError(w, http.StatusForbidden, "Недостаточно прав")
+	return false
 }
 
 func (a *app) ensureCanManageCoworkings(w http.ResponseWriter, r *http.Request, coworkingIDs []int64) bool {
@@ -431,69 +398,43 @@ func (a *app) ensureCanManageCoworkings(w http.ResponseWriter, r *http.Request, 
 	}
 	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
-	if strings.TrimSpace(employeeID) == "" {
+	eid := strings.TrimSpace(employeeID)
+	if eid == "" {
 		respondError(w, http.StatusForbidden, "Недостаточно прав")
 		return false
 	}
 	for _, coworkingID := range coworkingIDs {
-		floorID, err := a.getSpaceFloorID(coworkingID)
+		var buildingResp, floorResp, coworkingResp string
+		err := a.db.QueryRow(
+			`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
+			        COALESCE(TRIM(f.responsible_employee_id), ''),
+			        COALESCE(TRIM(c.responsible_employee_id), '')
+			   FROM coworkings c
+			   JOIN floors f ON f.id = c.floor_id
+			   JOIN office_buildings b ON b.id = f.building_id
+			  WHERE c.id = $1`,
+			coworkingID,
+		).Scan(&buildingResp, &floorResp, &coworkingResp)
 		if err != nil {
-			if errors.Is(err, errNotFound) {
+			if errors.Is(err, sql.ErrNoRows) {
 				respondError(w, http.StatusNotFound, "space not found")
-				return false
+			} else {
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 			}
-			respondError(w, http.StatusInternalServerError, err.Error())
 			return false
 		}
-		buildingID, err := a.getBuildingIDByFloorID(floorID)
-		if err != nil {
-			if errors.Is(err, errNotFound) {
-				respondError(w, http.StatusNotFound, "floor not found")
-				return false
-			}
-			respondError(w, http.StatusInternalServerError, err.Error())
-			return false
-		}
-		buildingResponsibleID, err := a.getBuildingResponsibleEmployeeID(buildingID)
-		if err != nil {
-			if errors.Is(err, errNotFound) {
-				respondError(w, http.StatusNotFound, "building not found")
-				return false
-			}
-			respondError(w, http.StatusInternalServerError, err.Error())
-			return false
-		}
-		if buildingResponsibleID != "" && buildingResponsibleID == strings.TrimSpace(employeeID) {
+		if (buildingResp != "" && buildingResp == eid) ||
+			(floorResp != "" && floorResp == eid) ||
+			(coworkingResp != "" && coworkingResp == eid) {
 			continue
 		}
-		responsibleFloorID, err := a.getFloorResponsibleEmployeeID(floorID)
-		if err != nil {
-			if errors.Is(err, errNotFound) {
-				respondError(w, http.StatusNotFound, "floor not found")
-				return false
-			}
-			respondError(w, http.StatusInternalServerError, err.Error())
-			return false
-		}
-		if responsibleFloorID != "" && responsibleFloorID == strings.TrimSpace(employeeID) {
-			continue
-		}
-		responsibleID, err := a.getCoworkingResponsibleEmployeeID(coworkingID)
-		if err != nil {
-			if errors.Is(err, errNotFound) {
-				respondError(w, http.StatusNotFound, "space not found")
-				return false
-			}
-			respondError(w, http.StatusInternalServerError, err.Error())
-			return false
-		}
-		if responsibleID == "" || responsibleID != strings.TrimSpace(employeeID) {
-			respondError(w, http.StatusForbidden, "Недостаточно прав")
-			return false
-		}
+		respondError(w, http.StatusForbidden, "Недостаточно прав")
+		return false
 	}
 	return true
 }
@@ -507,16 +448,46 @@ func (a *app) ensureCanManageDesk(w http.ResponseWriter, r *http.Request, deskID
 	if role != roleEmployee {
 		return true
 	}
-	coworkingID, err := a.getCoworkingIDByDeskID(deskID)
+	employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "desk not found")
-			return false
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
-	return a.ensureCanManageCoworking(w, r, coworkingID)
+	eid := strings.TrimSpace(employeeID)
+	if eid == "" {
+		respondError(w, http.StatusForbidden, "Недостаточно прав")
+		return false
+	}
+	// Single query: desk → coworking → floor → building with all responsible IDs.
+	var buildingResp, floorResp, coworkingResp string
+	err = a.db.QueryRow(
+		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
+		        COALESCE(TRIM(f.responsible_employee_id), ''),
+		        COALESCE(TRIM(c.responsible_employee_id), '')
+		   FROM workplaces w
+		   JOIN coworkings c ON c.id = w.coworking_id
+		   JOIN floors f ON f.id = c.floor_id
+		   JOIN office_buildings b ON b.id = f.building_id
+		  WHERE w.id = $1`,
+		deskID,
+	).Scan(&buildingResp, &floorResp, &coworkingResp)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "desk not found")
+		} else {
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
+		}
+		return false
+	}
+	if (buildingResp != "" && buildingResp == eid) ||
+		(floorResp != "" && floorResp == eid) ||
+		(coworkingResp != "" && coworkingResp == eid) {
+		return true
+	}
+	respondError(w, http.StatusForbidden, "Недостаточно прав")
+	return false
 }
 
 func (a *app) ensureCanManageDesks(w http.ResponseWriter, r *http.Request, deskIDs []int64) bool {
@@ -537,7 +508,8 @@ func (a *app) ensureCanManageDesks(w http.ResponseWriter, r *http.Request, deskI
 			respondError(w, http.StatusNotFound, "desk not found")
 			return false
 		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	return a.ensureCanManageCoworkings(w, r, coworkingIDs)

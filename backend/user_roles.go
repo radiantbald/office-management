@@ -25,7 +25,7 @@ func (a *app) handleUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	requesterRole, err := getUserRoleByWbUserID(a.db, requesterID)
+	requesterRole, err := getUserRoleByWbUserID(r.Context(), a.db, requesterID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
 		return

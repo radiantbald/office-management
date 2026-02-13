@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,7 +37,8 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 		}
 		employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		employeeID = strings.TrimSpace(employeeID)
@@ -54,7 +56,8 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusNotFound, "building not found")
 				return
 			}
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		canAccess := strings.TrimSpace(responsibleID) != "" && strings.TrimSpace(responsibleID) == employeeID
@@ -67,7 +70,8 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 			)
 			if err := floorRow.Scan(&exists); err != nil {
 				if err != sql.ErrNoRows {
-					respondError(w, http.StatusInternalServerError, err.Error())
+					log.Printf("internal error: %v", err)
+					respondError(w, http.StatusInternalServerError, "internal error")
 					return
 				}
 			} else {
@@ -87,7 +91,8 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 			)
 			if err := coworkingRow.Scan(&exists); err != nil {
 				if err != sql.ErrNoRows {
-					respondError(w, http.StatusInternalServerError, err.Error())
+					log.Printf("internal error: %v", err)
+					respondError(w, http.StatusInternalServerError, "internal error")
 					return
 				}
 			} else {
@@ -112,7 +117,8 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 		  ORDER BY full_name, employee_id`,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	defer rows.Close()
@@ -121,7 +127,8 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item userSummary
 		if err := rows.Scan(&item.EmployeeID, &item.FullName, &item.WbUserID); err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		item.EmployeeID = strings.TrimSpace(item.EmployeeID)
@@ -130,7 +137,8 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})

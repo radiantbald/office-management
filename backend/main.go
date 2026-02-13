@@ -151,14 +151,19 @@ func postgresDSN() string {
 	if sslMode == "" {
 		sslMode = "disable"
 	}
+	statementTimeout := strings.TrimSpace(os.Getenv("PG_STATEMENT_TIMEOUT"))
+	if statementTimeout == "" {
+		statementTimeout = "30000"
+	}
 	return fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s statement_timeout=%s",
 		host,
 		port,
 		user,
 		password,
 		dbName,
 		sslMode,
+		statementTimeout,
 	)
 }
 
@@ -170,6 +175,15 @@ func main() {
 		log.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
+
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(1 * time.Minute)
+
+	if err := db.Ping(); err != nil {
+		log.Fatalf("ping db: %v", err)
+	}
 
 	if err := migrate(db); err != nil {
 		log.Fatalf("migrate: %v", err)
@@ -347,9 +361,11 @@ func migrate(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS meeting_room_bookings (
 			id BIGSERIAL PRIMARY KEY,
 			meeting_room_id BIGINT NOT NULL,
-			employee_id TEXT NOT NULL,
+			applier_employee_id TEXT NOT NULL,
 			start_at TIMESTAMPTZ NOT NULL,
 			end_at TIMESTAMPTZ NOT NULL,
+			cancelled_at TIMESTAMPTZ,
+			canceller_employee_id TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(meeting_room_id) REFERENCES meeting_rooms(id) ON DELETE CASCADE
 		);`,
@@ -359,6 +375,8 @@ func migrate(db *sql.DB) error {
 			applier_employee_id TEXT NOT NULL,
 			tenant_employee_id TEXT NOT NULL DEFAULT '',
 			date TEXT NOT NULL,
+			cancelled_at TIMESTAMPTZ,
+			canceller_employee_id TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(workplace_id) REFERENCES workplaces(id) ON DELETE CASCADE,
 			UNIQUE(workplace_id, date)
@@ -488,6 +506,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateMeetingRoomBookingsTimeColumns(db); err != nil {
 		return err
 	}
+	if err := migrateMeetingRoomBookingsCancelledColumns(db); err != nil {
+		return err
+	}
 	if err := migrateBookingsTable(db); err != nil {
 		return err
 	}
@@ -541,6 +562,153 @@ func migrate(db *sql.DB) error {
 	}
 	if err := migrateWorkplaceBookingsGuestConstraint(db); err != nil {
 		return err
+	}
+	if err := migrateWorkplaceBookingsCancelledColumns(db); err != nil {
+		return err
+	}
+	if err := migrateWorkplaceBookingsUniqueConstraint(db); err != nil {
+		return err
+	}
+	if err := createBookingIndexes(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateWorkplaceBookingsCancelledColumns(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "workplace_bookings")
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+	if err := ensureColumn(db, "workplace_bookings", "cancelled_at", "TIMESTAMPTZ"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "workplace_bookings", "canceller_employee_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateWorkplaceBookingsUniqueConstraint(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "workplace_bookings")
+	if err != nil || !hasTable {
+		return err
+	}
+	// Drop the non-partial UNIQUE(workplace_id, date) constraint that conflicts with soft-delete.
+	rows, err := db.Query(
+		`SELECT c.conname
+		   FROM pg_constraint c
+		   JOIN pg_class t ON c.conrelid = t.oid
+		  WHERE t.relname = 'workplace_bookings'
+		    AND c.contype = 'u'
+		    AND array_length(c.conkey, 1) = 2
+		    AND c.conkey @> (
+		        SELECT ARRAY[
+		            (SELECT a1.attnum FROM pg_attribute a1 WHERE a1.attrelid = t.oid AND a1.attname = 'workplace_id'),
+		            (SELECT a2.attnum FROM pg_attribute a2 WHERE a2.attrelid = t.oid AND a2.attname = 'date')
+		        ]
+		    )`,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var constraintNames []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		constraintNames = append(constraintNames, name)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, name := range constraintNames {
+		if _, err := db.Exec(
+			fmt.Sprintf("ALTER TABLE workplace_bookings DROP CONSTRAINT %q", name),
+		); err != nil {
+			return err
+		}
+	}
+	// Also drop any non-partial unique index on (workplace_id, date).
+	idxRows, err := db.Query(
+		`SELECT i.relname
+		   FROM pg_index ix
+		   JOIN pg_class i ON i.oid = ix.indexrelid
+		   JOIN pg_class t ON t.oid = ix.indrelid
+		   JOIN pg_attribute a1 ON a1.attrelid = t.oid
+		   JOIN pg_attribute a2 ON a2.attrelid = t.oid
+		  WHERE t.relname = 'workplace_bookings'
+		    AND ix.indisunique = true
+		    AND a1.attname = 'workplace_id' AND a1.attnum = ANY(ix.indkey)
+		    AND a2.attname = 'date' AND a2.attnum = ANY(ix.indkey)
+		    AND array_length(ix.indkey, 1) = 2
+		    AND ix.indpred IS NULL
+		    AND i.relname <> 'workplace_bookings_wp_date_active_uidx'`,
+	)
+	if err != nil {
+		return err
+	}
+	defer idxRows.Close()
+	var indexNames []string
+	for idxRows.Next() {
+		var name string
+		if err := idxRows.Scan(&name); err != nil {
+			return err
+		}
+		indexNames = append(indexNames, name)
+	}
+	if err := idxRows.Err(); err != nil {
+		return err
+	}
+	for _, name := range indexNames {
+		if _, err := db.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %q", name)); err != nil {
+			return err
+		}
+	}
+	// Create partial unique index: only one active booking per workplace+date.
+	if _, err := db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS workplace_bookings_wp_date_active_uidx
+		 ON workplace_bookings (workplace_id, date)
+		 WHERE cancelled_at IS NULL`,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func createBookingIndexes(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_workplace_bookings_wp_date
+		 ON workplace_bookings (workplace_id, date)
+		 WHERE cancelled_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_workplace_bookings_applier_date
+		 ON workplace_bookings (applier_employee_id, date)
+		 WHERE cancelled_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_meeting_room_bookings_room_time
+		 ON meeting_room_bookings (meeting_room_id, start_at, end_at)
+		 WHERE cancelled_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_meeting_room_bookings_applier
+		 ON meeting_room_bookings (applier_employee_id, end_at)
+		 WHERE cancelled_at IS NULL`,
+	}
+	for _, stmt := range indexes {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -629,7 +797,7 @@ func migrateWorkplaceBookingsGuestConstraint(db *sql.DB) error {
 	}
 	for _, name := range constraintNames {
 		if _, err := db.Exec(
-			fmt.Sprintf(`ALTER TABLE workplace_bookings DROP CONSTRAINT %s`, name),
+			fmt.Sprintf(`ALTER TABLE workplace_bookings DROP CONSTRAINT %q`, name),
 		); err != nil {
 			return err
 		}
@@ -1167,11 +1335,16 @@ func migrateMeetingRoomBookingsEmployeeID(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+	hasApplierEmployeeID, err := columnExists(db, "meeting_room_bookings", "applier_employee_id")
+	if err != nil {
+		return err
+	}
 	switch {
-	case !hasEmployeeID && hasWbUserID:
-		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings RENAME COLUMN wb_user_id TO employee_id`); err != nil {
+	case !hasEmployeeID && !hasApplierEmployeeID && hasWbUserID:
+		if _, err := db.Exec(`ALTER TABLE meeting_room_bookings RENAME COLUMN wb_user_id TO applier_employee_id`); err != nil {
 			return err
 		}
+		hasApplierEmployeeID = true
 	case hasEmployeeID && hasWbUserID:
 		if _, err := db.Exec(
 			`UPDATE meeting_room_bookings
@@ -1184,14 +1357,46 @@ func migrateMeetingRoomBookingsEmployeeID(db *sql.DB) error {
 			return err
 		}
 	}
+	// Rename employee_id → applier_employee_id if not yet renamed.
+	if !hasApplierEmployeeID {
+		hasEmployeeID, err = columnExists(db, "meeting_room_bookings", "employee_id")
+		if err != nil {
+			return err
+		}
+		if hasEmployeeID {
+			if _, err := db.Exec(`ALTER TABLE meeting_room_bookings RENAME COLUMN employee_id TO applier_employee_id`); err != nil {
+				return err
+			}
+		}
+	}
 	if _, err := db.Exec(
 		`UPDATE meeting_room_bookings b
-		 SET employee_id = COALESCE(NULLIF(u.employee_id, ''), b.employee_id)
+		 SET applier_employee_id = COALESCE(NULLIF(u.employee_id, ''), b.applier_employee_id)
 		 FROM users u
-		 WHERE b.employee_id = u.wb_user_id
-		    OR b.employee_id = u.wb_team_profile_id
-		    OR b.employee_id = u.employee_id`,
+		 WHERE b.applier_employee_id = u.wb_user_id
+		    OR b.applier_employee_id = u.wb_team_profile_id
+		    OR b.applier_employee_id = u.employee_id`,
 	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateMeetingRoomBookingsCancelledColumns(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "meeting_room_bookings")
+	if err != nil {
+		return err
+	}
+	if !hasTable {
+		return nil
+	}
+	if err := ensureColumn(db, "meeting_room_bookings", "cancelled_at", "TIMESTAMPTZ"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "meeting_room_bookings", "canceller_employee_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	return nil
@@ -1525,19 +1730,19 @@ func migrateBookingUserKeyColumn(db *sql.DB, table string) error {
 	}
 	switch {
 	case hasUserKey && !hasWbUserID:
-		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s RENAME COLUMN user_key TO wb_user_id", table)); err != nil {
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %q RENAME COLUMN user_key TO wb_user_id", table)); err != nil {
 			return err
 		}
 	case hasUserKey && hasWbUserID:
 		if _, err := db.Exec(fmt.Sprintf(
-			`UPDATE %s
+			`UPDATE %q
 			 SET wb_user_id = user_key
 			 WHERE (wb_user_id = '' OR wb_user_id IS NULL) AND user_key <> ''`,
 			table,
 		)); err != nil {
 			return err
 		}
-		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN user_key", table)); err != nil {
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %q DROP COLUMN user_key", table)); err != nil {
 			return err
 		}
 	}
@@ -1697,7 +1902,7 @@ func ensureColumn(db *sql.DB, table, column, definition string) error {
 	if exists {
 		return nil
 	}
-	_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	_, err := db.Exec(fmt.Sprintf("ALTER TABLE %q ADD COLUMN %q %s", table, column, definition))
 	return err
 }
 
@@ -1739,7 +1944,8 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		items, err := a.listBuildings()
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -1750,7 +1956,12 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 			created, status, err := a.createBuildingFromMultipart(w, r)
 			if err != nil {
-				respondError(w, status, err.Error())
+				if status == http.StatusInternalServerError {
+					log.Printf("internal error: %v", err)
+					respondError(w, status, "internal error")
+				} else {
+					respondError(w, status, err.Error())
+				}
 				return
 			}
 			respondJSON(w, http.StatusCreated, created)
@@ -1786,7 +1997,8 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 		}
 		result, err := a.createBuildingWithFloors(payload.Name, payload.Address, timezone, "", payload.UndergroundFloors, payload.AbovegroundFloors, payload.ResponsibleEmployeeID)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		respondJSON(w, http.StatusCreated, result)
@@ -1868,7 +2080,8 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "building not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			respondJSON(w, http.StatusOK, item)
@@ -1915,7 +2128,8 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 						respondError(w, http.StatusNotFound, "building not found")
 						return
 					}
-					respondError(w, http.StatusInternalServerError, err.Error())
+					log.Printf("internal error: %v", err)
+					respondError(w, http.StatusInternalServerError, "internal error")
 					return
 				}
 				timezone = existing.Timezone
@@ -1949,7 +2163,8 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "building not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			respondJSON(w, http.StatusOK, result)
@@ -1962,7 +2177,8 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "building not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			respondJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -1983,7 +2199,8 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "building not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			file, header, err := r.FormFile("image")
@@ -2016,7 +2233,8 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "building not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			if existing.ImageURL != "" && existing.ImageURL != imageURL {
@@ -2033,7 +2251,8 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "building not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			respondJSON(w, http.StatusOK, updated)
@@ -2050,7 +2269,8 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		items, err := a.listFloorsByBuilding(id)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -2085,7 +2305,8 @@ func (a *app) handleFloors(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := a.createFloor(payload.BuildingID, payload.Name, payload.Level, payload.PlanSVG)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	respondJSON(w, http.StatusCreated, result)
@@ -2107,7 +2328,8 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "floor not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			respondJSON(w, http.StatusOK, item)
@@ -2160,7 +2382,8 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 						respondError(w, http.StatusNotFound, "floor not found")
 						return
 					}
-					respondError(w, http.StatusInternalServerError, err.Error())
+					log.Printf("internal error: %v", err)
+					respondError(w, http.StatusInternalServerError, "internal error")
 					return
 				}
 			}
@@ -2175,7 +2398,8 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 						respondError(w, http.StatusBadRequest, err.Error())
 						return
 					}
-					respondError(w, http.StatusInternalServerError, err.Error())
+					log.Printf("internal error: %v", err)
+					respondError(w, http.StatusInternalServerError, "internal error")
 					return
 				}
 			}
@@ -2189,7 +2413,8 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "floor not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -2201,7 +2426,8 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			items, err := a.listSpacesByFloor(id)
 			if err != nil {
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			respondJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -2290,7 +2516,8 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		payload.ResponsibleEmployeeID,
 	)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if payload.FloorResponsibleEmployeeID != "" {
@@ -2299,7 +2526,8 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusNotFound, "floor not found")
 				return
 			}
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 	}
@@ -2322,7 +2550,8 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "space not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			respondJSON(w, http.StatusOK, item)
@@ -2402,7 +2631,8 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 							respondError(w, http.StatusBadRequest, "snapshot can only be hidden for coworking")
 							return
 						}
-						respondError(w, http.StatusInternalServerError, err.Error())
+						log.Printf("internal error: %v", err)
+						respondError(w, http.StatusInternalServerError, "internal error")
 						return
 					}
 					effectiveKind = kind
@@ -2440,7 +2670,8 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "space not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			if payload.FloorResponsibleEmployeeID != nil {
@@ -2458,7 +2689,8 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 						respondError(w, http.StatusNotFound, "floor not found")
 						return
 					}
-					respondError(w, http.StatusInternalServerError, err.Error())
+					log.Printf("internal error: %v", err)
+					respondError(w, http.StatusInternalServerError, "internal error")
 					return
 				}
 			}
@@ -2472,7 +2704,8 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusNotFound, "space not found")
 					return
 				}
-				respondError(w, http.StatusInternalServerError, err.Error())
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -2498,7 +2731,8 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 		}
 		items, err := a.listDesksBySpaceWithBookings(id, date)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -2509,7 +2743,8 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 		}
 		items, err := a.listMeetingRoomsBySpace(id)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -2558,7 +2793,8 @@ func (a *app) handleDesks(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := a.createDesk(payload.SpaceID, payload.Label, *payload.X, *payload.Y, width, height, rotation)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	respondJSON(w, http.StatusCreated, result)
@@ -2626,7 +2862,8 @@ func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 		}
 		created, err := a.createDesksBulk(inputs)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		respondJSON(w, http.StatusCreated, map[string]any{"items": created})
@@ -2666,7 +2903,8 @@ func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusNotFound, "desk not found")
 				return
 			}
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -2728,7 +2966,8 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		respondJSON(w, http.StatusOK, result)
@@ -2741,7 +2980,8 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusNotFound, "desk not found")
 				return
 			}
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -2783,7 +3023,8 @@ func (a *app) handleMeetingRooms(w http.ResponseWriter, r *http.Request) {
 			}
 			floorID = resolvedFloorID
 		} else {
-			respondError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 	}
@@ -2792,7 +3033,8 @@ func (a *app) handleMeetingRooms(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := a.createMeetingRoom(floorID, payload.Name, payload.Capacity)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	respondJSON(w, http.StatusCreated, result)
@@ -4052,7 +4294,7 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 		        COALESCE(u.wb_band, ''),
 		        COALESCE(b.tenant_employee_id, '')
 		   FROM workplaces d
-		   LEFT JOIN workplace_bookings b ON b.workplace_id = d.id AND b.date = $2
+		   LEFT JOIN workplace_bookings b ON b.workplace_id = d.id AND b.date = $2 AND b.cancelled_at IS NULL
 		   LEFT JOIN LATERAL (
 		     SELECT full_name, employee_id, wb_user_id, avatar_url, wb_band
 		       FROM users
@@ -4423,7 +4665,8 @@ func parseIDFromPath(path, prefix string) (int64, string, error) {
 }
 
 func decodeJSON(r *http.Request, dst any) error {
-	decoder := json.NewDecoder(r.Body)
+	// Limit request body to 1 MB to prevent memory exhaustion attacks.
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
 		return err
