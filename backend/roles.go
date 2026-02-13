@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 )
 
@@ -18,38 +17,19 @@ func isValidRole(role int) bool {
 	return role == roleEmployee || role == roleAdmin
 }
 
-func roleTokenFor(role int) string {
-	switch role {
-	case roleEmployee:
-		return strings.TrimSpace(os.Getenv("ROLE_TOKEN_EMPLOYEE"))
-	case roleAdmin:
-		return strings.TrimSpace(os.Getenv("ROLE_TOKEN_ADMIN"))
-	default:
-		return ""
-	}
-}
-
-func roleTokenFromRequest(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	token := strings.TrimSpace(r.Header.Get("role_token"))
-	if token != "" {
-		return token
-	}
-	return strings.TrimSpace(r.Header.Get("Role-Token"))
-}
-
+// resolveRoleFromRequest determines the caller's role.
+//
+// Priority:
+//  1. Office-Access-Token claims (cryptographically verified, includes role).
+//  2. Database lookup by wb_user_id from the authorization claims.
 func resolveRoleFromRequest(r *http.Request, queryer rowQueryer) (int, error) {
-	token := roleTokenFromRequest(r)
-	if token != "" {
-		if adminToken := roleTokenFor(roleAdmin); adminToken != "" && token == adminToken {
-			return roleAdmin, nil
-		}
-		if employeeToken := roleTokenFor(roleEmployee); employeeToken != "" && token == employeeToken {
-			return roleEmployee, nil
+	// Fast path: role is already embedded in the verified Office-Access-Token.
+	if atClaims := officeAccessTokenClaimsFromContext(r.Context()); atClaims != nil {
+		if isValidRole(atClaims.Role) {
+			return atClaims.Role, nil
 		}
 	}
+	// Slow path: fall back to DB.
 	wbUserID, _ := extractBookingUser(r)
 	if strings.TrimSpace(wbUserID) == "" {
 		return roleEmployee, nil

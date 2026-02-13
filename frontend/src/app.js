@@ -5,6 +5,10 @@ import {
   getUserInfo,
   setAuthCookies,
   getAuthCookies,
+  setOfficeAccessToken,
+  getOfficeAccessToken,
+  setOfficeRefreshToken,
+  getOfficeRefreshToken,
   clearAuthStorage,
   getCachedAvatar,
   cacheAvatarData,
@@ -818,7 +822,7 @@ const updateAuthUserBlock = (user) => {
     authUserBlock.classList.remove("is-hidden");
   }
   updateBreadcrumbProfile(user);
-  void fetchResponsibilitiesForUser();
+  // Note: fetchResponsibilitiesForUser() is called explicitly after Office-Access-Token is obtained
 };
 
 const setAuthStep = (step) => {
@@ -1013,6 +1017,190 @@ const fetchAuthUserInfo = async (accessToken) => {
   }
 };
 
+/**
+ * Check whether the stored Office Access Token is still valid (not expired).
+ * Returns true if the token exists and its `exp` claim is in the future
+ * (with a 60-second safety margin).
+ */
+const isOfficeAccessTokenValid = () => {
+  try {
+    const token = getOfficeAccessToken();
+    if (!token) return false;
+    const parts = token.split(".");
+    if (parts.length !== 3) return false;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    // Refresh 60 s before actual expiry to avoid using a stale token.
+    return typeof payload.exp === "number" && payload.exp > Date.now() / 1000 + 60;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Extract responsibilities from the Office Access Token.
+ * Returns { buildings: [], floors: [], coworkings: [] } or null if no token/responsibilities.
+ */
+const getResponsibilitiesFromToken = () => {
+  try {
+    const token = getOfficeAccessToken();
+    if (!token) return null;
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    const resp = payload.responsibilities;
+    if (!resp) return null;
+    return {
+      buildings: Array.isArray(resp.buildings) ? resp.buildings : [],
+      floors: Array.isArray(resp.floors) ? resp.floors : [],
+      coworkings: Array.isArray(resp.coworkings) ? resp.coworkings : [],
+    };
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Check if the refresh token is expiring soon (within 7 days).
+ * Returns true if we should proactively refresh to rotate the token.
+ */
+const isRefreshTokenExpiringSoon = () => {
+  try {
+    const token = getOfficeRefreshToken();
+    if (!token) return false;
+    const parts = token.split(".");
+    if (parts.length !== 3) return false;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    // Proactively refresh if less than 7 days remaining (7 * 24 * 60 * 60 seconds)
+    const sevenDaysInSeconds = 7 * 24 * 60 * 60;
+    return typeof payload.exp === "number" && payload.exp < Date.now() / 1000 + sevenDaysInSeconds;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Attempt to refresh the access token using the stored refresh token.
+ * Returns true if refresh was successful, false otherwise.
+ */
+const refreshAccessToken = async () => {
+  try {
+    const refreshToken = getOfficeRefreshToken();
+    if (!refreshToken) return false;
+
+    const response = await fetch("/api/auth/refresh", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        office_refresh_token: refreshToken,
+      }),
+      credentials: "include",
+    });
+
+    if (!response.ok) {
+      // Refresh token is invalid or expired - clear both tokens
+      setOfficeAccessToken(null);
+      setOfficeRefreshToken(null);
+      return false;
+    }
+
+    const data = await response.json().catch(() => null);
+    if (data?.office_access_token) {
+      setOfficeAccessToken(data.office_access_token);
+      // ROTATING REFRESH TOKEN: Save the new refresh token if provided
+      if (data?.office_refresh_token) {
+        setOfficeRefreshToken(data.office_refresh_token);
+      }
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Start automatic token refresh checking.
+ * Checks every 5 minutes if tokens need to be refreshed.
+ * - Access token: refreshed when expired or about to expire (60s margin)
+ * - Refresh token: proactively rotated when expiring within 7 days
+ */
+const startAutoTokenRefresh = () => {
+  const checkAndRefresh = async () => {
+    const hasRefreshToken = !!getOfficeRefreshToken();
+    if (!hasRefreshToken) return;
+
+    const accessTokenValid = isOfficeAccessTokenValid();
+    const refreshExpiringSoon = isRefreshTokenExpiringSoon();
+
+    // Scenario 1: Access token expired or invalid → refresh immediately
+    if (!accessTokenValid) {
+      await refreshAccessToken();
+    }
+    // Scenario 2: Access token is valid but refresh token expiring soon → proactively rotate
+    else if (refreshExpiringSoon) {
+      await refreshAccessToken();
+    }
+  };
+  
+  // Check every 5 minutes
+  setInterval(checkAndRefresh, 5 * 60 * 1000);
+  
+  // Also check when page becomes visible again (user returns to tab)
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      checkAndRefresh();
+    }
+  });
+};
+
+/**
+ * Request server-signed Office tokens (access + refresh).
+ * Skips the request if a valid (non-expired) access token is already stored.
+ * If access token is expired but refresh token exists, tries to refresh instead.
+ * The tokens are persisted in localStorage and automatically sent with
+ * every subsequent API request via api.js.
+ */
+const fetchOfficeToken = async (accessToken) => {
+  try {
+    if (!accessToken) return;
+    
+    // If we have a valid access token, nothing to do
+    if (isOfficeAccessTokenValid()) return;
+    
+    // If access token expired, try to refresh it
+    const refreshToken = getOfficeRefreshToken();
+    if (refreshToken) {
+      const refreshed = await refreshAccessToken();
+      if (refreshed) return; // Successfully refreshed
+      // Refresh failed, fall through to fetch new tokens
+    }
+
+    // Fetch new tokens from scratch
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    };
+    const cookies = getAuthCookies();
+    if (cookies) {
+      headers["X-Cookie"] = cookies;
+    }
+    const response = await fetch("/api/auth/office-token", {
+      method: "POST",
+      headers,
+      credentials: "include",
+    });
+    const data = await response.json().catch(() => null);
+    if (response.ok && data?.office_access_token && data?.office_refresh_token) {
+      setOfficeAccessToken(data.office_access_token);
+      setOfficeRefreshToken(data.office_refresh_token);
+    }
+  } catch {
+    // Non-critical: Office tokens will be fetched on next login attempt.
+  }
+};
+
 const fetchAndStoreWBBand = async (accessToken, user) => {
   try {
     if (!accessToken || !user) {
@@ -1080,6 +1268,13 @@ const initializeAuth = async () => {
     return;
   }
 
+  // Ensure we have a valid Office Access Token before any API requests.
+  // This is a no-op if the stored token is still valid (checked inside).
+  await fetchOfficeToken(token);
+  
+  // Start automatic token refresh checking
+  startAutoTokenRefresh();
+
   // Kick off app initialization immediately so key data requests start without delay.
   void runAppInit();
 
@@ -1098,6 +1293,7 @@ const initializeAuth = async () => {
     setUserInfo(userResult.user);
     updateAuthUserBlock(userResult.user);
     refreshDeskBookingOwnership();
+    void fetchResponsibilitiesForUser(); // Fetch responsibilities after Office-Access-Token is obtained
     if (authGate) {
       hideAuthGate();
     }
@@ -1360,6 +1556,93 @@ const getCoworkingLabel = (space) => {
   return name || "Коворкинг";
 };
 
+/**
+ * Expand responsibility IDs to full objects by fetching data from API.
+ * Takes { buildings: [id...], floors: [id...], coworkings: [id...] }
+ * Returns { buildings: [...], floors: [...], coworkings: [...] } with full objects.
+ */
+const expandResponsibilitiesFromIDs = async (tokenResp) => {
+  const result = {
+    buildings: [],
+    floors: [],
+    coworkings: [],
+  };
+
+  // Fetch all entities if we have any IDs
+  const needsBuildings = tokenResp.buildings.length > 0;
+  const needsFloors = tokenResp.floors.length > 0;
+  const needsCoworkings = tokenResp.coworkings.length > 0;
+
+  if (!needsBuildings && !needsFloors && !needsCoworkings) {
+    return result;
+  }
+
+  try {
+    // Fetch buildings if needed
+    if (needsBuildings) {
+      const allBuildings = await apiRequest("/api/buildings");
+      if (Array.isArray(allBuildings)) {
+        result.buildings = allBuildings.filter((b) => tokenResp.buildings.includes(b.id));
+      }
+    }
+
+    // Fetch all floors (we need building context for floors)
+    if (needsFloors || needsCoworkings) {
+      const allBuildings = await apiRequest("/api/buildings");
+      if (Array.isArray(allBuildings)) {
+        for (const building of allBuildings) {
+          if (Array.isArray(building.floors)) {
+            for (const floor of building.floors) {
+              // Add floor data if user is responsible
+              if (needsFloors && tokenResp.floors.includes(floor.id)) {
+                result.floors.push({
+                  id: floor.id,
+                  name: floor.name,
+                  level: floor.level,
+                  buildingId: building.id,
+                  buildingName: building.name,
+                  buildingAddress: building.address,
+                });
+              }
+
+              // Fetch coworkings for this floor if needed
+              if (needsCoworkings) {
+                try {
+                  const spaces = await apiRequest(`/api/floors/${floor.id}/spaces`);
+                  if (Array.isArray(spaces)) {
+                    for (const space of spaces) {
+                      if (space.kind === "coworking" && tokenResp.coworkings.includes(space.id)) {
+                        result.coworkings.push({
+                          id: space.id,
+                          name: space.name,
+                          floorId: floor.id,
+                          floorName: floor.name,
+                          floorLevel: floor.level,
+                          buildingId: building.id,
+                          buildingName: building.name,
+                          buildingAddress: building.address,
+                          subdivisionLevel1: space.subdivision_level_1 || "",
+                          subdivisionLevel2: space.subdivision_level_2 || "",
+                        });
+                      }
+                    }
+                  }
+                } catch (err) {
+                  // Skip this floor if we can't fetch spaces
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    // Return whatever we managed to fetch
+  }
+
+  return result;
+};
+
 const fetchResponsibilitiesForUser = async ({ force = false } = {}) => {
   if (!force && responsibilitiesState.status === "loaded" && responsibilitiesState.data) {
     return responsibilitiesState.data;
@@ -1367,47 +1650,23 @@ const fetchResponsibilitiesForUser = async ({ force = false } = {}) => {
   if (responsibilitiesRequest) {
     return responsibilitiesRequest;
   }
-  responsibilitiesState.status = "loading";
-  responsibilitiesState.error = null;
-  setResponsibilitiesMenuVisibility(false);
 
-  responsibilitiesRequest = (async () => {
-    const user = getUserInfo();
-    const employeeId = getBookingUserEmployeeID(user);
-    if (!employeeId) {
-      const empty = getEmptyResponsibilities();
-      responsibilitiesState = {
-        status: "loaded",
-        data: empty,
-        error: null,
-        loadedAt: Date.now(),
-      };
-      setResponsibilitiesMenuVisibility(false);
-      return empty;
-    }
-
-    let response;
-    try {
-      response = await apiRequest(
-        `/api/responsibilities?employee_id=${encodeURIComponent(employeeId)}`
-      );
-    } catch (error) {
-      const empty = getEmptyResponsibilities();
-      responsibilitiesState = {
-        status: "error",
-        data: empty,
-        error,
-        loadedAt: Date.now(),
-      };
-      setResponsibilitiesMenuVisibility(false);
-      return empty;
-    }
-
-    const data = {
-      buildings: Array.isArray(response.buildings) ? response.buildings : [],
-      floors: Array.isArray(response.floors) ? response.floors : [],
-      coworkings: Array.isArray(response.coworkings) ? response.coworkings : [],
+  // Ensure Office-Access-Token is available
+  if (!isOfficeAccessTokenValid()) {
+    const empty = getEmptyResponsibilities();
+    responsibilitiesState = {
+      status: "loaded",
+      data: empty,
+      error: null,
+      loadedAt: Date.now(),
     };
+    return empty;
+  }
+
+  // NEW: Try to get responsibilities from token first (no API call needed!)
+  const tokenResp = getResponsibilitiesFromToken();
+  if (tokenResp) {
+    const data = await expandResponsibilitiesFromIDs(tokenResp);
     responsibilitiesState = {
       status: "loaded",
       data,
@@ -1416,13 +1675,19 @@ const fetchResponsibilitiesForUser = async ({ force = false } = {}) => {
     };
     setResponsibilitiesMenuVisibility(hasResponsibilities(data));
     return data;
-  })();
-
-  try {
-    return await responsibilitiesRequest;
-  } finally {
-    responsibilitiesRequest = null;
   }
+
+  // Fallback: token doesn't have responsibilities (shouldn't happen with new tokens)
+  // Use empty response
+  const empty = getEmptyResponsibilities();
+  responsibilitiesState = {
+    status: "loaded",
+    data: empty,
+    error: null,
+    loadedAt: Date.now(),
+  };
+  setResponsibilitiesMenuVisibility(false);
+  return empty;
 };
 
 const renderResponsibilitiesList = (data) => {
@@ -12064,6 +12329,13 @@ const handleAuthSuccess = async (token, user) => {
   refreshDeskBookingOwnership();
   hideAuthGate();
   setAuthStatus("");
+
+  // Obtain the server-signed Office_Token before making any API requests.
+  await fetchOfficeToken(token);
+
+  // Fetch responsibilities after Office-Access-Token is obtained
+  void fetchResponsibilitiesForUser();
+
   await runAppInit();
 };
 

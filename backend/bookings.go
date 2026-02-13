@@ -775,22 +775,13 @@ func (a *app) canManageCoworkingByWorkplaceID(r *http.Request, workplaceID int64
 		(coworkingResp != "" && coworkingResp == eid)
 }
 
+// extractBookingUser returns the user identity from the validated JWT claims
+// stored in the request context by authMiddleware. No user-supplied headers
+// are trusted — identity comes exclusively from the token.
 func extractBookingUser(r *http.Request) (string, string) {
-	claims := extractAuthClaims(r)
+	claims := authClaimsFromContext(r.Context())
 	wbUserID := strings.TrimSpace(claims.WbUserID)
-	if wbUserID == "" {
-		wbUserID = strings.TrimSpace(r.Header.Get("X-User-Key"))
-	}
-	if wbUserID == "" {
-		wbUserID = strings.TrimSpace(r.Header.Get("X-User-Email"))
-	}
-	if wbUserID == "" {
-		wbUserID = strings.TrimSpace(r.Header.Get("X-Wb-User-Id"))
-	}
 	userName := strings.TrimSpace(claims.UserName)
-	if userName == "" {
-		userName = strings.TrimSpace(r.Header.Get("X-User-Name"))
-	}
 	return wbUserID, userName
 }
 

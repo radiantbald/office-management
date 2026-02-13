@@ -11,6 +11,10 @@ export const AUTH_TOKEN_KEY = "auth_access_token";
 export const AUTH_USER_KEY = "auth_user_info";
 /** @type {string} localStorage key for forwarded auth cookies */
 export const AUTH_COOKIES_KEY = "auth_cookies";
+/** @type {string} localStorage key for the server-signed Office Access Token JWT */
+export const OFFICE_ACCESS_TOKEN_KEY = "office_access_token";
+/** @type {string} localStorage key for the server-signed Office Refresh Token JWT */
+export const OFFICE_REFRESH_TOKEN_KEY = "office_refresh_token";
 /** @type {string} localStorage key – last-cached avatar URL */
 export const AVATAR_CACHE_URL_KEY = "avatar_cache_url";
 /** @type {string} localStorage key – last-cached avatar data-URL */
@@ -72,6 +76,36 @@ export const setAuthCookies = (cookies) => {
 
 /** @returns {string|null} Stored cookies string, or null */
 export const getAuthCookies = () => localStorage.getItem(AUTH_COOKIES_KEY);
+
+/**
+ * Persist or clear the server-signed Office Access Token.
+ * @param {string|null} token – Office Access Token JWT string, or falsy to remove
+ */
+export const setOfficeAccessToken = (token) => {
+  if (token) {
+    localStorage.setItem(OFFICE_ACCESS_TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(OFFICE_ACCESS_TOKEN_KEY);
+  }
+};
+
+/** @returns {string|null} The stored Office Access Token, or null */
+export const getOfficeAccessToken = () => localStorage.getItem(OFFICE_ACCESS_TOKEN_KEY);
+
+/**
+ * Persist or clear the server-signed Office Refresh Token.
+ * @param {string|null} token – Office Refresh Token JWT string, or falsy to remove
+ */
+export const setOfficeRefreshToken = (token) => {
+  if (token) {
+    localStorage.setItem(OFFICE_REFRESH_TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(OFFICE_REFRESH_TOKEN_KEY);
+  }
+};
+
+/** @returns {string|null} The stored Office Refresh Token, or null */
+export const getOfficeRefreshToken = () => localStorage.getItem(OFFICE_REFRESH_TOKEN_KEY);
 
 /**
  * Read the avatar cache store (all cached avatar data-URLs).
@@ -167,4 +201,6 @@ export const clearAuthStorage = () => {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_USER_KEY);
   localStorage.removeItem(AUTH_COOKIES_KEY);
+  localStorage.removeItem(OFFICE_ACCESS_TOKEN_KEY);
+  localStorage.removeItem(OFFICE_REFRESH_TOKEN_KEY);
 };

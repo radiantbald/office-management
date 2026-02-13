@@ -1,18 +1,17 @@
 /**
  * Stateless API request utilities.
  *
- * Handles auth headers (Bearer token, forwarded cookies) and
- * response parsing.  Permission checking stays in app.js where
- * it has access to application state.
+ * Handles auth headers (Office-Access-Token) and response parsing.
+ * Permission checking stays in app.js where it has access to application state.
  */
-import { getAuthToken, getAuthCookies } from "./auth.js";
+import { getOfficeAccessToken } from "./auth.js";
 
 /**
  * Base HTTP helper — adds auth headers, parses the JSON response.
  *
  * - Automatically sets `Content-Type: application/json` unless the body is
  *   `FormData` (multipart upload).
- * - Attaches `Authorization` and `X-Cookie` headers when credentials exist.
+ * - Attaches `Office-Access-Token` header for protected endpoints.
  * - Returns `null` for 204 / empty responses.
  * - Throws `Error` with the server-provided `error` message on non-2xx.
  *
@@ -27,13 +26,9 @@ export const makeApiRequest = async (path, options = {}) => {
   if (!isFormData && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  const authToken = getAuthToken();
-  if (authToken && !headers.Authorization && !headers.authorization) {
-    headers.Authorization = `Bearer ${authToken}`;
-  }
-  const authCookies = getAuthCookies();
-  if (authCookies && !headers["X-Cookie"] && !headers["x-cookie"]) {
-    headers["X-Cookie"] = authCookies;
+  const officeAccessToken = getOfficeAccessToken();
+  if (officeAccessToken && !headers["Office-Access-Token"]) {
+    headers["Office-Access-Token"] = officeAccessToken;
   }
   const response = await fetch(path, {
     ...options,

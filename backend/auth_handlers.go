@@ -6,10 +6,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var profileIDPattern = regexp.MustCompile(`^\d+$`)
 
 // handleAuthUserInfo проксирует запрос к team.wb.ru/api/v1/user/info
 func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
@@ -172,16 +175,11 @@ func (a *app) handleAuthUserWbBand(w http.ResponseWriter, r *http.Request) {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &parsed); err == nil {
+		// Identity comes exclusively from the JWT token — no header fallbacks.
 		claims := extractAuthClaims(r)
 		wbUserID := strings.TrimSpace(claims.WbUserID)
-		if wbUserID == "" {
-			wbUserID = strings.TrimSpace(r.Header.Get("x-wb-user-id"))
-		}
 		userName := strings.TrimSpace(claims.UserName)
-		if userName == "" {
-			userName = strings.TrimSpace(r.Header.Get("x-user-name"))
-		}
-		if parsed.Data.WBBand != "" {
+		if parsed.Data.WBBand != "" && wbUserID != "" {
 			if err := a.upsertUserWBBand(wbUserID, userName, parsed.Data.WBBand); err != nil {
 				log.Printf("handleAuthUserWbBand: failed to save wb_band: %v", err)
 			}
@@ -217,6 +215,10 @@ func (a *app) fetchWBBandFromTeam(token, profileID, cookie string) (string, erro
 }
 
 func (a *app) fetchWBBandRaw(token, profileID, cookie string, sourceReq *http.Request) ([]byte, int, error) {
+	// Validate profileID is strictly numeric to prevent SSRF via path traversal.
+	if !profileIDPattern.MatchString(profileID) {
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid profile ID: %q", profileID)
+	}
 	url := fmt.Sprintf("https://team.wb.ru/api/v1/user/profile/%s/wbband", profileID)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -316,6 +318,10 @@ func firstNonEmptyString(values ...string) string {
 
 // handleAuthRequestCode проксирует запрос к auth-hrtech.wb.ru/v2/code/wb-captcha
 func (a *app) handleAuthRequestCode(w http.ResponseWriter, r *http.Request) {
+	if a.authRateLimiter != nil && !a.authRateLimiter.allow(clientIP(r)) {
+		respondError(w, http.StatusTooManyRequests, "Too many requests, try again later")
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -366,6 +372,10 @@ func (a *app) handleAuthRequestCode(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthConfirmCode проксирует запрос к auth-hrtech.wb.ru/v2/auth
 func (a *app) handleAuthConfirmCode(w http.ResponseWriter, r *http.Request) {
+	if a.authRateLimiter != nil && !a.authRateLimiter.allow(clientIP(r)) {
+		respondError(w, http.StatusTooManyRequests, "Too many requests, try again later")
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -431,6 +441,228 @@ func extractBearerToken(authHeader string) string {
 		token = strings.TrimPrefix(authHeader, "bearer ")
 	}
 	return strings.TrimSpace(token)
+}
+
+// handleAuthOfficeToken issues both access and refresh tokens.
+// The endpoint requires a valid Authorization bearer token (the caller must
+// already be authenticated). It resolves identity from the JWT claims and
+// the user's role from the database, then returns signed tokens
+// that the client can use for all subsequent API requests.
+//
+// POST /api/auth/office-token
+// Response: { "office_access_token": "<jwt>", "office_refresh_token": "<jwt>" }
+func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if len(a.officeJWTSecret) == 0 {
+		respondError(w, http.StatusServiceUnavailable, "Office token signing is not configured")
+		return
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		respondError(w, http.StatusUnauthorized, "Authorization header is required")
+		return
+	}
+	token := extractBearerToken(authHeader)
+	if token == "" {
+		respondError(w, http.StatusUnauthorized, "Invalid authorization token")
+		return
+	}
+
+	claims := parseAuthClaimsFromToken(token)
+	employeeID := strings.TrimSpace(claims.EmployeeID)
+	if employeeID == "" {
+		// Fallback to wb_user_id for role lookup
+		wbUserID := strings.TrimSpace(claims.WbUserID)
+		if wbUserID == "" {
+			respondError(w, http.StatusUnauthorized, "Unable to identify user from token")
+			return
+		}
+		// Try to get employee_id from database using wb_user_id
+		dbEmployeeID, err := getEmployeeIDByWbUserID(r.Context(), a.db, wbUserID)
+		if err == nil && dbEmployeeID != "" {
+			employeeID = dbEmployeeID
+		} else {
+			respondError(w, http.StatusUnauthorized, "employee_id is required for office token")
+			return
+		}
+	}
+
+	roleID, err := getUserRoleByWbUserID(r.Context(), a.db, employeeID)
+	if err != nil {
+		log.Printf("handleAuthOfficeToken: failed to resolve role for %s: %v", employeeID, err)
+		roleID = roleEmployee
+	}
+
+	// Load user responsibilities for the token
+	responsibilities := a.loadResponsibilitiesForToken(employeeID)
+
+	// Create access token
+	accessClaims := OfficeAccessTokenClaims{
+		EmployeeID:       employeeID,
+		UserName:         strings.TrimSpace(claims.UserName),
+		Role:             roleID,
+		Responsibilities: responsibilities,
+	}
+	accessToken, err := SignOfficeAccessToken(accessClaims, a.officeJWTSecret)
+	if err != nil {
+		log.Printf("handleAuthOfficeToken: failed to sign access token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to issue office access token")
+		return
+	}
+
+	// Create refresh token
+	refreshClaims := OfficeRefreshTokenClaims{
+		EmployeeID: employeeID,
+	}
+	refreshToken, err := SignOfficeRefreshToken(refreshClaims, a.officeJWTSecret)
+	if err != nil {
+		log.Printf("handleAuthOfficeToken: failed to sign refresh token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to issue office refresh token")
+		return
+	}
+
+	// Parse the refresh token to get token_id and expiration
+	parsedRefreshClaims, err := VerifyOfficeRefreshToken(refreshToken, a.officeJWTSecret)
+	if err != nil {
+		log.Printf("handleAuthOfficeToken: failed to parse refresh token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to process refresh token")
+		return
+	}
+
+	// Store refresh token in database
+	if err := a.storeRefreshToken(r.Context(), parsedRefreshClaims.TokenID, employeeID, parsedRefreshClaims.Exp); err != nil {
+		log.Printf("handleAuthOfficeToken: failed to store refresh token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to store refresh token")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"office_access_token":  accessToken,
+		"office_refresh_token": refreshToken,
+	})
+}
+
+// handleAuthRefreshToken exchanges a valid refresh token for a new access token.
+//
+// POST /api/auth/refresh
+// Body: { "office_refresh_token": "<jwt>" }
+// Response: { "office_access_token": "<jwt>" }
+func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if len(a.officeJWTSecret) == 0 {
+		respondError(w, http.StatusServiceUnavailable, "Office token signing is not configured")
+		return
+	}
+
+	var req struct {
+		RefreshToken string `json:"office_refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	refreshToken := strings.TrimSpace(req.RefreshToken)
+	if refreshToken == "" {
+		respondError(w, http.StatusBadRequest, "office_refresh_token is required")
+		return
+	}
+
+	// Verify refresh token signature and expiration
+	refreshClaims, err := VerifyOfficeRefreshToken(refreshToken, a.officeJWTSecret)
+	if err != nil {
+		log.Printf("handleAuthRefreshToken: invalid refresh token: %v", err)
+		respondError(w, http.StatusUnauthorized, "Invalid or expired refresh token")
+		return
+	}
+
+	// Check if refresh token exists and is not revoked in database
+	valid, err := a.isRefreshTokenValid(r.Context(), refreshClaims.TokenID, refreshClaims.EmployeeID)
+	if err != nil {
+		log.Printf("handleAuthRefreshToken: failed to validate refresh token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to validate refresh token")
+		return
+	}
+	if !valid {
+		respondError(w, http.StatusUnauthorized, "Refresh token has been revoked")
+		return
+	}
+
+	// Get current role from database
+	roleID, err := getUserRoleByWbUserID(r.Context(), a.db, refreshClaims.EmployeeID)
+	if err != nil {
+		log.Printf("handleAuthRefreshToken: failed to resolve role for %s: %v", refreshClaims.EmployeeID, err)
+		roleID = roleEmployee
+	}
+
+	// Get user name from database
+	userName, err := getUserNameByEmployeeID(r.Context(), a.db, refreshClaims.EmployeeID)
+	if err != nil {
+		log.Printf("handleAuthRefreshToken: failed to get user name for %s: %v", refreshClaims.EmployeeID, err)
+		userName = ""
+	}
+
+	// Load user responsibilities for the token
+	responsibilities := a.loadResponsibilitiesForToken(refreshClaims.EmployeeID)
+
+	// Issue new access token
+	accessClaims := OfficeAccessTokenClaims{
+		EmployeeID:       refreshClaims.EmployeeID,
+		UserName:         userName,
+		Role:             roleID,
+		Responsibilities: responsibilities,
+	}
+	accessToken, err := SignOfficeAccessToken(accessClaims, a.officeJWTSecret)
+	if err != nil {
+		log.Printf("handleAuthRefreshToken: failed to sign access token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to issue access token")
+		return
+	}
+
+	// ── ROTATING REFRESH TOKEN: Issue a new refresh token and revoke the old one ──
+	
+	// Revoke the old refresh token to prevent reuse
+	if err := a.revokeRefreshToken(r.Context(), refreshClaims.TokenID); err != nil {
+		log.Printf("handleAuthRefreshToken: failed to revoke old refresh token: %v", err)
+		// Non-critical: continue even if revocation fails
+	}
+
+	// Create a new refresh token
+	newRefreshClaims := OfficeRefreshTokenClaims{
+		EmployeeID: refreshClaims.EmployeeID,
+	}
+	newRefreshToken, err := SignOfficeRefreshToken(newRefreshClaims, a.officeJWTSecret)
+	if err != nil {
+		log.Printf("handleAuthRefreshToken: failed to sign new refresh token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to issue new refresh token")
+		return
+	}
+
+	// Parse and store the new refresh token
+	parsedNewRefresh, err := VerifyOfficeRefreshToken(newRefreshToken, a.officeJWTSecret)
+	if err != nil {
+		log.Printf("handleAuthRefreshToken: failed to parse new refresh token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to process new refresh token")
+		return
+	}
+
+	if err := a.storeRefreshToken(r.Context(), parsedNewRefresh.TokenID, parsedNewRefresh.EmployeeID, parsedNewRefresh.Exp); err != nil {
+		log.Printf("handleAuthRefreshToken: failed to store new refresh token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to store new refresh token")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"office_access_token":  accessToken,
+		"office_refresh_token": newRefreshToken,
+	})
 }
 
 func collectCookies(r *http.Request) (string, string) {

@@ -6,8 +6,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-office}
       POSTGRES_USER: ${POSTGRES_USER:-office}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-office}
-    ports:
-      - "5433:5432"
+    # Port is NOT exposed externally. Access DB only through internal Docker network.
+    # For local development, uncomment:  ports: ["5433:5432"]
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
@@ -24,6 +24,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgres://office:office@db:5432/office?sslmode=disable}
       PORT: ${PORT:-8080}
+      OFFICE_JWT_SECRET: ${OFFICE_JWT_SECRET}
     depends_on:
       db:
         condition: service_healthy

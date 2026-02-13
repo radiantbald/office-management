@@ -13,6 +13,9 @@ type authClaims struct {
 	EmployeeID string
 }
 
+// extractAuthClaims parses auth claims directly from the Authorization header.
+// Used by auth handlers (public endpoints) that need to read the JWT payload.
+// For protected endpoints, prefer authClaimsFromContext(r.Context()).
 func extractAuthClaims(r *http.Request) authClaims {
 	if r == nil {
 		return authClaims{}
@@ -28,21 +31,27 @@ func extractAuthClaims(r *http.Request) authClaims {
 	return parseAuthClaimsFromToken(token)
 }
 
+// extractEmployeeIDFromRequest resolves the employee_id for the current user.
+// Identity is obtained exclusively from the JWT token (via request context);
+// no user-supplied headers are trusted.
 func extractEmployeeIDFromRequest(r *http.Request, queryer rowQueryer) (string, error) {
 	if r == nil {
 		return "", nil
 	}
-	claims := extractAuthClaims(r)
+	claims := authClaimsFromContext(r.Context())
 	employeeID := strings.TrimSpace(claims.EmployeeID)
-	if employeeID == "" {
-		employeeID = strings.TrimSpace(r.Header.Get("X-Employee-Id"))
-	}
 	if employeeID != "" {
 		return employeeID, nil
 	}
 	wbUserID := strings.TrimSpace(claims.WbUserID)
 	if wbUserID == "" {
-		wbUserID, _ = extractBookingUser(r)
+		// Fallback: parse directly from token for auth endpoints not behind middleware.
+		tokenClaims := extractAuthClaims(r)
+		employeeID = strings.TrimSpace(tokenClaims.EmployeeID)
+		if employeeID != "" {
+			return employeeID, nil
+		}
+		wbUserID = strings.TrimSpace(tokenClaims.WbUserID)
 	}
 	if wbUserID == "" {
 		return "", nil

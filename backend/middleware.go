@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
 type statusRecorder struct {
@@ -16,7 +20,32 @@ func (rec *statusRecorder) WriteHeader(code int) {
 	rec.ResponseWriter.WriteHeader(code)
 }
 
-func authMiddleware(next http.Handler) http.Handler {
+// --- Auth context ---
+
+type contextKey string
+
+const authClaimsCtxKey contextKey = "authClaims"
+const officeAccessTokenClaimsCtxKey contextKey = "officeAccessTokenClaims"
+
+// authClaimsFromContext returns the validated authClaims injected by authMiddleware.
+// For public endpoints (not behind authMiddleware), returns zero value.
+func authClaimsFromContext(ctx context.Context) authClaims {
+	if claims, ok := ctx.Value(authClaimsCtxKey).(authClaims); ok {
+		return claims
+	}
+	return authClaims{}
+}
+
+// officeAccessTokenClaimsFromContext returns the verified OfficeAccessTokenClaims if the
+// request was authenticated via Office-Access-Token. Returns nil otherwise.
+func officeAccessTokenClaimsFromContext(ctx context.Context) *OfficeAccessTokenClaims {
+	if claims, ok := ctx.Value(officeAccessTokenClaimsCtxKey).(*OfficeAccessTokenClaims); ok {
+		return claims
+	}
+	return nil
+}
+
+func (a *app) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			next.ServeHTTP(w, r)
@@ -40,19 +69,37 @@ func authMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			respondError(w, http.StatusUnauthorized, "Authorization header is required")
-			return
-		}
+	// ── Require Office-Access-Token (server-signed JWT) for all protected endpoints ──
+	officeAccessToken := r.Header.Get("Office-Access-Token")
+	if officeAccessToken == "" {
+		respondError(w, http.StatusUnauthorized, "Office-Access-Token header is required")
+		return
+	}
 
-		token := extractBearerToken(authHeader)
-		if token == "" {
-			respondError(w, http.StatusUnauthorized, "Invalid authorization token")
-			return
-		}
+	if len(a.officeJWTSecret) == 0 {
+		respondError(w, http.StatusServiceUnavailable, "Office token verification is not configured")
+		return
+	}
 
-		next.ServeHTTP(w, r)
+	atClaims, err := VerifyOfficeAccessToken(officeAccessToken, a.officeJWTSecret)
+	if err != nil {
+		respondError(w, http.StatusUnauthorized, "Invalid or expired Office-Access-Token")
+		return
+	}
+
+	if atClaims.EmployeeID == "" {
+		respondError(w, http.StatusUnauthorized, "Invalid Office-Access-Token: missing employee_id")
+		return
+	}
+
+	// Inject validated claims into request context.
+	claims := authClaims{
+		EmployeeID: atClaims.EmployeeID,
+		UserName:   atClaims.UserName,
+	}
+	ctx := context.WithValue(r.Context(), authClaimsCtxKey, claims)
+	ctx = context.WithValue(ctx, officeAccessTokenClaimsCtxKey, atClaims)
+	next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -64,28 +111,21 @@ func corsMiddleware(next http.Handler) http.Handler {
 			allowedOrigins = "http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000,http://127.0.0.1:3000"
 		}
 
-		originAllowed := false
+		// Only set CORS headers when the Origin matches the whitelist.
+		// Same-origin requests (empty Origin) need no CORS headers.
 		if origin != "" {
 			for _, allowed := range strings.Split(allowedOrigins, ",") {
 				if strings.TrimSpace(allowed) == origin {
-					originAllowed = true
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
 					break
 				}
 			}
 		}
 
-		if originAllowed {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-		} else if origin == "" {
-			if os.Getenv("ENV") != "production" {
-				w.Header().Set("Access-Control-Allow-Origin", "*")
-			}
-		}
-
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, deviceid, devicename, Accept, Cache-Control, Pragma, X-Cookie, X-Wb-User-Id, X-User-Key, X-User-Name, X-User-Email, wb-apptype, Origin, Referer")
-		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, X-Set-Cookie, Content-Disposition")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Office-Access-Token, Office-Refresh-Token, deviceid, devicename, Accept, Cache-Control, Pragma, X-Cookie, wb-apptype, Origin, Referer")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, Office-Access-Token, Office-Refresh-Token, X-Set-Cookie, Content-Disposition")
 		w.Header().Set("Access-Control-Max-Age", "3600")
 
 		if r.Method == http.MethodOptions {
@@ -103,9 +143,91 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		if r.TLS != nil {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'")
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// --- IP-based rate limiter ---
+
+type ipRateLimiter struct {
+	mu       sync.Mutex
+	requests map[string][]time.Time
+	limit    int
+	window   time.Duration
+}
+
+func newIPRateLimiter(limit int, window time.Duration) *ipRateLimiter {
+	rl := &ipRateLimiter{
+		requests: make(map[string][]time.Time),
+		limit:    limit,
+		window:   window,
+	}
+	go rl.cleanupLoop()
+	return rl
+}
+
+func (rl *ipRateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		rl.mu.Lock()
+		cutoff := time.Now().Add(-rl.window)
+		for ip, times := range rl.requests {
+			var valid []time.Time
+			for _, t := range times {
+				if t.After(cutoff) {
+					valid = append(valid, t)
+				}
+			}
+			if len(valid) == 0 {
+				delete(rl.requests, ip)
+			} else {
+				rl.requests[ip] = valid
+			}
+		}
+		rl.mu.Unlock()
+	}
+}
+
+func (rl *ipRateLimiter) allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+
+	times := rl.requests[ip]
+	var valid []time.Time
+	for _, t := range times {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) >= rl.limit {
+		rl.requests[ip] = valid
+		return false
+	}
+
+	rl.requests[ip] = append(valid, now)
+	return true
+}
+
+func clientIP(r *http.Request) string {
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
+		return strings.TrimSpace(realIP)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

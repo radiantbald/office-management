@@ -119,6 +119,22 @@ DATABASE_URL=postgres://user:pass@localhost:5432/office?sslmode=disable
 PORT=8080
 ```
 
+## Аутентификация
+
+Проект использует двухуровневую систему аутентификации:
+- **Authorization Token** (от team.wb.ru) — для получения первого доступа
+- **Office-Access-Token** (JWT) — для всех защищенных API запросов
+
+Подробнее см. [AUTHENTICATION.md](./AUTHENTICATION.md)
+
+### Быстрая настройка
+
+Установите переменную окружения для подписи JWT токенов:
+
+```bash
+OFFICE_JWT_SECRET=your-secret-key-here
+```
+
 ## Структура проекта
 
 - `frontend/` — клиентская часть

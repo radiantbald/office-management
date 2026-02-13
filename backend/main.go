@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,6 +35,8 @@ type app struct {
 	db                *sql.DB
 	uploadDir         string
 	buildingUploadDir string
+	authRateLimiter   *ipRateLimiter
+	officeJWTSecret   []byte
 }
 
 type building struct {
@@ -205,10 +208,17 @@ func main() {
 		log.Fatalf("create upload dir: %v", err)
 	}
 
+	officeSecret := strings.TrimSpace(os.Getenv("OFFICE_JWT_SECRET"))
+	if officeSecret == "" {
+		log.Println("WARNING: OFFICE_JWT_SECRET is not set — Office_Token will not be issued/verified")
+	}
+
 	app := &app{
 		db:                db,
 		uploadDir:         uploadDir,
 		buildingUploadDir: buildingUploadDir,
+		authRateLimiter:   newIPRateLimiter(10, time.Minute), // 10 auth requests per IP per minute
+		officeJWTSecret:   []byte(officeSecret),
 	}
 
 	mux := http.NewServeMux()
@@ -236,6 +246,8 @@ func main() {
 	})
 	mux.HandleFunc("/api/auth/user/info", app.handleAuthUserInfo)
 	mux.HandleFunc("/api/auth/user/wb-band", app.handleAuthUserWbBand)
+	mux.HandleFunc("/api/auth/office-token", app.handleAuthOfficeToken)
+	mux.HandleFunc("/api/auth/refresh", app.handleAuthRefreshToken)
 	mux.HandleFunc("/api/auth/v2/code/wb-captcha", app.handleAuthRequestCode)
 	mux.HandleFunc("/api/auth/v2/auth", app.handleAuthConfirmCode)
 
@@ -251,7 +263,7 @@ func main() {
 	mux.Handle("/", http.FileServer(http.Dir(webDir)))
 
 	handler := http.Handler(mux)
-	handler = authMiddleware(handler)
+	handler = app.authMiddleware(handler)
 	handler = corsMiddleware(handler)
 	handler = securityHeadersMiddleware(handler)
 	handler = loggingMiddleware(handler)
@@ -404,6 +416,16 @@ func migrate(db *sql.DB) error {
 			FOREIGN KEY(workplace_id) REFERENCES workplaces(id) ON DELETE CASCADE,
 			UNIQUE(workplace_id, date)
 		);`,
+		`CREATE TABLE IF NOT EXISTS office_refresh_tokens (
+			id BIGSERIAL PRIMARY KEY,
+			token_id TEXT NOT NULL UNIQUE,
+			employee_id TEXT NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL,
+			revoked_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		);`,
+		`CREATE INDEX IF NOT EXISTS office_refresh_tokens_employee_id_idx ON office_refresh_tokens (employee_id);`,
+		`CREATE INDEX IF NOT EXISTS office_refresh_tokens_token_id_idx ON office_refresh_tokens (token_id);`,
 	}
 
 	for _, stmt := range stmts {
@@ -859,7 +881,7 @@ func migrateWorkplaceBookingsGuestConstraint(db *sql.DB) error {
 		return err
 	}
 	for _, name := range indexNames {
-		if _, err := db.Exec(fmt.Sprintf(`DROP INDEX IF EXISTS %s`, name)); err != nil {
+		if _, err := db.Exec(fmt.Sprintf(`DROP INDEX IF EXISTS %q`, name)); err != nil {
 			return err
 		}
 	}
@@ -2324,7 +2346,7 @@ func (a *app) handleFloors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload.Name = strings.TrimSpace(payload.Name)
-	payload.PlanSVG = strings.TrimSpace(payload.PlanSVG)
+	payload.PlanSVG = sanitizeSVG(strings.TrimSpace(payload.PlanSVG))
 	if payload.BuildingID == 0 || payload.Name == "" || payload.PlanSVG == "" {
 		respondError(w, http.StatusBadRequest, "building_id, name, and plan_svg are required")
 		return
@@ -2384,7 +2406,7 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 				payload.Name = &trimmed
 			}
 			if payload.PlanSVG != nil {
-				trimmed := strings.TrimSpace(*payload.PlanSVG)
+				trimmed := sanitizeSVG(strings.TrimSpace(*payload.PlanSVG))
 				payload.PlanSVG = &trimmed
 			}
 			if payload.ResponsibleEmployeeID != nil {
@@ -4780,7 +4802,13 @@ func (a *app) removeUploadedFile(imageURL string) error {
 		return nil
 	}
 	relativePath := strings.TrimPrefix(imageURL, prefix)
-	targetPath := filepath.Join(a.uploadDir, filepath.FromSlash(relativePath))
+	targetPath := filepath.Clean(filepath.Join(a.uploadDir, filepath.FromSlash(relativePath)))
+
+	// Prevent path traversal: ensure the resolved path stays within uploadDir.
+	if !strings.HasPrefix(targetPath, filepath.Clean(a.uploadDir)+string(filepath.Separator)) {
+		return errors.New("invalid file path: outside upload directory")
+	}
+
 	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -4960,6 +4988,74 @@ func (a *app) handleResponsibilities(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// loadResponsibilitiesForToken fetches the IDs of buildings, floors, and coworkings
+// that the user is responsible for. Returns nil if the user has no responsibilities.
+func (a *app) loadResponsibilitiesForToken(employeeID string) *TokenResponsibilities {
+	if employeeID == "" {
+		return nil
+	}
+
+	var buildingIDs []int64
+	var floorIDs []int64
+	var coworkingIDs []int64
+
+	// Load building IDs
+	buildingRows, err := a.db.Query(
+		`SELECT id FROM office_buildings WHERE responsible_employee_id = $1`,
+		employeeID,
+	)
+	if err == nil {
+		defer buildingRows.Close()
+		for buildingRows.Next() {
+			var id int64
+			if err := buildingRows.Scan(&id); err == nil {
+				buildingIDs = append(buildingIDs, id)
+			}
+		}
+	}
+
+	// Load floor IDs
+	floorRows, err := a.db.Query(
+		`SELECT id FROM floors WHERE responsible_employee_id = $1`,
+		employeeID,
+	)
+	if err == nil {
+		defer floorRows.Close()
+		for floorRows.Next() {
+			var id int64
+			if err := floorRows.Scan(&id); err == nil {
+				floorIDs = append(floorIDs, id)
+			}
+		}
+	}
+
+	// Load coworking IDs
+	coworkingRows, err := a.db.Query(
+		`SELECT id FROM coworkings WHERE responsible_employee_id = $1`,
+		employeeID,
+	)
+	if err == nil {
+		defer coworkingRows.Close()
+		for coworkingRows.Next() {
+			var id int64
+			if err := coworkingRows.Scan(&id); err == nil {
+				coworkingIDs = append(coworkingIDs, id)
+			}
+		}
+	}
+
+	// Return nil if user has no responsibilities at all
+	if len(buildingIDs) == 0 && len(floorIDs) == 0 && len(coworkingIDs) == 0 {
+		return nil
+	}
+
+	return &TokenResponsibilities{
+		Buildings:  buildingIDs,
+		Floors:     floorIDs,
+		Coworkings: coworkingIDs,
+	}
+}
+
 func respondJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -4977,4 +5073,28 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(rec, r)
 		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
 	})
+}
+
+// --- SVG sanitization ---
+// Strips dangerous elements and attributes from SVG to prevent stored XSS.
+
+var (
+	svgScriptTagRe         = regexp.MustCompile(`(?i)<script[^>]*>[\s\S]*?</script\s*>`)
+	svgSelfClosingScriptRe = regexp.MustCompile(`(?i)<script[^>]*/>`)
+	svgEventAttrDoubleRe   = regexp.MustCompile(`(?i)\s+on\w+\s*=\s*"[^"]*"`)
+	svgEventAttrSingleRe   = regexp.MustCompile(`(?i)\s+on\w+\s*=\s*'[^']*'`)
+	svgEventAttrUnquotedRe = regexp.MustCompile(`(?i)\s+on\w+\s*=\s*[^\s>"']+`)
+	svgJavascriptURIRe     = regexp.MustCompile(`(?i)javascript\s*:`)
+	svgDataURIScriptRe     = regexp.MustCompile(`(?i)data\s*:\s*text/html`)
+)
+
+func sanitizeSVG(input string) string {
+	result := svgScriptTagRe.ReplaceAllString(input, "")
+	result = svgSelfClosingScriptRe.ReplaceAllString(result, "")
+	result = svgEventAttrDoubleRe.ReplaceAllString(result, "")
+	result = svgEventAttrSingleRe.ReplaceAllString(result, "")
+	result = svgEventAttrUnquotedRe.ReplaceAllString(result, "")
+	result = svgJavascriptURIRe.ReplaceAllString(result, "")
+	result = svgDataURIScriptRe.ReplaceAllString(result, "")
+	return result
 }
