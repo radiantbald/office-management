@@ -89,7 +89,7 @@ func (a *app) handleListMyMeetingRoomBookings(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	rows, err := a.db.Query(
+	rows, err := a.db.QueryContext(r.Context(),
 		`SELECT b.id,
 		        b.meeting_room_id,
 		        m.name,
@@ -168,7 +168,7 @@ func (a *app) handleCancelAllMyMeetingRoomBookings(w http.ResponseWriter, r *htt
 		return
 	}
 
-	result, err := a.db.Exec(
+	result, err := a.db.ExecContext(r.Context(),
 		`UPDATE meeting_room_bookings
 		    SET cancelled_at = now(), canceller_employee_id = $1
 		  WHERE applier_employee_id = $1 AND end_at > now() AND cancelled_at IS NULL`,
@@ -221,7 +221,7 @@ func (a *app) handleListMeetingRoomBookings(w http.ResponseWriter, r *http.Reque
 		location = time.Local
 	}
 
-	rows, err := a.db.Query(
+	rows, err := a.db.QueryContext(r.Context(),
 		`SELECT b.id,
 		        b.meeting_room_id,
 		        b.applier_employee_id,
@@ -478,7 +478,7 @@ func (a *app) handleCancelMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	result, err := a.db.Exec(
+	result, err := a.db.ExecContext(r.Context(),
 		`UPDATE meeting_room_bookings
 		    SET cancelled_at = now(), canceller_employee_id = $5
 		  WHERE meeting_room_id = $1 AND applier_employee_id = $2 AND start_at = $3 AND end_at = $4

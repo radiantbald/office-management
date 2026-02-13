@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -12,9 +13,11 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -259,13 +262,32 @@ func main() {
 	server := &http.Server{
 		Addr:              ":" + port,
 		Handler:           handler,
+		ReadTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
-	log.Printf("server listening on %s", server.Addr)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("server error: %v", err)
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		log.Printf("server listening on %s", server.Addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	sig := <-shutdown
+	log.Printf("received signal %v, shutting down gracefully...", sig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("server shutdown error: %v", err)
 	}
+	log.Println("server stopped")
 }
 
 func isTrueEnv(name string) bool {
@@ -846,12 +868,18 @@ func migrateWorkplaceBookingsGuestConstraint(db *sql.DB) error {
 		return err
 	}
 
-	// Create partial unique index that allows multiple applier_employee_id='0' (guest) bookings.
+	// Drop and recreate the index so the predicate includes cancelled_at IS NULL.
+	if _, err := db.Exec(`DROP INDEX IF EXISTS workplace_bookings_applier_date_uidx`); err != nil {
+		return err
+	}
+
+	// Create partial unique index that allows multiple applier_employee_id='0' (guest) bookings
+	// and ignores soft-deleted (cancelled) rows.
 	if _, err := db.Exec(
 		fmt.Sprintf(
 			`CREATE UNIQUE INDEX IF NOT EXISTS workplace_bookings_applier_date_uidx
 			 ON workplace_bookings (%s, date)
-			 WHERE %s <> '0'`, colName, colName),
+			 WHERE %s <> '0' AND cancelled_at IS NULL`, colName, colName),
 	); err != nil {
 		return err
 	}
@@ -2394,7 +2422,7 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 						respondError(w, http.StatusNotFound, "floor not found")
 						return
 					}
-					if err.Error() == "name is required" {
+					if errors.Is(err, errNameRequired) {
 						respondError(w, http.StatusBadRequest, err.Error())
 						return
 					}
@@ -2958,11 +2986,11 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusNotFound, "desk not found")
 				return
 			}
-			if err.Error() == "label is required" {
+			if errors.Is(err, errLabelRequired) {
 				respondError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			if err.Error() == "width and height must be greater than 0" {
+			if errors.Is(err, errInvalidDimensions) {
 				respondError(w, http.StatusBadRequest, err.Error())
 				return
 			}
@@ -3078,6 +3106,9 @@ func (a *app) listBuildings() ([]building, error) {
 
 var errNotFound = errors.New("not found")
 var errSnapshotHiddenNotAllowed = errors.New("snapshot can only be hidden for coworking")
+var errNameRequired = errors.New("name is required")
+var errLabelRequired = errors.New("label is required")
+var errInvalidDimensions = errors.New("width and height must be greater than 0")
 
 func (a *app) createBuilding(name, address, imageURL string) (building, error) {
 	return a.createBuildingWithFloors(name, address, defaultBuildingTimezone, imageURL, 0, 0, "")
@@ -3599,7 +3630,7 @@ func (a *app) updateFloorDetails(id int64, name *string, responsibleEmployeeID *
 	if name != nil {
 		trimmed := strings.TrimSpace(*name)
 		if trimmed == "" {
-			return floor{}, errors.New("name is required")
+			return floor{}, errNameRequired
 		}
 		newName = trimmed
 	}
@@ -4498,10 +4529,10 @@ func (a *app) updateDesk(id int64, label *string, x *float64, y *float64, width 
 		current.Rotation = *rotation
 	}
 	if current.Label == "" {
-		return desk{}, errors.New("label is required")
+		return desk{}, errLabelRequired
 	}
 	if current.Width <= 0 || current.Height <= 0 {
-		return desk{}, errors.New("width and height must be greater than 0")
+		return desk{}, errInvalidDimensions
 	}
 	result, err := a.db.Exec(
 		`UPDATE workplaces SET label = $1, x = $2, y = $3, width = $4, height = $5, rotation = $6 WHERE id = $7`,
@@ -4667,7 +4698,6 @@ func parseIDFromPath(path, prefix string) (int64, string, error) {
 func decodeJSON(r *http.Request, dst any) error {
 	// Limit request body to 1 MB to prevent memory exhaustion attacks.
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
@@ -4789,7 +4819,8 @@ func respondError(w http.ResponseWriter, status int, message string) {
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
 	})
 }

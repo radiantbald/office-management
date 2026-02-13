@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 )
@@ -36,7 +35,7 @@ func (a *app) handleUserRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload roleUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeJSON(r, &payload); err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}

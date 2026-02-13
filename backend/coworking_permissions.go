@@ -81,21 +81,26 @@ func (a *app) ensureCanManageBuilding(w http.ResponseWriter, r *http.Request, bu
 		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
-	if strings.TrimSpace(employeeID) == "" {
+	eid := strings.TrimSpace(employeeID)
+	if eid == "" {
 		respondError(w, http.StatusForbidden, "Недостаточно прав")
 		return false
 	}
-	responsibleID, err := a.getBuildingResponsibleEmployeeID(buildingID)
+	var responsibleID string
+	err = a.db.QueryRowContext(r.Context(),
+		`SELECT COALESCE(TRIM(responsible_employee_id), '') FROM office_buildings WHERE id = $1`,
+		buildingID,
+	).Scan(&responsibleID)
 	if err != nil {
-		if errors.Is(err, errNotFound) {
+		if errors.Is(err, sql.ErrNoRows) {
 			respondError(w, http.StatusNotFound, "building not found")
-			return false
+		} else {
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 		}
-		log.Printf("internal error: %v", err)
-		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
-	if responsibleID == "" || responsibleID != strings.TrimSpace(employeeID) {
+	if responsibleID == "" || responsibleID != eid {
 		respondError(w, http.StatusForbidden, "Недостаточно прав")
 		return false
 	}
@@ -159,48 +164,36 @@ func (a *app) ensureCanManageFloor(w http.ResponseWriter, r *http.Request, floor
 		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
-	if strings.TrimSpace(employeeID) == "" {
+	eid := strings.TrimSpace(employeeID)
+	if eid == "" {
 		respondError(w, http.StatusForbidden, "Недостаточно прав")
 		return false
 	}
-	buildingID, err := a.getBuildingIDByFloorID(floorID)
+	// Single query: floor → building with all responsible IDs.
+	var buildingResp, floorResp string
+	err = a.db.QueryRowContext(r.Context(),
+		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
+		        COALESCE(TRIM(f.responsible_employee_id), '')
+		   FROM floors f
+		   JOIN office_buildings b ON b.id = f.building_id
+		  WHERE f.id = $1`,
+		floorID,
+	).Scan(&buildingResp, &floorResp)
 	if err != nil {
-		if errors.Is(err, errNotFound) {
+		if errors.Is(err, sql.ErrNoRows) {
 			respondError(w, http.StatusNotFound, "floor not found")
-			return false
+		} else {
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 		}
-		log.Printf("internal error: %v", err)
-		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
-	buildingResponsibleID, err := a.getBuildingResponsibleEmployeeID(buildingID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "building not found")
-			return false
-		}
-		log.Printf("internal error: %v", err)
-		respondError(w, http.StatusInternalServerError, "internal error")
-		return false
-	}
-	if buildingResponsibleID != "" && buildingResponsibleID == strings.TrimSpace(employeeID) {
+	if (buildingResp != "" && buildingResp == eid) ||
+		(floorResp != "" && floorResp == eid) {
 		return true
 	}
-	responsibleID, err := a.getFloorResponsibleEmployeeID(floorID)
-	if err != nil {
-		if errors.Is(err, errNotFound) {
-			respondError(w, http.StatusNotFound, "floor not found")
-			return false
-		}
-		log.Printf("internal error: %v", err)
-		respondError(w, http.StatusInternalServerError, "internal error")
-		return false
-	}
-	if responsibleID == "" || responsibleID != strings.TrimSpace(employeeID) {
-		respondError(w, http.StatusForbidden, "Недостаточно прав")
-		return false
-	}
-	return true
+	respondError(w, http.StatusForbidden, "Недостаточно прав")
+	return false
 }
 
 func (a *app) getCoworkingIDByDeskID(deskID int64) (int64, error) {
@@ -284,7 +277,7 @@ func (a *app) ensureCanManageSpace(w http.ResponseWriter, r *http.Request, space
 	}
 	// Try coworking first (single query with full hierarchy).
 	var buildingResp, floorResp, coworkingResp string
-	err = a.db.QueryRow(
+	err = a.db.QueryRowContext(r.Context(),
 		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
 		        COALESCE(TRIM(f.responsible_employee_id), ''),
 		        COALESCE(TRIM(c.responsible_employee_id), '')
@@ -309,7 +302,7 @@ func (a *app) ensureCanManageSpace(w http.ResponseWriter, r *http.Request, space
 		return false
 	}
 	// Maybe it's a meeting room.
-	err = a.db.QueryRow(
+	err = a.db.QueryRowContext(r.Context(),
 		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
 		        COALESCE(TRIM(f.responsible_employee_id), '')
 		   FROM meeting_rooms mr
@@ -356,7 +349,7 @@ func (a *app) ensureCanManageCoworking(w http.ResponseWriter, r *http.Request, c
 	}
 	// Single query: resolve hierarchy and all responsible employee IDs.
 	var buildingResp, floorResp, coworkingResp string
-	err = a.db.QueryRow(
+	err = a.db.QueryRowContext(r.Context(),
 		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
 		        COALESCE(TRIM(f.responsible_employee_id), ''),
 		        COALESCE(TRIM(c.responsible_employee_id), '')
@@ -407,34 +400,62 @@ func (a *app) ensureCanManageCoworkings(w http.ResponseWriter, r *http.Request, 
 		respondError(w, http.StatusForbidden, "Недостаточно прав")
 		return false
 	}
-	for _, coworkingID := range coworkingIDs {
+
+	// Single batch query instead of N+1.
+	placeholders := make([]string, len(coworkingIDs))
+	args := make([]any, len(coworkingIDs))
+	for i, id := range coworkingIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`SELECT c.id,
+		        COALESCE(TRIM(b.responsible_employee_id), ''),
+		        COALESCE(TRIM(f.responsible_employee_id), ''),
+		        COALESCE(TRIM(c.responsible_employee_id), '')
+		   FROM coworkings c
+		   JOIN floors f ON f.id = c.floor_id
+		   JOIN office_buildings b ON b.id = f.building_id
+		  WHERE c.id IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := a.db.QueryContext(r.Context(), query, args...)
+	if err != nil {
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
+		return false
+	}
+	defer rows.Close()
+
+	manageable := make(map[int64]bool, len(coworkingIDs))
+	for rows.Next() {
+		var cID int64
 		var buildingResp, floorResp, coworkingResp string
-		err := a.db.QueryRow(
-			`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
-			        COALESCE(TRIM(f.responsible_employee_id), ''),
-			        COALESCE(TRIM(c.responsible_employee_id), '')
-			   FROM coworkings c
-			   JOIN floors f ON f.id = c.floor_id
-			   JOIN office_buildings b ON b.id = f.building_id
-			  WHERE c.id = $1`,
-			coworkingID,
-		).Scan(&buildingResp, &floorResp, &coworkingResp)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				respondError(w, http.StatusNotFound, "space not found")
-			} else {
-				log.Printf("internal error: %v", err)
-				respondError(w, http.StatusInternalServerError, "internal error")
-			}
+		if err := rows.Scan(&cID, &buildingResp, &floorResp, &coworkingResp); err != nil {
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return false
 		}
-		if (buildingResp != "" && buildingResp == eid) ||
+		canManage := (buildingResp != "" && buildingResp == eid) ||
 			(floorResp != "" && floorResp == eid) ||
-			(coworkingResp != "" && coworkingResp == eid) {
-			continue
-		}
-		respondError(w, http.StatusForbidden, "Недостаточно прав")
+			(coworkingResp != "" && coworkingResp == eid)
+		manageable[cID] = canManage
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
 		return false
+	}
+	for _, id := range coworkingIDs {
+		allowed, found := manageable[id]
+		if !found {
+			respondError(w, http.StatusNotFound, "space not found")
+			return false
+		}
+		if !allowed {
+			respondError(w, http.StatusForbidden, "Недостаточно прав")
+			return false
+		}
 	}
 	return true
 }
@@ -461,7 +482,7 @@ func (a *app) ensureCanManageDesk(w http.ResponseWriter, r *http.Request, deskID
 	}
 	// Single query: desk → coworking → floor → building with all responsible IDs.
 	var buildingResp, floorResp, coworkingResp string
-	err = a.db.QueryRow(
+	err = a.db.QueryRowContext(r.Context(),
 		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
 		        COALESCE(TRIM(f.responsible_employee_id), ''),
 		        COALESCE(TRIM(c.responsible_employee_id), '')

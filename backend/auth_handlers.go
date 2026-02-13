@@ -58,7 +58,7 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 		log.Printf("handleAuthUserInfo: No cookies found")
 	}
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("handleAuthUserInfo: Error making request to team.wb.ru: %v", err)
@@ -316,6 +316,7 @@ func firstNonEmptyString(values ...string) string {
 
 // handleAuthRequestCode проксирует запрос к auth-hrtech.wb.ru/v2/code/wb-captcha
 func (a *app) handleAuthRequestCode(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request body")
@@ -340,7 +341,7 @@ func (a *app) handleAuthRequestCode(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Origin", "https://team.wb.ru")
 	req.Header.Set("Referer", "https://team.wb.ru/")
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to make request")
@@ -365,6 +366,7 @@ func (a *app) handleAuthRequestCode(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthConfirmCode проксирует запрос к auth-hrtech.wb.ru/v2/auth
 func (a *app) handleAuthConfirmCode(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request body")
@@ -398,7 +400,7 @@ func (a *app) handleAuthConfirmCode(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("Cookie", cookie)
 	}
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to make request")
@@ -435,14 +437,8 @@ func collectCookies(r *http.Request) (string, string) {
 	if xCookieHeader := r.Header.Values("X-Cookie"); len(xCookieHeader) > 0 {
 		return strings.Join(xCookieHeader, "; "), "X-Cookie header"
 	}
-	if xCookieHeader := r.Header.Get("X-Cookie"); xCookieHeader != "" {
-		return xCookieHeader, "X-Cookie header"
-	}
 	if cookieHeader := r.Header.Values("Cookie"); len(cookieHeader) > 0 {
 		return strings.Join(cookieHeader, "; "), "Cookie header"
-	}
-	if cookieHeader := r.Header.Get("Cookie"); cookieHeader != "" {
-		return cookieHeader, "Cookie header"
 	}
 	if parsedCookies := r.Cookies(); len(parsedCookies) > 0 {
 		parts := make([]string, 0, len(parsedCookies))

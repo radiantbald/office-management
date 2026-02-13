@@ -47,7 +47,7 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var responsibleID string
-		row := a.db.QueryRow(
+		row := a.db.QueryRowContext(r.Context(),
 			`SELECT COALESCE(responsible_employee_id, '') FROM office_buildings WHERE id = $1`,
 			buildingID,
 		)
@@ -63,7 +63,7 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 		canAccess := strings.TrimSpace(responsibleID) != "" && strings.TrimSpace(responsibleID) == employeeID
 		if !canAccess {
 			var exists int
-			floorRow := a.db.QueryRow(
+			floorRow := a.db.QueryRowContext(r.Context(),
 				`SELECT 1 FROM floors WHERE building_id = $1 AND COALESCE(responsible_employee_id, '') = $2 LIMIT 1`,
 				buildingID,
 				employeeID,
@@ -80,7 +80,7 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 		}
 		if !canAccess {
 			var exists int
-			coworkingRow := a.db.QueryRow(
+			coworkingRow := a.db.QueryRowContext(r.Context(),
 				`SELECT 1 FROM coworkings c
 				   JOIN floors f ON f.id = c.floor_id
 				  WHERE f.building_id = $1
@@ -108,7 +108,7 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := a.db.Query(
+	rows, err := a.db.QueryContext(r.Context(),
 		`SELECT COALESCE(employee_id, ''),
 		        COALESCE(full_name, ''),
 		        COALESCE(wb_user_id, '')

@@ -122,7 +122,7 @@ func (a *app) handleListBookingsBySpaceDate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	rows, err := a.db.Query(
+	rows, err := a.db.QueryContext(r.Context(),
 		`SELECT b.id, b.workplace_id,
 		        COALESCE(NULLIF(u.wb_user_id, ''), b.applier_employee_id),
 		        COALESCE(NULLIF(u.full_name, ''), ''),
@@ -330,7 +330,7 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to cancel own booking first.
-	result, err := a.db.Exec(
+	result, err := a.db.ExecContext(r.Context(),
 		`UPDATE workplace_bookings
 		    SET cancelled_at = now(), canceller_employee_id = $1
 		  WHERE applier_employee_id = $1 AND workplace_id = $2 AND date = $3
@@ -357,7 +357,7 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err = a.db.Exec(
+	result, err = a.db.ExecContext(r.Context(),
 		`UPDATE workplace_bookings
 		    SET cancelled_at = now(), canceller_employee_id = $3
 		  WHERE workplace_id = $1 AND date = $2
@@ -393,7 +393,7 @@ func (a *app) handleListMyBookings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := a.db.Query(
+	rows, err := a.db.QueryContext(r.Context(),
 		`SELECT b.id, b.date, b.created_at, b.workplace_id,
 		        COALESCE(NULLIF(u.wb_user_id, ''), b.applier_employee_id),
 		        COALESCE(NULLIF(u.full_name, ''), ''),
@@ -469,7 +469,7 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := a.db.Exec(
+	result, err := a.db.ExecContext(r.Context(),
 		`UPDATE workplace_bookings
 		    SET cancelled_at = now(), canceller_employee_id = $1
 		  WHERE applier_employee_id = $1 AND cancelled_at IS NULL`,
@@ -501,7 +501,7 @@ func (a *app) handleListSpaceBookings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := a.db.Query(
+	rows, err := a.db.QueryContext(r.Context(),
 		`SELECT b.id, b.workplace_id, b.date, b.created_at,
 		        COALESCE(b.applier_employee_id, ''),
 		        COALESCE(b.tenant_employee_id, ''),
@@ -573,7 +573,7 @@ func (a *app) handleCancelAllSpaceBookings(w http.ResponseWriter, r *http.Reques
 	}
 
 	cancellerID, _ := extractEmployeeIDFromRequest(r, a.db)
-	result, err := a.db.Exec(
+	result, err := a.db.ExecContext(r.Context(),
 		`UPDATE workplace_bookings
 		    SET cancelled_at = now(), canceller_employee_id = $2
 		  WHERE workplace_id IN (SELECT id FROM workplaces WHERE coworking_id = $1)
@@ -756,7 +756,7 @@ func (a *app) canManageCoworkingByWorkplaceID(r *http.Request, workplaceID int64
 
 	// Single query instead of 7 separate N+1 queries:
 	var buildingResp, floorResp, coworkingResp string
-	err = a.db.QueryRow(
+	err = a.db.QueryRowContext(r.Context(),
 		`SELECT COALESCE(TRIM(b.responsible_employee_id), ''),
 		        COALESCE(TRIM(f.responsible_employee_id), ''),
 		        COALESCE(TRIM(c.responsible_employee_id), '')
