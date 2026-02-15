@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DFD — Office Management System</title>
+    <style>
+        :root {
+            --accent: #4f46e5;
+            --accent-light: #818cf8;
+            --bg: #f8fafc;
+            --card: #ffffff;
+            --border: #e2e8f0;
+            --text: #1e293b;
+            --text-muted: #64748b;
+            --radius: 12px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .header {
+            background: linear-gradient(135deg, var(--accent) 0%, #7c3aed 100%);
+            color: #fff;
+            padding: 48px 24px 36px;
+            text-align: center;
+        }
+        .header h1 { font-size: 2rem; font-weight: 700; margin-bottom: 6px; }
+        .header p  { font-size: 1.05rem; opacity: .85; }
+
+        /* ── Navigation ── */
+        .nav {
+            position: sticky; top: 0; z-index: 50;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+            display: flex; flex-wrap: wrap; gap: 6px;
+            justify-content: center;
+            padding: 12px 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.06);
+        }
+        .nav button {
+            padding: 8px 18px;
+            border: 1px solid var(--border);
+            background: var(--card);
+            color: var(--text);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all .2s;
+        }
+        .nav button:hover { border-color: var(--accent-light); color: var(--accent); }
+        .nav button.active {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+
+        /* ── Content ── */
+        .content { max-width: 1200px; margin: 0 auto; padding: 32px 20px 60px; }
+
+        .section { display: none; }
+        .section.active { display: block; animation: fadeUp .35s ease; }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(12px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .section h2 {
+            font-size: 1.6rem;
+            margin-bottom: 8px;
+            color: var(--accent);
+        }
+        .section > p { color: var(--text-muted); margin-bottom: 24px; }
+
+        .diagram-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 28px 24px;
+            margin-bottom: 28px;
+            overflow-x: auto;
+            box-shadow: 0 1px 4px rgba(0,0,0,.04);
+        }
+        .diagram-card h3 {
+            font-size: 1.1rem; margin-bottom: 16px; color: var(--text);
+        }
+
+        .mermaid { text-align: center; }
+
+        /* Info boxes */
+        .info {
+            background: #eff6ff;
+            border-left: 4px solid var(--accent);
+            padding: 18px 20px;
+            border-radius: 0 var(--radius) var(--radius) 0;
+            margin-top: 20px;
+        }
+        .info h4 { color: var(--accent); margin-bottom: 8px; font-size: 1rem; }
+        .info ul { list-style: none; padding: 0; }
+        .info li { padding: 5px 0 5px 20px; position: relative; }
+        .info li::before { content: "→"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
+
+        /* Legend */
+        .legend {
+            display: flex; flex-wrap: wrap; gap: 14px;
+            padding: 14px 18px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            margin-top: 16px;
+        }
+        .legend-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+        .legend-dot {
+            width: 22px; height: 22px;
+            border-radius: 5px;
+            border: 1px solid var(--border);
+        }
+
+        /* Tech grid */
+        .tech-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 16px;
+            margin: 20px 0;
+        }
+        .tech-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            transition: box-shadow .2s, transform .2s;
+        }
+        .tech-card:hover { transform: translateY(-3px); box-shadow: 0 6px 16px rgba(0,0,0,.08); }
+        .tech-card h4 { color: var(--accent); margin-bottom: 6px; }
+        .tech-card p  { color: var(--text-muted); font-size: .92rem; }
+        
+        footer {
+            text-align: center; padding: 24px; color: var(--text-muted); font-size: .85rem;
+            border-top: 1px solid var(--border);
+            max-width: 1200px; margin: 0 auto;
+        }
+
+        @media (max-width: 640px) {
+            .header h1 { font-size: 1.5rem; }
+            .nav button { font-size: 12px; padding: 6px 12px; }
+            .content { padding: 20px 12px 40px; }
+        }
+    </style>
+    <script>
+        /* ── Tab switching — must be in <head> so onclick handlers work ── */
+        function showTab(tabId, clickedBtn) {
+            var sections = document.querySelectorAll('.section');
+            var buttons  = document.querySelectorAll('#nav button');
+            for (var i = 0; i < sections.length; i++) sections[i].classList.remove('active');
+            for (var i = 0; i < buttons.length;  i++) buttons[i].classList.remove('active');
+
+            var target = document.getElementById(tabId);
+            if (target) target.classList.add('active');
+            if (clickedBtn) clickedBtn.classList.add('active');
+
+            // Defer diagram rendering to not block the tab switch
+            if (target) setTimeout(function() { renderDiagrams(target); }, 50);
+        }
+
+        var _mermaidReady = false;
+        var _renderQueue = Promise.resolve();
+
+        function cleanupMermaidZombies() {
+            // Remove any zombie containers Mermaid leaves in the body after rendering
+            document.querySelectorAll('body > [id^="dmm-"]').forEach(function(z) { z.remove(); });
+            // Also clean up any iframe or other elements Mermaid might create
+            document.querySelectorAll('body > iframe[id*="mermaid"], body > svg[id*="mermaid"]').forEach(function(z) { z.remove(); });
+        }
+
+        function renderDiagrams(container) {
+            if (!_mermaidReady) return;
+            var pres = container.querySelectorAll('pre.mermaid[data-mcode]');
+            if (pres.length === 0) return;
+            pres.forEach(function(el) {
+                el.innerHTML = '<div style="color:#64748b;padding:40px;text-align:center;">&#9203; Загрузка диаграммы...</div>';
+            });
+            pres.forEach(function(el) {
+                _renderQueue = _renderQueue.then(function() {
+                    var code = el.getAttribute('data-mcode');
+                    if (!code) return;
+                    var id = 'mm-' + Math.random().toString(36).slice(2, 8);
+                    return mermaid.render(id, code).then(function(result) {
+                        el.innerHTML = result.svg;
+                        el.removeAttribute('data-mcode');
+                        cleanupMermaidZombies();
+                    }).catch(function(err) {
+                        el.innerHTML = '<div style="color:#e53e3e;padding:20px;text-align:center;">&#9888; Ошибка рендеринга</div>';
+                        el.removeAttribute('data-mcode');
+                        cleanupMermaidZombies();
+                    });
+                });
+            });
+        }
+    </script>
+</head>
+<body>
+
+<div class="header">
+            <h1>🏢 Data Flow Diagram</h1>
+    <p>Office Management System — Архитектура и потоки данных</p>
+</div>
+
+<div class="nav" id="nav">
+    <button onclick="showTab('level0',this)" class="active">Level 0</button>
+    <button onclick="showTab('level1',this)">Level 1</button>
+    <button onclick="showTab('auth-api',this)">Auth API</button>
+    <button onclick="showTab('build-api',this)">Building API</button>
+    <button onclick="showTab('book-api',this)">Booking API</button>
+    <button onclick="showTab('auth-flow',this)">Auth Flow</button>
+    <button onclick="showTab('booking-flow',this)">Booking Flow</button>
+    <button onclick="showTab('building-flow',this)">Building Flow</button>
+    <button onclick="showTab('database',this)">Database</button>
+    <button onclick="showTab('info',this)">Информация</button>
+</div>
+        
+        <div class="content">
+
+<!-- ═══════════════════ LEVEL 0 ═══════════════════ -->
+<div id="level0" class="section active">
+                <h2>Контекстная диаграмма (Level 0)</h2>
+    <p>Высокоуровневое представление системы и внешних сущностей.</p>
+
+    <div class="diagram-card">
+        <pre class="mermaid">
+graph LR
+    User["👤 Пользователь&#10;(Browser)"]
+    System["🏢 Office Management&#10;System"]
+    WBTeam["🔐 team.wb.ru&#10;External Auth"]
+
+    User -- "HTTP Requests" --> System
+    System -- "HTTP Responses" --> User
+    System -- "Auth Requests" --> WBTeam
+    WBTeam -- "User Info + Token" --> System
+    
+    style System fill:#4A90E2,stroke:#2E5C8A,stroke-width:3px,color:#fff
+    style User fill:#50C878,stroke:#2D7A4F,stroke-width:2px,color:#fff
+    style WBTeam fill:#FF6B6B,stroke:#C92A2A,stroke-width:2px,color:#fff
+        </pre>
+                </div>
+                
+    <div class="info">
+        <h4>Основные сущности</h4>
+        <ul>
+            <li><strong>Пользователь (Browser)</strong> — веб-интерфейс SPA для работы с системой</li>
+            <li><strong>Office Management System</strong> — Frontend + Backend + Database</li>
+            <li><strong>team.wb.ru API</strong> — внешний сервис аутентификации Wildberries</li>
+                    </ul>
+                </div>
+            </div>
+            
+<!-- ═══════════════════ LEVEL 1 ═══════════════════ -->
+<div id="level1" class="section">
+                <h2>Детализированная диаграмма (Level 1)</h2>
+    <p>Основные слои приложения и взаимодействие между ними.</p>
+                
+    <div class="diagram-card">
+        <pre class="mermaid">
+graph LR
+    Browser["🖥️ Browser&#10;SPA"]
+    Nginx["🌐 Nginx&#10;Static + Proxy"]
+    API["⚙️ Go API&#10;REST Server"]
+    Auth["🔑 Auth Module&#10;JWT Handler"]
+    DB[("💾 PostgreSQL")]
+    FS["📁 File Storage&#10;uploads/buildings/"]
+    WB["🔐 team.wb.ru&#10;External Auth"]
+
+    Browser -- "HTTP/HTTPS" --> Nginx
+    Nginx -- "Static files" --> Browser
+    Nginx -- "Proxy /api/*" --> API
+    API -- "JSON" --> Nginx
+    API -- "SQL Queries" --> DB
+    DB -- "Result Sets" --> API
+    API -- "Read / Write" --> FS
+    API -- "Validate JWT" --> Auth
+    Auth -- "Claims" --> API
+    Auth -- "Verify Token" --> WB
+    WB -- "User Info" --> Auth
+
+    style Browser fill:#E8F4F8,stroke:#4A90E2,stroke-width:2px
+    style Nginx fill:#FFF4E6,stroke:#FD7E14,stroke-width:2px
+    style API fill:#E6F7FF,stroke:#1890FF,stroke-width:2px
+    style Auth fill:#FFF7E6,stroke:#FA8C16,stroke-width:2px
+    style DB fill:#F0F5FF,stroke:#597EF7,stroke-width:2px
+    style FS fill:#F6FFED,stroke:#52C41A,stroke-width:2px
+    style WB fill:#FFF1F0,stroke:#FF4D4F,stroke-width:2px
+        </pre>
+                </div>
+                
+                <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:#E8F4F8"></div>Client</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#FFF4E6"></div>Web Server</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#E6F7FF"></div>Application</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#FFF7E6"></div>Auth</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#F0F5FF"></div>Data Layer</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#F6FFED"></div>File Storage</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#FFF1F0"></div>External</div>
+                </div>
+            </div>
+            
+<!-- ═══════════════════ AUTH API ═══════════════════ -->
+<div id="auth-api" class="section">
+    <h2>Level 2 — Auth Endpoints</h2>
+    <p>Все эндпоинты аутентификации и их связи с внешними сервисами и БД.</p>
+
+    <div class="diagram-card">
+        <pre class="mermaid">
+graph LR
+    subgraph Client
+        JS["🎨 Frontend JS"]
+    end
+
+    subgraph Auth["Auth Endpoints"]
+        Code["/api/auth/v2/code/wb-captcha&#10;POST"]
+        Confirm["/api/auth/v2/auth&#10;POST"]
+        UserInfo["/api/auth/user/info&#10;GET"]
+        WbBand["/api/auth/user/wb-band&#10;GET"]
+        OToken["/api/auth/office-token&#10;POST"]
+        Refr["/api/auth/refresh&#10;POST"]
+    end
+
+    subgraph Ext["External"]
+        AuthHR["auth-hrtech.wb.ru"]
+        TeamWB["team.wb.ru"]
+    end
+
+    subgraph Data
+        JWT["🔑 JWT Handler"]
+        DB[("💾 PostgreSQL&#10;users &#8226; refresh_tokens")]
+    end
+
+    JS -- "phone + captcha" --> Code
+    Code -- "proxy" --> AuthHR
+
+    JS -- "code" --> Confirm
+    Confirm -- "proxy" --> AuthHR
+
+    JS -- "Bearer token" --> UserInfo
+    UserInfo -- "proxy" --> TeamWB
+    UserInfo -- "upsert" --> DB
+
+    JS -- "Bearer token" --> WbBand
+    WbBand -- "proxy" --> TeamWB
+    WbBand -- "upsert" --> DB
+
+    JS -- "Bearer token" --> OToken
+    OToken -- "verify" --> TeamWB
+    OToken -- "sign" --> JWT
+    JWT -- "store refresh" --> DB
+    OToken -- "tokens" --> JS
+
+    JS -- "refresh token" --> Refr
+    Refr -- "validate" --> DB
+    Refr -- "sign new" --> JWT
+    Refr -- "tokens" --> JS
+
+    style Client fill:#FFF4E6,stroke:#FD7E14,stroke-width:2px
+    style Auth fill:#FFF7E6,stroke:#FA8C16,stroke-width:2px
+    style Ext fill:#FFF1F0,stroke:#FF4D4F,stroke-width:2px
+    style Data fill:#F0F5FF,stroke:#597EF7,stroke-width:2px
+        </pre>
+    </div>
+
+    <div class="info">
+        <h4>Двухуровневая система аутентификации</h4>
+        <ul>
+            <li><strong>Authorization Token</strong> — внешний токен от auth-hrtech.wb.ru</li>
+            <li><strong>Office-Access-Token</strong> — JWT (HS256, TTL 1 час) с ролями и responsibilities</li>
+            <li><strong>Office-Refresh-Token</strong> — JWT (TTL 30 дней) с ротацией при каждом обновлении</li>
+        </ul>
+    </div>
+</div>
+
+<!-- ═══════════════════ BUILD API ═══════════════════ -->
+<div id="build-api" class="section">
+    <h2>Level 2 — Building &amp; Space Endpoints</h2>
+    <p>CRUD-операции для зданий, этажей, пространств, столов и переговорных.</p>
+
+    <div class="diagram-card">
+        <pre class="mermaid">
+graph LR
+    subgraph Client
+        JS["🎨 Frontend JS"]
+    end
+
+    subgraph API["Building Endpoints"]
+        Build["/api/buildings&#10;GET / POST"]
+        Floor["/api/floors&#10;GET / POST / PUT / DELETE"]
+        Space["/api/spaces&#10;GET / POST / PUT / DELETE"]
+        Desk["/api/desks&#10;GET / POST / PUT / DELETE"]
+        Bulk["/api/desks/bulk&#10;POST batch"]
+        MR["/api/meeting-rooms&#10;GET / POST / PUT / DELETE"]
+    end
+
+    subgraph Data
+        DB[("💾 PostgreSQL")]
+        FS["📁 uploads/buildings/"]
+    end
+
+    JS --> Build
+    JS --> Floor
+    JS --> Space
+    JS --> Desk
+    JS --> Bulk
+    JS --> MR
+
+    Build -- "office_buildings" --> DB
+    Build -- "image" --> FS
+    Floor -- "floors" --> DB
+    Space -- "coworkings" --> DB
+    Desk -- "workplaces" --> DB
+    Bulk -- "workplaces batch" --> DB
+    MR -- "meeting_rooms" --> DB
+
+    style Client fill:#FFF4E6,stroke:#FD7E14,stroke-width:2px
+    style API fill:#E6FFFB,stroke:#13C2C2,stroke-width:2px
+    style Data fill:#F0F5FF,stroke:#597EF7,stroke-width:2px
+        </pre>
+    </div>
+
+    <div class="info">
+        <h4>Иерархия объектов</h4>
+        <ul>
+            <li><strong>Building</strong> → здание с адресом, timezone, изображением</li>
+            <li><strong>Floor</strong> → этаж здания с SVG-планом</li>
+            <li><strong>Space (Coworking)</strong> → зона на этаже с полигональной границей</li>
+            <li><strong>Workplace (Desk)</strong> → рабочее место с координатами</li>
+            <li><strong>Meeting Room</strong> → переговорная комната на этаже</li>
+        </ul>
+    </div>
+</div>
+
+<!-- ═══════════════════ BOOK API ═══════════════════ -->
+<div id="book-api" class="section">
+    <h2>Level 2 — Booking &amp; User Endpoints</h2>
+    <p>Бронирование, управление пользователями и зоны ответственности.</p>
+
+    <div class="diagram-card">
+        <pre class="mermaid">
+graph LR
+    subgraph Client
+        JS["🎨 Frontend JS"]
+    end
+
+    subgraph BookAPI["Booking Endpoints"]
+        Book["/api/bookings&#10;GET / POST"]
+        BookDel["/api/bookings/:id&#10;DELETE"]
+        MRBook["/api/meeting-room-bookings&#10;GET / POST"]
+        MRDel["/api/meeting-room-bookings/:id&#10;DELETE"]
+    end
+
+    subgraph UserAPI["User Endpoints"]
+        Users["/api/users&#10;GET"]
+        Role["/api/users/role&#10;PUT"]
+        Resp["/api/responsibilities&#10;GET"]
+    end
+
+    subgraph Data
+        DB[("💾 PostgreSQL")]
+    end
+
+    JS --> Book
+    JS --> BookDel
+    JS --> MRBook
+    JS --> MRDel
+    JS --> Users
+    JS --> Role
+    JS --> Resp
+
+    Book -- "workplace_bookings" --> DB
+    BookDel -- "cancelled_at" --> DB
+    MRBook -- "meeting_room_bookings" --> DB
+    MRDel -- "cancelled_at" --> DB
+    Users -- "users" --> DB
+    Role -- "users.role" --> DB
+    Resp -- "buildings / floors / coworkings" --> DB
+
+    style Client fill:#FFF4E6,stroke:#FD7E14,stroke-width:2px
+    style BookAPI fill:#F9F0FF,stroke:#722ED1,stroke-width:2px
+    style UserAPI fill:#FFF0F6,stroke:#EB2F96,stroke-width:2px
+    style Data fill:#F0F5FF,stroke:#597EF7,stroke-width:2px
+        </pre>
+                    </div>
+
+    <div class="info">
+        <h4>Особенности бронирования</h4>
+        <ul>
+            <li><strong>Soft Delete</strong> — брони не удаляются, а помечаются cancelled_at</li>
+            <li><strong>Unique Constraint</strong> — одно рабочее место = одна бронь на дату</li>
+            <li><strong>Tenant vs Applier</strong> — бронь может быть создана для другого сотрудника</li>
+            <li><strong>Timezone Aware</strong> — учитывается timezone здания</li>
+        </ul>
+                </div>
+            </div>
+            
+<!-- ═══════════════════ AUTH FLOW ═══════════════════ -->
+<div id="auth-flow" class="section">
+    <h2>Сценарий аутентификации</h2>
+    <p>Полный цикл: от ввода телефона до работы с защищёнными API.</p>
+
+    <div class="diagram-card">
+        <pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant F as Frontend
+    participant A as API Server
+    participant W as team.wb.ru
+    participant DB as PostgreSQL
+    participant J as JWT Handler
+
+    Note over U,J: Шаг 1 — Получение Authorization Token
+    U->>F: Открыть приложение
+    F->>U: Показать форму входа
+    U->>F: Ввести телефон
+    F->>A: POST /api/auth/v2/code/wb-captcha
+    A->>W: Запрос кода подтверждения
+    W-->>A: Код отправлен
+    A-->>F: success true
+    F->>U: Показать поле для кода
+    U->>F: Ввести код
+    F->>A: POST /api/auth/v2/auth
+    A->>W: Подтвердить код
+    W-->>A: Authorization Token
+    A-->>F: authorization_token
+    
+    Note over U,J: Шаг 2 — Получение Office Access Token
+    F->>A: POST /api/auth/office-token
+    A->>W: GET /api/v1/user/info
+    W-->>A: User Info (employee_id, name)
+    A->>DB: Upsert user
+    A->>DB: Получить роль + responsibilities
+    DB-->>A: role, building_ids, floor_ids
+    A->>J: Создать Office JWT
+    J->>DB: Сохранить refresh token
+    J-->>A: access + refresh tokens
+    A-->>F: Токены
+    F->>F: Сохранить в localStorage
+    
+    Note over U,J: Шаг 3 — Работа с API
+    U->>F: Просмотр зданий
+    F->>A: GET /api/buildings
+    A->>J: Валидировать Office-Access-Token
+    J-->>A: Valid, claims
+    A->>DB: SELECT FROM office_buildings
+    DB-->>A: Buildings data
+    A-->>F: JSON response
+    F->>U: Показать здания
+    
+    Note over U,J: Шаг 4 — Обновление токена (Rotation)
+    F->>F: Токен истёк
+    F->>A: POST /api/auth/refresh
+    A->>DB: Проверить refresh token
+    DB-->>A: Valid, not revoked
+    A->>DB: Revoke old refresh token
+    A->>J: Новый access + refresh JWT
+    J->>DB: Сохранить новый refresh token
+    J-->>A: new tokens
+    A-->>F: Новые токены
+    F->>F: Обновить localStorage
+        </pre>
+                    </div>
+                </div>
+                
+<!-- ═══════════════════ BOOKING FLOW ═══════════════════ -->
+<div id="booking-flow" class="section">
+    <h2>Сценарий бронирования</h2>
+    <p>Просмотр доступных мест, создание и отмена бронирования.</p>
+
+    <div class="diagram-card">
+        <pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant F as Frontend
+    participant A as API Server
+    participant DB as PostgreSQL
+    
+    Note over U,DB: Просмотр доступных мест
+    U->>F: Выбрать здание и этаж
+    F->>A: GET /api/spaces?floor_id=X
+    A->>DB: SELECT coworkings WHERE floor_id
+    DB-->>A: Spaces data
+    A-->>F: JSON
+    F->>A: GET /api/desks?space_id=Y&date=2026-02-14
+    A->>DB: SELECT workplaces LEFT JOIN bookings
+    DB-->>A: Desks + booking status
+    A-->>F: Desks with booking info
+    F->>U: Показать план этажа
+    
+    Note over U,DB: Создание бронирования
+    U->>F: Выбрать свободный стол
+    U->>F: Подтвердить бронь
+    F->>A: POST /api/bookings
+    A->>A: Проверить права из JWT
+    A->>DB: INSERT INTO workplace_bookings
+    DB-->>A: Booking created
+    A-->>F: booking_id
+    F->>U: Бронь создана
+    
+    Note over U,DB: Отмена бронирования
+    U->>F: Отменить бронь
+    F->>A: DELETE /api/bookings/ID
+    A->>A: Проверить права
+    A->>DB: UPDATE cancelled_at = NOW()
+    DB-->>A: OK
+    A-->>F: Success
+    F->>U: Бронь отменена
+        </pre>
+                    </div>
+                </div>
+                
+<!-- ═══════════════════ BUILDING FLOW ═══════════════════ -->
+<div id="building-flow" class="section">
+    <h2>Управление зданиями</h2>
+    <p>Создание зданий, этажей, зон и рабочих мест администратором.</p>
+
+    <div class="diagram-card">
+        <pre class="mermaid">
+sequenceDiagram
+    participant A as Admin
+    participant F as Frontend
+    participant API as API Server
+    participant JWT as JWT Handler
+    participant DB as PostgreSQL
+    participant FS as File Storage
+    
+    Note over A,FS: Создание здания
+    A->>F: Заполнить форму
+    F->>API: POST /api/buildings (multipart)
+    API->>JWT: Проверить роль
+    JWT-->>API: Role = Admin
+    API->>FS: Сохранить изображение
+    FS-->>API: /uploads/buildings/123.png
+    API->>DB: INSERT INTO office_buildings
+    DB-->>API: Building ID
+    API-->>F: building_id + image_url
+    
+    Note over A,FS: Создание этажа
+    A->>F: Добавить этаж
+    F->>API: POST /api/floors
+    API->>JWT: Проверить responsibility
+    JWT-->>API: Has responsibility
+    API->>DB: INSERT INTO floors
+    DB-->>API: Floor ID
+    API-->>F: floor_id
+
+    Note over A,FS: Создание зоны (коворкинг)
+    A->>F: Нарисовать зону
+    F->>API: POST /api/spaces
+    API->>JWT: Проверить responsibility
+    API->>DB: INSERT INTO coworkings
+    DB-->>API: Space ID
+    API-->>F: space_id
+
+    Note over A,FS: Массовое добавление столов
+    A->>F: Разместить столы
+    F->>API: POST /api/desks/bulk
+    API->>JWT: Проверить responsibility
+    API->>DB: INSERT INTO workplaces (batch)
+    DB-->>API: Desk IDs
+    API-->>F: desk_ids
+        </pre>
+                    </div>
+                </div>
+                
+<!-- ═══════════════════ DATABASE ═══════════════════ -->
+<div id="database" class="section">
+    <h2>Схема базы данных</h2>
+    <p>ER-диаграмма всех таблиц и их связей.</p>
+
+    <div class="diagram-card">
+        <pre class="mermaid">
+erDiagram
+    users ||--o{ workplace_bookings : "books"
+    users ||--o{ meeting_room_bookings : "books"
+    users ||--o{ office_refresh_tokens : "has"
+    office_buildings ||--|{ floors : "contains"
+    floors ||--|{ coworkings : "contains"
+    floors ||--|{ meeting_rooms : "contains"
+    coworkings ||--|{ workplaces : "contains"
+    workplaces ||--o{ workplace_bookings : "booked_as"
+    meeting_rooms ||--o{ meeting_room_bookings : "booked_as"
+    
+    users {
+        bigint id PK
+        text full_name
+        text employee_id UK
+        text wb_team_profile_id
+        text wb_user_id UK
+        text avatar_url
+        text wb_band
+        int role
+        timestamptz created_at
+    }
+    
+    office_buildings {
+        bigint id PK
+        text name
+        text address
+        text timezone
+        text image_url
+        text responsible_employee_id
+        text floors_json
+        timestamptz created_at
+    }
+    
+    floors {
+        bigint id PK
+        bigint building_id FK
+        text name
+        int level
+        text plan_svg
+        text responsible_employee_id
+        timestamptz created_at
+    }
+    
+    coworkings {
+        bigint id PK
+        bigint floor_id FK
+        text name
+        text subdivision_level_1
+        text subdivision_level_2
+        text responsible_employee_id
+        text points_json
+        text color
+        int snapshot_hidden
+        timestamptz created_at
+    }
+    
+    workplaces {
+        bigint id PK
+        bigint coworking_id FK
+        text label
+        float x
+        float y
+        float width
+        float height
+        float rotation
+        timestamptz created_at
+    }
+    
+    workplace_bookings {
+        bigint id PK
+        bigint workplace_id FK
+        text applier_employee_id
+        text tenant_employee_id
+        text date
+        timestamptz cancelled_at
+        text canceller_employee_id
+        timestamptz created_at
+    }
+
+    meeting_rooms {
+        bigint id PK
+        bigint floor_id FK
+        text name
+        int capacity
+        text points_json
+        text color
+        timestamptz created_at
+    }
+    
+    meeting_room_bookings {
+        bigint id PK
+        bigint meeting_room_id FK
+        text applier_employee_id
+        timestamptz start_at
+        timestamptz end_at
+        timestamptz cancelled_at
+        text canceller_employee_id
+        timestamptz created_at
+    }
+    
+    office_refresh_tokens {
+        bigint id PK
+        text token_id UK
+        text employee_id
+        timestamptz expires_at
+        timestamptz revoked_at
+        timestamptz created_at
+    }
+        </pre>
+                </div>
+                
+    <div class="info">
+                    <h4>Ключевые таблицы</h4>
+                    <ul>
+            <li><strong>users</strong> — пользователи с ролями (1=Employee, 2=Admin)</li>
+            <li><strong>office_buildings</strong> → <strong>floors</strong> → <strong>coworkings</strong> → <strong>workplaces</strong> — иерархия объектов</li>
+            <li><strong>meeting_rooms</strong> — переговорные комнаты на этажах</li>
+            <li><strong>workplace_bookings</strong> — бронирования столов (UNIQUE workplace_id + date)</li>
+            <li><strong>meeting_room_bookings</strong> — бронирования переговорных (start_at / end_at)</li>
+            <li><strong>office_refresh_tokens</strong> — refresh-токены с поддержкой ротации (revoked_at)</li>
+                    </ul>
+                </div>
+            </div>
+            
+<!-- ═══════════════════ INFO ═══════════════════ -->
+<div id="info" class="section">
+                <h2>Общая информация о системе</h2>
+                
+    <h3 style="margin:20px 0 12px;color:var(--accent)">Технологический стек</h3>
+    <div class="tech-grid">
+        <div class="tech-card"><h4>🎨 Frontend</h4><p>Vanilla JS, HTML5, CSS3, Vite. SPA без фреймворков.</p></div>
+        <div class="tech-card"><h4>🔧 Backend</h4><p>Go 1.21+, net/http, pgx. REST API с middleware.</p></div>
+        <div class="tech-card"><h4>💾 Database</h4><p>PostgreSQL 16 Alpine. JSON-поля, индексы, constraints.</p></div>
+        <div class="tech-card"><h4>🔐 Auth</h4><p>JWT HS256. Двухуровневые токены. team.wb.ru API.</p></div>
+        <div class="tech-card"><h4>🌐 Web Server</h4><p>Nginx (prod) с reverse proxy. Go FileServer (dev).</p></div>
+        <div class="tech-card"><h4>🐳 Deploy</h4><p>Docker + Docker Compose. Multi-stage builds.</p></div>
+                    </div>
+                    
+    <h3 style="margin:28px 0 12px;color:var(--accent)">Безопасность</h3>
+    <div class="info">
+        <ul>
+            <li><strong>Двухуровневая аутентификация</strong> — Authorization Token (team.wb.ru) + Office JWT</li>
+            <li><strong>Middleware</strong> — CORS, Security Headers, Logging, JWT Validation</li>
+            <li><strong>Контроль доступа</strong> — роли + responsibilities в JWT</li>
+            <li><strong>Rate Limiting</strong> — 10 req/min на auth endpoints</li>
+            <li><strong>SQL Injection</strong> — параметризованные запросы (pgx)</li>
+            <li><strong>HTTPS</strong> — в production, HSTS header</li>
+            <li><strong>MaxBytesReader</strong> — ограничение размера загрузок (5 MB)</li>
+                    </ul>
+                </div>
+                
+    <h3 style="margin:28px 0 12px;color:var(--accent)">Архитектурные решения</h3>
+    <div class="info">
+        <ul>
+            <li><strong>Stateless API</strong> — вся информация о пользователе в JWT</li>
+            <li><strong>Graceful Shutdown</strong> — SIGTERM / SIGINT</li>
+            <li><strong>Health Check</strong> — GET /api/health</li>
+            <li><strong>Auto Migrations</strong> — при старте сервера</li>
+            <li><strong>Connection Pooling</strong> — пул соединений PostgreSQL</li>
+            <li><strong>Timezone Support</strong> — timezone per building</li>
+            <li><strong>Soft Delete</strong> — cancelled_at вместо удаления</li>
+            <li><strong>Token Rotation</strong> — ротация refresh token при каждом обновлении</li>
+                    </ul>
+            </div>
+        </div>
+
+</div><!-- /content -->
+        
+        <footer>
+    <strong>Office Management System — Data Flow Diagram</strong><br>
+    Создано: 2026-02-13 &nbsp;|&nbsp; Обновлено: 2026-02-15 &nbsp;|&nbsp; Версия 2.0
+        </footer>
+    
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({ 
+            startOnLoad: false,
+            theme: 'default',
+            securityLevel: 'loose',
+            flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis', padding: 20, nodeSpacing: 50, rankSpacing: 60 },
+            sequence: { diagramMarginX: 30, diagramMarginY: 10, actorMargin: 60, width: 180, height: 55, boxMargin: 10, boxTextMargin: 5, noteMargin: 10, messageMargin: 40, mirrorActors: true, useMaxWidth: true },
+            er: { useMaxWidth: true, layoutDirection: 'TB' }
+        });
+
+        // Move mermaid source from textContent to data attribute so it won't be processed twice
+        document.querySelectorAll('pre.mermaid').forEach(function(el) {
+            el.setAttribute('data-mcode', el.textContent.trim());
+            el.textContent = '';
+        });
+
+        _mermaidReady = true;
+
+        // Render the initial active section
+        var initialSection = document.querySelector('.section.active');
+        if (initialSection) renderDiagrams(initialSection);
+    </script>
+
+</body>
+</html>
