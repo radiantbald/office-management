@@ -14,6 +14,78 @@ import (
 
 var profileIDPattern = regexp.MustCompile(`^\d+$`)
 
+// Cookie names for HttpOnly token storage.
+const (
+	accessTokenCookieName  = "office_access_token"
+	refreshTokenCookieName = "office_refresh_token"
+)
+
+// sessionResponse is the JSON payload returned to the frontend with
+// non-sensitive claims from the tokens.  The raw JWT strings are never
+// exposed — they live exclusively in HttpOnly cookies.
+type sessionResponse struct {
+	EmployeeID       string                 `json:"employee_id"`
+	UserName         string                 `json:"user_name,omitempty"`
+	Role             int                    `json:"role"`
+	Responsibilities *TokenResponsibilities `json:"responsibilities,omitempty"`
+	AccessExp        int64                  `json:"access_exp"`
+	RefreshExp       int64                  `json:"refresh_exp,omitempty"`
+}
+
+// isSecureContext returns true when the request arrived over TLS (direct) or
+// through a TLS-terminating reverse proxy (X-Forwarded-Proto: https).
+func isSecureContext(r *http.Request) bool {
+	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+}
+
+// setTokenCookies writes both access and refresh tokens as HttpOnly cookies.
+func setTokenCookies(w http.ResponseWriter, r *http.Request, accessToken, refreshToken string, accessExp, refreshExp int64) {
+	secure := isSecureContext(r)
+	now := time.Now().UTC().Unix()
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     accessTokenCookieName,
+		Value:    accessToken,
+		Path:     "/api/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(accessExp - now),
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshTokenCookieName,
+		Value:    refreshToken,
+		Path:     "/api/auth/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(refreshExp - now),
+	})
+}
+
+// clearTokenCookies expires both token cookies.
+func clearTokenCookies(w http.ResponseWriter, r *http.Request) {
+	secure := isSecureContext(r)
+	http.SetCookie(w, &http.Cookie{
+		Name:     accessTokenCookieName,
+		Value:    "",
+		Path:     "/api/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshTokenCookieName,
+		Value:    "",
+		Path:     "/api/auth/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
 // handleAuthUserInfo проксирует запрос к team.wb.ru/api/v1/user/info
 func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 	authHeader := r.Header.Get("Authorization")
@@ -637,12 +709,16 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 	// Hash the token_id with the JWT secret as pepper — never store it in plain text.
 	tokenHash := hashTokenID(parsedRefreshClaims.TokenID, a.officeJWTSecret)
 
-	// Store refresh token in database with family, IP and User-Agent metadata.
+	// Extract device_id — used to bind the refresh token to a specific device.
+	deviceID := extractDeviceID(r)
+
+	// Store refresh token in database with family, device_id, IP and User-Agent metadata.
 	if err := a.storeRefreshToken(
 		r.Context(),
 		tokenHash,
 		employeeID,
 		parsedRefreshClaims.FamilyID,
+		deviceID,
 		clientIP(r),
 		truncateUA(r.UserAgent()),
 		parsedRefreshClaims.Exp,
@@ -652,9 +728,19 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set tokens as HttpOnly cookies (XSS-safe: JS cannot read them).
+	setTokenCookies(w, r, accessToken, refreshToken,
+		accessClaims.Exp, parsedRefreshClaims.Exp)
+
 	respondJSON(w, http.StatusOK, map[string]any{
-		"office_access_token":  accessToken,
-		"office_refresh_token": refreshToken,
+		"session": sessionResponse{
+			EmployeeID:       accessClaims.EmployeeID,
+			UserName:         accessClaims.UserName,
+			Role:             accessClaims.Role,
+			Responsibilities: accessClaims.Responsibilities,
+			AccessExp:        accessClaims.Exp,
+			RefreshExp:       parsedRefreshClaims.Exp,
+		},
 	})
 }
 
@@ -681,15 +767,20 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		RefreshToken string `json:"office_refresh_token"`
+	// 1) Try HttpOnly cookie first (preferred), 2) fall back to JSON body (legacy).
+	var refreshToken string
+	if c, err := r.Cookie(refreshTokenCookieName); err == nil && strings.TrimSpace(c.Value) != "" {
+		refreshToken = strings.TrimSpace(c.Value)
+	} else {
+		var req struct {
+			RefreshToken string `json:"office_refresh_token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+		refreshToken = strings.TrimSpace(req.RefreshToken)
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	refreshToken := strings.TrimSpace(req.RefreshToken)
 	if refreshToken == "" {
 		respondError(w, http.StatusBadRequest, "office_refresh_token is required")
 		return
@@ -703,14 +794,19 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── Step 2: hash the token_id and look it up in DB ──
+	// ── Step 2: atomically consume the refresh token (UPDATE … RETURNING) ──
+	// This single SQL statement both validates the token and marks it as
+	// consumed in one atomic operation, eliminating the TOCTOU race condition
+	// when parallel requests hit /refresh simultaneously.
 	tokenHash := hashTokenID(refreshClaims.TokenID, a.officeJWTSecret)
-	status, familyID, err := a.checkRefreshToken(r.Context(), tokenHash, refreshClaims.EmployeeID)
+	status, rec, err := a.consumeRefreshToken(r.Context(), tokenHash, refreshClaims.EmployeeID)
 	if err != nil {
-		log.Printf("handleAuthRefreshToken: failed to validate refresh token: %v", err)
+		log.Printf("handleAuthRefreshToken: failed to consume refresh token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to validate refresh token")
 		return
 	}
+
+	familyID := rec.FamilyID
 
 	switch status {
 	case refreshTokenRevoked:
@@ -732,15 +828,34 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── Step 4: token is valid — proceed with rotation ──
-
-	// 4a. Mark old token as consumed (revoked_at + last_used_at = now).
-	if err := a.revokeRefreshToken(r.Context(), tokenHash); err != nil {
-		log.Printf("handleAuthRefreshToken: failed to revoke old refresh token: %v", err)
-		// Critical for replay protection — abort if we can't mark it consumed.
-		respondError(w, http.StatusInternalServerError, "Failed to consume refresh token")
+	// ── Step 3b: Device binding check ──
+	// Refresh tokens are bound to a device_id. If the device_id in the request
+	// does not match the stored one, reject — the token may have been stolen.
+	// Token is already consumed at this point; on mismatch we revoke the
+	// entire family as well.
+	requestDeviceID := extractDeviceID(r)
+	if rec.DeviceID != "" && requestDeviceID != rec.DeviceID {
+		log.Printf("handleAuthRefreshToken: DEVICE MISMATCH for employee=%s family=%s stored_device=%s request_device=%s ip=%s",
+			refreshClaims.EmployeeID, familyID, rec.DeviceID, requestDeviceID, clientIP(r))
+		// Revoke the entire family — likely token theft.
+		if err := a.revokeTokenFamily(r.Context(), familyID); err != nil {
+			log.Printf("handleAuthRefreshToken: failed to revoke token family %s: %v", familyID, err)
+		}
+		respondError(w, http.StatusUnauthorized, "Device mismatch — session invalidated for security")
 		return
 	}
+
+	// Soft IP heuristic: log IP changes for audit, but do NOT reject.
+	// Mobile networks, VPNs, and corporate NATs change IP frequently.
+	currentIP := clientIP(r)
+	if rec.IPAddress != "" && rec.IPAddress != currentIP {
+		log.Printf("handleAuthRefreshToken: IP changed for employee=%s family=%s device=%s old_ip=%s new_ip=%s (audit only, not blocking)",
+			refreshClaims.EmployeeID, familyID, requestDeviceID, rec.IPAddress, currentIP)
+	}
+
+	// ── Step 4: token was valid and is already consumed — proceed with rotation ──
+
+	// 4a. (consumed atomically in Step 2 above)
 
 	// 4b. Resolve current role & user name from DB.
 	roleID, err := getUserRoleByWbUserID(r.Context(), a.db, refreshClaims.EmployeeID)
@@ -781,7 +896,7 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4e. Store new refresh token (hashed) in DB.
+	// 4e. Store new refresh token (hashed) in DB — inherits the same device_id.
 	parsedNewRefresh, err := VerifyOfficeRefreshToken(newRefreshToken, a.officeJWTSecret)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to parse new refresh token: %v", err)
@@ -794,7 +909,8 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		newTokenHash,
 		parsedNewRefresh.EmployeeID,
 		familyID,
-		clientIP(r),
+		requestDeviceID, // preserve device binding through rotation
+		currentIP,
 		truncateUA(r.UserAgent()),
 		parsedNewRefresh.Exp,
 	); err != nil {
@@ -803,9 +919,19 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set new tokens as HttpOnly cookies.
+	setTokenCookies(w, r, accessToken, newRefreshToken,
+		accessClaims.Exp, parsedNewRefresh.Exp)
+
 	respondJSON(w, http.StatusOK, map[string]any{
-		"office_access_token":  accessToken,
-		"office_refresh_token": newRefreshToken,
+		"session": sessionResponse{
+			EmployeeID:       accessClaims.EmployeeID,
+			UserName:         accessClaims.UserName,
+			Role:             accessClaims.Role,
+			Responsibilities: accessClaims.Responsibilities,
+			AccessExp:        accessClaims.Exp,
+			RefreshExp:       parsedNewRefresh.Exp,
+		},
 	})
 }
 
@@ -817,6 +943,100 @@ func truncateUA(ua string) string {
 		return ua[:maxLen]
 	}
 	return ua
+}
+
+// extractDeviceID reads the device identifier from the request.
+// Looks for X-Device-ID header first, then falls back to the legacy "deviceid" header.
+func extractDeviceID(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("X-Device-ID")); v != "" {
+		// Limit to 128 chars to prevent abuse.
+		if len(v) > 128 {
+			return v[:128]
+		}
+		return v
+	}
+	if v := strings.TrimSpace(r.Header.Get("deviceid")); v != "" {
+		if len(v) > 128 {
+			return v[:128]
+		}
+		return v
+	}
+	return ""
+}
+
+// handleAuthSession validates the Office Access Token cookie and returns
+// the session claims (employee_id, role, responsibilities, exp).
+// This is the BFF equivalent of "am I logged in?" — the frontend calls it
+// on page load to restore the in-memory session without ever seeing the raw JWT.
+//
+// GET /api/auth/session
+// Response: { "session": { ... } } or 401
+func (a *app) handleAuthSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if len(a.officeJWTSecret) == 0 {
+		respondError(w, http.StatusServiceUnavailable, "Office token verification is not configured")
+		return
+	}
+
+	c, err := r.Cookie(accessTokenCookieName)
+	if err != nil || strings.TrimSpace(c.Value) == "" {
+		respondError(w, http.StatusUnauthorized, "No active session")
+		return
+	}
+
+	atClaims, err := VerifyOfficeAccessToken(c.Value, a.officeJWTSecret)
+	if err != nil {
+		respondError(w, http.StatusUnauthorized, "Session expired")
+		return
+	}
+
+	// Try to read refresh token exp for proactive rotation info.
+	var refreshExp int64
+	if rc, err := r.Cookie(refreshTokenCookieName); err == nil && rc.Value != "" {
+		if rtClaims, err := VerifyOfficeRefreshToken(rc.Value, a.officeJWTSecret); err == nil {
+			refreshExp = rtClaims.Exp
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"session": sessionResponse{
+			EmployeeID:       atClaims.EmployeeID,
+			UserName:         atClaims.UserName,
+			Role:             atClaims.Role,
+			Responsibilities: atClaims.Responsibilities,
+			AccessExp:        atClaims.Exp,
+			RefreshExp:       refreshExp,
+		},
+	})
+}
+
+// handleAuthLogout clears the token cookies and revokes the refresh token
+// in the database so it cannot be reused.
+//
+// POST /api/auth/logout
+func (a *app) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Best-effort revoke the refresh token in DB.
+	if len(a.officeJWTSecret) > 0 {
+		if rc, err := r.Cookie(refreshTokenCookieName); err == nil && rc.Value != "" {
+			if rtClaims, err := VerifyOfficeRefreshToken(rc.Value, a.officeJWTSecret); err == nil {
+				tokenHash := hashTokenID(rtClaims.TokenID, a.officeJWTSecret)
+				if err := a.revokeRefreshToken(r.Context(), tokenHash); err != nil {
+					log.Printf("handleAuthLogout: failed to revoke refresh token: %v", err)
+				}
+			}
+		}
+	}
+
+	clearTokenCookies(w, r)
+	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func collectCookies(r *http.Request) (string, string) {

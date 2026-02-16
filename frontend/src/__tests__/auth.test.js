@@ -11,6 +11,9 @@ import {
   getUserInfo,
   setAuthCookies,
   getAuthCookies,
+  setSessionClaims,
+  getSessionClaims,
+  clearSessionClaims,
   getAvatarCacheStore,
   setAvatarCacheStore,
   getCachedAvatar,
@@ -30,6 +33,7 @@ Object.defineProperty(globalThis, "localStorage", { value: localStorageMock, wri
 
 beforeEach(() => {
   store.clear();
+  clearSessionClaims();
   vi.clearAllMocks();
 });
 
@@ -74,6 +78,38 @@ describe("auth cookies", () => {
     setAuthCookies("session=abc");
     setAuthCookies(null);
     expect(getAuthCookies()).toBeNull();
+  });
+});
+
+// ---------- Session Claims (in-memory) ----------
+
+describe("session claims", () => {
+  it("stores and retrieves session claims", () => {
+    const claims = {
+      employee_id: "42",
+      user_name: "Test User",
+      role: 2,
+      access_exp: 9999999999,
+      refresh_exp: 9999999999,
+    };
+    setSessionClaims(claims);
+    expect(getSessionClaims()).toEqual(claims);
+  });
+
+  it("returns null when not set", () => {
+    expect(getSessionClaims()).toBeNull();
+  });
+
+  it("clears session claims", () => {
+    setSessionClaims({ employee_id: "1", role: 1, access_exp: 0 });
+    clearSessionClaims();
+    expect(getSessionClaims()).toBeNull();
+  });
+
+  it("sets to null when called with falsy", () => {
+    setSessionClaims({ employee_id: "1", role: 1, access_exp: 0 });
+    setSessionClaims(null);
+    expect(getSessionClaims()).toBeNull();
   });
 });
 
@@ -136,10 +172,11 @@ describe("cacheAvatarData", () => {
 // ---------- clearAuthStorage ----------
 
 describe("clearAuthStorage", () => {
-  it("removes token, user, cookies but keeps avatar cache", () => {
+  it("removes token, user, cookies, session claims but keeps avatar cache", () => {
     setAuthToken("tok");
     setUserInfo({ id: 1 });
     setAuthCookies("c=1");
+    setSessionClaims({ employee_id: "1", role: 1, access_exp: 0 });
     cacheAvatarData("/a.png", "data:x");
 
     clearAuthStorage();
@@ -147,7 +184,16 @@ describe("clearAuthStorage", () => {
     expect(getAuthToken()).toBeNull();
     expect(getUserInfo()).toBeNull();
     expect(getAuthCookies()).toBeNull();
+    expect(getSessionClaims()).toBeNull();
     // avatar cache survives
     expect(getCachedAvatar("/a.png")).toBe("data:x");
+  });
+
+  it("cleans up legacy localStorage keys", () => {
+    store.set("office_access_token", "legacy");
+    store.set("office_refresh_token", "legacy");
+    clearAuthStorage();
+    expect(store.has("office_access_token")).toBe(false);
+    expect(store.has("office_refresh_token")).toBe(false);
   });
 });

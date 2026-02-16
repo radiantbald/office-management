@@ -248,6 +248,8 @@ func main() {
 	mux.HandleFunc("/api/user/wb-band", app.handleAuthUserWbBand)
 	mux.HandleFunc("/api/auth/office-token", app.handleAuthOfficeToken)
 	mux.HandleFunc("/api/auth/refresh", app.handleAuthRefreshToken)
+	mux.HandleFunc("/api/auth/session", app.handleAuthSession)
+	mux.HandleFunc("/api/auth/logout", app.handleAuthLogout)
 	mux.HandleFunc("/api/v2/auth/code/wb-captcha", app.handleAuthRequestCode)
 	mux.HandleFunc("/api/v2/auth/confirm", app.handleAuthConfirmCode)
 
@@ -775,6 +777,9 @@ func migrateRefreshTokenColumns(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "office_refresh_tokens", "user_agent", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "office_refresh_tokens", "device_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	// Revoke any pre-existing tokens that were stored without family_id
@@ -5018,16 +5023,16 @@ func (a *app) handleResponsibilities(w http.ResponseWriter, r *http.Request) {
 		BuildingAddress string `json:"buildingAddress"`
 	}
 	type respCoworking struct {
-		ID                 int64  `json:"id"`
-		Name               string `json:"name"`
-		FloorID            int64  `json:"floorId"`
-		FloorName          string `json:"floorName"`
-		FloorLevel         int    `json:"floorLevel"`
-		BuildingID         int64  `json:"buildingId"`
-		BuildingName       string `json:"buildingName"`
-		BuildingAddress    string `json:"buildingAddress"`
-		SubdivisionLevel1  string `json:"subdivisionLevel1"`
-		SubdivisionLevel2  string `json:"subdivisionLevel2"`
+		ID                int64  `json:"id"`
+		Name              string `json:"name"`
+		FloorID           int64  `json:"floorId"`
+		FloorName         string `json:"floorName"`
+		FloorLevel        int    `json:"floorLevel"`
+		BuildingID        int64  `json:"buildingId"`
+		BuildingName      string `json:"buildingName"`
+		BuildingAddress   string `json:"buildingAddress"`
+		SubdivisionLevel1 string `json:"subdivisionLevel1"`
+		SubdivisionLevel2 string `json:"subdivisionLevel2"`
 	}
 
 	// Buildings where user is responsible.

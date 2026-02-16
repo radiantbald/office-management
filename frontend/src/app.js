@@ -5,10 +5,8 @@ import {
   getUserInfo,
   setAuthCookies,
   getAuthCookies,
-  setOfficeAccessToken,
-  getOfficeAccessToken,
-  setOfficeRefreshToken,
-  getOfficeRefreshToken,
+  setSessionClaims,
+  getSessionClaims,
   clearAuthStorage,
   getCachedAvatar,
   cacheAvatarData,
@@ -875,7 +873,12 @@ const formatPhoneNumber = (value) => {
 const getDeviceId = () => {
   let deviceId = localStorage.getItem("deviceId");
   if (!deviceId) {
-    deviceId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    // Prefer crypto.randomUUID() for high-entropy identifiers; fall back
+    // to a timestamp-based ID for older browsers.
+    deviceId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     localStorage.setItem("deviceId", deviceId);
   }
   return deviceId;
@@ -1018,43 +1021,38 @@ const fetchAuthUserInfo = async (accessToken) => {
 };
 
 /**
- * Check whether the stored Office Access Token is still valid (not expired).
- * Returns true if the token exists and its `exp` claim is in the future
+ * Check whether the session (access token cookie) is still valid.
+ * Returns true if we have session claims and `access_exp` is in the future
  * (with a 60-second safety margin).
  */
 const isOfficeAccessTokenValid = () => {
   try {
-    const payload = getOfficeAccessTokenPayload();
-    if (!payload) return false;
-    // Refresh 60 s before actual expiry to avoid using a stale token.
-    return typeof payload.exp === "number" && payload.exp > Date.now() / 1000 + 60;
+    const session = getSessionClaims();
+    if (!session) return false;
+    return typeof session.access_exp === "number" && session.access_exp > Date.now() / 1000 + 60;
   } catch {
     return false;
   }
 };
 
+/**
+ * Returns the session claims (equivalent to the old JWT payload).
+ * Claims are stored in memory, populated by backend responses.
+ */
 const getOfficeAccessTokenPayload = () => {
-  try {
-    const token = getOfficeAccessToken();
-    if (!token) return null;
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    return JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-  } catch {
-    return null;
-  }
+  return getSessionClaims();
 };
 
 /**
- * Extract responsibilities from the Office Access Token.
- * Returns { buildings: [], floors: [], coworkings: [] } or null if no token/responsibilities.
+ * Extract responsibilities from the in-memory session claims.
+ * Returns { buildings: [], floors: [], coworkings: [] } or null if no session/responsibilities.
  */
 const getResponsibilitiesFromToken = () => {
-  const payload = getOfficeAccessTokenPayload();
-  if (!payload) {
+  const session = getSessionClaims();
+  if (!session) {
     return null;
   }
-  const resp = payload.responsibilities;
+  const resp = session.responsibilities;
   if (!resp) {
     return null;
   }
@@ -1066,64 +1064,52 @@ const getResponsibilitiesFromToken = () => {
 };
 
 const getEmployeeIDFromOfficeAccessToken = () => {
-  const payload = getOfficeAccessTokenPayload();
-  const employeeID = String(payload?.employee_id ?? "").trim();
+  const session = getSessionClaims();
+  const employeeID = String(session?.employee_id ?? "").trim();
   return employeeID || null;
 };
 
 /**
  * Check if the refresh token is expiring soon (within 7 days).
- * Returns true if we should proactively refresh to rotate the token.
+ * Uses the refresh_exp from in-memory session claims.
  */
 const isRefreshTokenExpiringSoon = () => {
   try {
-    const token = getOfficeRefreshToken();
-    if (!token) return false;
-    const parts = token.split(".");
-    if (parts.length !== 3) return false;
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-    // Proactively refresh if less than 7 days remaining (7 * 24 * 60 * 60 seconds)
+    const session = getSessionClaims();
+    if (!session || !session.refresh_exp) return false;
     const sevenDaysInSeconds = 7 * 24 * 60 * 60;
-    return typeof payload.exp === "number" && payload.exp < Date.now() / 1000 + sevenDaysInSeconds;
+    return session.refresh_exp < Date.now() / 1000 + sevenDaysInSeconds;
   } catch {
     return false;
   }
 };
 
 /**
- * Attempt to refresh the access token using the stored refresh token.
+ * Attempt to refresh the access token using the HttpOnly refresh cookie.
+ * The cookie is sent automatically (credentials: "include").
  * Returns true if refresh was successful, false otherwise.
  */
 const refreshAccessToken = async () => {
   try {
-    const refreshToken = getOfficeRefreshToken();
-    if (!refreshToken) return false;
-
     const response = await fetch("/api/auth/refresh", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "X-Device-ID": getDeviceId(),
       },
-      body: JSON.stringify({
-        office_refresh_token: refreshToken,
-      }),
+      body: "{}",
       credentials: "include",
     });
 
     if (!response.ok) {
-      // Refresh token is invalid or expired - clear both tokens
-      setOfficeAccessToken(null);
-      setOfficeRefreshToken(null);
+      // Refresh cookie is invalid or expired — clear local session.
+      setSessionClaims(null);
       return false;
     }
 
     const data = await response.json().catch(() => null);
-    if (data?.office_access_token) {
-      setOfficeAccessToken(data.office_access_token);
-      // ROTATING REFRESH TOKEN: Save the new refresh token if provided
-      if (data?.office_refresh_token) {
-        setOfficeRefreshToken(data.office_refresh_token);
-      }
+    if (data?.session) {
+      setSessionClaims(data.session);
       return true;
     }
     return false;
@@ -1140,8 +1126,8 @@ const refreshAccessToken = async () => {
  */
 const startAutoTokenRefresh = () => {
   const checkAndRefresh = async () => {
-    const hasRefreshToken = !!getOfficeRefreshToken();
-    if (!hasRefreshToken) return;
+    const session = getSessionClaims();
+    if (!session) return; // Not logged in
 
     const accessTokenValid = isOfficeAccessTokenValid();
     const refreshExpiringSoon = isRefreshTokenExpiringSoon();
@@ -1169,30 +1155,32 @@ const startAutoTokenRefresh = () => {
 
 /**
  * Request server-signed Office tokens (access + refresh).
- * Skips the request if a valid (non-expired) access token is already stored.
- * If access token is expired but refresh token exists, tries to refresh instead.
- * The tokens are persisted in localStorage and automatically sent with
- * every subsequent API request via api.js.
+ * Tokens are set as HttpOnly cookies by the server — JS never sees them.
+ * The backend returns a `session` object with non-sensitive claims that
+ * we store in memory for UI logic (role, responsibilities, expiration).
+ *
+ * Skips the request if a valid session is already active.
+ * If session expired, tries to refresh via cookie first.
  */
 const fetchOfficeToken = async (accessToken) => {
   try {
     if (!accessToken) return;
     
-    // If we have a valid access token, nothing to do
+    // If we have a valid session, nothing to do
     if (isOfficeAccessTokenValid()) return;
     
-    // If access token expired, try to refresh it
-    const refreshToken = getOfficeRefreshToken();
-    if (refreshToken) {
+    // Try to refresh existing cookie-based session first
+    const session = getSessionClaims();
+    if (session) {
       const refreshed = await refreshAccessToken();
-      if (refreshed) return; // Successfully refreshed
-      // Refresh failed, fall through to fetch new tokens
+      if (refreshed) return;
     }
 
     // Fetch new tokens from scratch
     const headers = {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
+      "X-Device-ID": getDeviceId(),
     };
     const cookies = getAuthCookies();
     if (cookies) {
@@ -1204,9 +1192,8 @@ const fetchOfficeToken = async (accessToken) => {
       credentials: "include",
     });
     const data = await response.json().catch(() => null);
-    if (response.ok && data?.office_access_token && data?.office_refresh_token) {
-      setOfficeAccessToken(data.office_access_token);
-      setOfficeRefreshToken(data.office_refresh_token);
+    if (response.ok && data?.session) {
+      setSessionClaims(data.session);
     }
   } catch {
     // Non-critical: Office tokens will be fetched on next login attempt.
@@ -1280,8 +1267,33 @@ const initializeAuth = async () => {
     return;
   }
 
+  // Restore in-memory session from HttpOnly cookies via backend.
+  // On page reload, JS has no access to the cookie values, so we ask
+  // the server to validate them and return the non-sensitive claims.
+  if (!getSessionClaims()) {
+    try {
+      const sessionResp = await fetch("/api/auth/session", {
+        credentials: "include",
+      });
+      if (sessionResp.ok) {
+        const sessionData = await sessionResp.json().catch(() => null);
+        if (sessionData?.session) {
+          setSessionClaims(sessionData.session);
+        }
+      } else if (sessionResp.status === 401) {
+        // Access cookie expired — try refreshing
+        const refreshed = await refreshAccessToken();
+        if (!refreshed) {
+          // No valid session at all — need to fetch new tokens
+        }
+      }
+    } catch {
+      // Network error — proceed; fetchOfficeToken below will retry
+    }
+  }
+
   // Ensure we have a valid Office Access Token before any API requests.
-  // This is a no-op if the stored token is still valid (checked inside).
+  // This is a no-op if the stored session is still valid (checked inside).
   await fetchOfficeToken(token);
   
   // Start automatic token refresh checking
@@ -1854,7 +1866,7 @@ const fetchResponsibilitiesForUser = async ({ force = false } = {}) => {
     return responsibilitiesRequest;
   }
 
-  // Ensure Office-Access-Token is available
+  // Ensure session claims are available (token cookie is set by backend)
   if (!isOfficeAccessTokenValid()) {
     const empty = getEmptyResponsibilities();
     responsibilitiesState = {
@@ -12636,9 +12648,13 @@ if (breadcrumbProfiles.length > 0) {
     }
 
     if (logoutButton) {
-      logoutButton.addEventListener("click", (event) => {
+      logoutButton.addEventListener("click", async (event) => {
         event.stopPropagation();
         closeBreadcrumbMenus();
+        // Clear server-side HttpOnly cookies + revoke refresh token in DB.
+        try {
+          await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+        } catch { /* best-effort */ }
         clearAuthStorage();
         updateAuthUserBlock(null);
         authSticker = null;

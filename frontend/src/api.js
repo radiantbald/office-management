@@ -1,17 +1,19 @@
 /**
  * Stateless API request utilities.
  *
- * Handles auth headers (Office-Access-Token) and response parsing.
+ * Handles response parsing and credentials.
+ * The Office-Access-Token is sent automatically as an HttpOnly cookie
+ * (credentials: "include"), so no manual header injection is needed.
  * Permission checking stays in app.js where it has access to application state.
  */
-import { getOfficeAccessToken } from "./auth.js";
 
 /**
- * Base HTTP helper — adds auth headers, parses the JSON response.
+ * Base HTTP helper — parses the JSON response.
  *
  * - Automatically sets `Content-Type: application/json` unless the body is
  *   `FormData` (multipart upload).
- * - Attaches `Office-Access-Token` header for protected endpoints.
+ * - Sends cookies (credentials: "include") so the HttpOnly
+ *   office_access_token cookie is attached automatically.
  * - Returns `null` for 204 / empty responses.
  * - Throws `Error` with the server-provided `error` message on non-2xx.
  *
@@ -25,10 +27,6 @@ export const makeApiRequest = async (path, options = {}) => {
   const isFormData = options.body instanceof FormData;
   if (!isFormData && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
-  }
-  const officeAccessToken = getOfficeAccessToken();
-  if (officeAccessToken && !headers["Office-Access-Token"]) {
-    headers["Office-Access-Token"] = officeAccessToken;
   }
   const response = await fetch(path, {
     ...options,

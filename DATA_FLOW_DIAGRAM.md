@@ -248,13 +248,13 @@ sequenceDiagram
     DB-->>A: role, building_ids, floor_ids, coworking_ids
     A->>J: Подписать Office Access + Refresh JWT (HS256)
     J-->>A: office_access_token + office_refresh_token
-    A->>DB: Сохранить refresh token (HMAC-SHA256 hash, family_id, ip, ua)
-    A-->>F: Токены
-    F->>F: Сохранить в localStorage
+    A->>DB: Сохранить refresh token (HMAC-SHA256 hash, family_id, device_id, ip, ua)
+    A-->>F: Set-Cookie: HttpOnly + session claims (JSON)
+    F->>F: Сохранить session claims в памяти (не localStorage!)
     
     Note over U,J: Шаг 3 — Работа с защищёнными API
     U->>F: Просмотр зданий
-    F->>A: GET /api/buildings (Office-Access-Token)
+    F->>A: GET /api/buildings (Cookie: office_access_token)
     Note right of A: authMiddleware: VerifyOfficeAccessToken (HS256, local — без внешних вызовов)
     A->>A: claims injected в context
     A->>DB: SELECT * FROM office_buildings
@@ -263,22 +263,29 @@ sequenceDiagram
     F->>U: Показать список зданий
     
     Note over U,J: Шаг 4 — Обновление токена (Rotation + Replay Protection)
-    F->>F: Office-Access-Token истёк
-    F->>A: POST /api/auth/refresh (office_refresh_token)
+    F->>F: access_exp из session claims истёк
+    F->>A: POST /api/auth/refresh (Cookie: office_refresh_token)
     A->>A: HMAC-SHA256(token_id, pepper) → token_hash
-    A->>DB: SELECT revoked_at, family_id WHERE token_hash
-    DB-->>A: Valid, family_id = "abc123"
-    A->>DB: Revoke old refresh token (revoked_at + last_used_at)
+    A->>DB: ATOMIC: UPDATE SET revoked_at=now() WHERE hash AND revoked_at IS NULL RETURNING ...
+    Note right of DB: Row-level atomicity: only 1 of N parallel requests gets the row
+    DB-->>A: family_id="abc123", device_id, ip (token already consumed)
     A->>J: Подписать новый Access + Refresh JWT (same family_id)
     J-->>A: new tokens
-    A->>DB: Сохранить новый refresh token (hashed, family_id, ip, ua)
-    A-->>F: office_access_token + office_refresh_token
-    F->>F: Обновить в localStorage
+    A->>DB: Сохранить новый refresh token (hashed, family_id, device_id, ip, ua)
+    A-->>F: Set-Cookie: HttpOnly + new session claims
+    F->>F: Обновить session claims в памяти
 
-    Note over U,J: Шаг 5 — Replay Detection (атакующий использует старый refresh)
-    Note right of A: Атакующий перехватил старый refresh token
-    A->>DB: SELECT revoked_at WHERE token_hash (old)
-    DB-->>A: revoked_at IS NOT NULL → REPLAY!
+    Note over U,J: Шаг 4a — Восстановление сессии (перезагрузка страницы)
+    F->>A: GET /api/auth/session (Cookie: office_access_token)
+    A->>A: Verify JWT из cookie
+    A-->>F: session claims (employee_id, role, responsibilities, exp)
+    F->>F: Сохранить в памяти
+
+    Note over U,J: Шаг 5 — Replay Detection (atomic, race-safe)
+    Note right of A: Атакующий отправляет старый refresh token
+    A->>DB: UPDATE ... WHERE hash AND revoked_at IS NULL RETURNING ...
+    DB-->>A: 0 rows (already consumed atomically)
+    A->>DB: SELECT → revoked_at NOT NULL → REPLAY!
     A->>DB: Revoke ALL tokens WHERE family_id = "abc123"
     A-->>F: 401 — session invalidated
 ```
@@ -508,10 +515,16 @@ erDiagram
 
 ### 1. Аутентификация
 - **Вход:** User → Frontend → API → auth-hrtech.wb.ru (код) → team.wb.ru (user info)
-- **Выдача office-токенов:** Frontend → API `/api/auth/office-token` → **upstream verification** (team.wb.ru/api/v1/user/info) → resolve role + responsibilities → JWT Handler → `office_access_token` + `office_refresh_token` → Frontend (localStorage)
-- **Обновление:** Frontend → API `/api/auth/refresh` → hash token_id → validate in DB → revoke old → issue new pair (same family_id)
+- **Выдача office-токенов:** Frontend → API `/api/auth/office-token` → **upstream verification** (team.wb.ru/api/v1/user/info) → resolve role + responsibilities → JWT Handler → **HttpOnly cookies** (access + refresh) + session claims (JSON) → Frontend (in-memory)
+- **Восстановление сессии:** Frontend → `GET /api/auth/session` → validate access cookie → session claims → Frontend (in-memory)
+- **Обновление:** Frontend → API `/api/auth/refresh` (cookie + X-Device-ID auto) → hash token_id → **atomic consume** (UPDATE…RETURNING, race-safe) → **device_id check** → issue new pair (same family_id) → new HttpOnly cookies
+- **Выход:** Frontend → `POST /api/auth/logout` → revoke refresh in DB → clear cookies
 - **Replay protection:** повторный revoked refresh → `revokeTokenFamily(family_id)` → 401 для всей цепочки
+- **Device binding:** refresh привязан к `device_id`; несовпадение → revoke family → 401
+- **IP/UA:** audit-only — логируются для forensics, **не блокируют** (VPN, NAT, mobile)
 - **Rate limiting:** `/api/auth/office-token` и login-эндпоинты защищены IP rate limiter
+- **XSS-защита:** токены в HttpOnly cookies — JS не имеет доступа к raw JWT
+- **CSRF-защита:** SameSite=Lax + JSON Content-Type + CORS whitelist
 
 ### 2. Управление зданиями (CRUD)
 - **Чтение:** Frontend → API → PostgreSQL → JSON → Frontend
@@ -563,7 +576,7 @@ erDiagram
    - **Rate limiting** — `/api/auth/office-token` защищён IP rate limiter (как login-эндпоинты)
    - **Token hashing** — token_id хранится как HMAC-SHA256(token_id, pepper), не в открытом виде
    - **Token families** — family_id связывает цепочку ротации для replay detection
-   - **Replay protection** — повторное использование revoked refresh → инвалидация всей семьи токенов
+   - **Replay protection** — повторное использование revoked refresh → инвалидация всей семьи токенов; **atomic consume** (UPDATE…RETURNING) исключает race condition при параллельных refresh
    - **Audit fields** — last_used_at, ip_address, user_agent в каждом refresh token
 
 2. **Middleware цепочка** (оборачивает весь mux — невозможно «забыть» проверку)
@@ -595,7 +608,7 @@ erDiagram
 5. **Connection Pooling** — настроенный пул соединений к PostgreSQL
 6. **Timezone Support** — каждое здание имеет свою временную зону
 7. **Soft Delete** — бронирования отменяются через `cancelled_at`, не удаляются
-8. **Token Rotation + Replay Detection** — при обновлении refresh token старый отзывается (revoked_at + last_used_at), выдаётся новый с тем же family_id; повторное использование revoked token → инвалидация всего семейства
+8. **Token Rotation + Replay Detection** — при обновлении refresh token старый отзывается (revoked_at + last_used_at) **атомарно** через `UPDATE … RETURNING` (защита от race condition параллельных запросов), выдаётся новый с тем же family_id; повторное использование revoked token → инвалидация всего семейства
 
 ---
 

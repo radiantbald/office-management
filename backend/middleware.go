@@ -72,37 +72,43 @@ func (a *app) authMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-	// ── Require Office-Access-Token (server-signed JWT) for all protected endpoints ──
-	officeAccessToken := r.Header.Get("Office-Access-Token")
-	if officeAccessToken == "" {
-		respondError(w, http.StatusUnauthorized, "Office-Access-Token header is required")
-		return
-	}
+		// ── Require Office-Access-Token (server-signed JWT) for all protected endpoints ──
+		// Priority: 1) Header (legacy / API clients), 2) HttpOnly cookie (browser SPA).
+		officeAccessToken := r.Header.Get("Office-Access-Token")
+		if officeAccessToken == "" {
+			if c, err := r.Cookie("office_access_token"); err == nil {
+				officeAccessToken = c.Value
+			}
+		}
+		if officeAccessToken == "" {
+			respondError(w, http.StatusUnauthorized, "Office-Access-Token is required")
+			return
+		}
 
-	if len(a.officeJWTSecret) == 0 {
-		respondError(w, http.StatusServiceUnavailable, "Office token verification is not configured")
-		return
-	}
+		if len(a.officeJWTSecret) == 0 {
+			respondError(w, http.StatusServiceUnavailable, "Office token verification is not configured")
+			return
+		}
 
-	atClaims, err := VerifyOfficeAccessToken(officeAccessToken, a.officeJWTSecret)
-	if err != nil {
-		respondError(w, http.StatusUnauthorized, "Invalid or expired Office-Access-Token")
-		return
-	}
+		atClaims, err := VerifyOfficeAccessToken(officeAccessToken, a.officeJWTSecret)
+		if err != nil {
+			respondError(w, http.StatusUnauthorized, "Invalid or expired Office-Access-Token")
+			return
+		}
 
-	if atClaims.EmployeeID == "" {
-		respondError(w, http.StatusUnauthorized, "Invalid Office-Access-Token: missing employee_id")
-		return
-	}
+		if atClaims.EmployeeID == "" {
+			respondError(w, http.StatusUnauthorized, "Invalid Office-Access-Token: missing employee_id")
+			return
+		}
 
-	// Inject validated claims into request context.
-	claims := authClaims{
-		EmployeeID: atClaims.EmployeeID,
-		UserName:   atClaims.UserName,
-	}
-	ctx := context.WithValue(r.Context(), authClaimsCtxKey, claims)
-	ctx = context.WithValue(ctx, officeAccessTokenClaimsCtxKey, atClaims)
-	next.ServeHTTP(w, r.WithContext(ctx))
+		// Inject validated claims into request context.
+		claims := authClaims{
+			EmployeeID: atClaims.EmployeeID,
+			UserName:   atClaims.UserName,
+		}
+		ctx := context.WithValue(r.Context(), authClaimsCtxKey, claims)
+		ctx = context.WithValue(ctx, officeAccessTokenClaimsCtxKey, atClaims)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -127,7 +133,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		}
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Office-Access-Token, Office-Refresh-Token, deviceid, devicename, Accept, Cache-Control, Pragma, X-Cookie, wb-apptype, Origin, Referer")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Office-Access-Token, Office-Refresh-Token, X-Device-ID, deviceid, devicename, Accept, Cache-Control, Pragma, X-Cookie, wb-apptype, Origin, Referer")
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, Office-Access-Token, Office-Refresh-Token, X-Set-Cookie, Content-Disposition")
 		w.Header().Set("Access-Control-Max-Age", "3600")
 

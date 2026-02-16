@@ -16,44 +16,85 @@ const (
 	refreshTokenExpired                             // past expires_at
 )
 
-// storeRefreshToken saves a hashed refresh token with its family, IP and User-Agent.
+// storeRefreshToken saves a hashed refresh token with its family, device_id, IP and User-Agent.
 // token_id is stored as HMAC-SHA256(tokenID, pepper) — never in plain text.
-func (a *app) storeRefreshToken(ctx context.Context, tokenHash, employeeID, familyID, ipAddress, userAgent string, expiresAtUnix int64) error {
+func (a *app) storeRefreshToken(ctx context.Context, tokenHash, employeeID, familyID, deviceID, ipAddress, userAgent string, expiresAtUnix int64) error {
 	expiresAt := time.Unix(expiresAtUnix, 0).UTC()
 	_, err := a.db.ExecContext(ctx,
 		`INSERT INTO office_refresh_tokens
-		        (token_id, employee_id, family_id, ip_address, user_agent, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		tokenHash, employeeID, familyID, ipAddress, userAgent, expiresAt,
+		        (token_id, employee_id, family_id, device_id, ip_address, user_agent, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		tokenHash, employeeID, familyID, deviceID, ipAddress, userAgent, expiresAt,
 	)
 	return err
 }
 
-// checkRefreshToken looks up the token by its hash and returns its status
-// together with the family_id (needed for replay revocation).
-func (a *app) checkRefreshToken(ctx context.Context, tokenHash, employeeID string) (refreshTokenStatus, string, error) {
-	var revokedAt sql.NullTime
-	var familyID string
+// refreshTokenRecord contains the data read from the DB during refresh validation.
+type refreshTokenRecord struct {
+	FamilyID  string
+	DeviceID  string
+	IPAddress string
+}
+
+// consumeRefreshToken atomically marks a refresh token as consumed (revoked)
+// and returns its metadata. It uses a single UPDATE ... RETURNING statement
+// to eliminate the race condition between parallel refresh requests (TOCTOU).
+//
+// If the UPDATE matches a row (revoked_at IS NULL) — the token is consumed
+// and its metadata is returned.  If no row was updated, peekRefreshTokenStatus
+// is called to distinguish not-found / already-revoked (replay) / expired.
+func (a *app) consumeRefreshToken(ctx context.Context, tokenHash, employeeID string) (refreshTokenStatus, refreshTokenRecord, error) {
+	var rec refreshTokenRecord
 	var expiresAt time.Time
 	err := a.db.QueryRowContext(ctx,
-		`SELECT revoked_at, family_id, expires_at
+		`UPDATE office_refresh_tokens
+		    SET revoked_at = now(), last_used_at = now()
+		  WHERE token_id = $1
+		    AND employee_id = $2
+		    AND revoked_at IS NULL
+		  RETURNING family_id, device_id, ip_address, expires_at`,
+		tokenHash, employeeID,
+	).Scan(&rec.FamilyID, &rec.DeviceID, &rec.IPAddress, &expiresAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Token was NOT consumed — figure out why.
+			return a.peekRefreshTokenStatus(ctx, tokenHash, employeeID)
+		}
+		return refreshTokenNotFound, refreshTokenRecord{}, err
+	}
+	// Successfully consumed. But was it already expired?
+	if time.Now().UTC().After(expiresAt) {
+		return refreshTokenExpired, rec, nil
+	}
+	return refreshTokenValid, rec, nil
+}
+
+// peekRefreshTokenStatus reads the refresh token row without modifying it.
+// Used as a follow-up when consumeRefreshToken finds 0 updatable rows —
+// it distinguishes not-found, already-revoked (replay), and expired.
+func (a *app) peekRefreshTokenStatus(ctx context.Context, tokenHash, employeeID string) (refreshTokenStatus, refreshTokenRecord, error) {
+	var revokedAt sql.NullTime
+	var rec refreshTokenRecord
+	var expiresAt time.Time
+	err := a.db.QueryRowContext(ctx,
+		`SELECT revoked_at, family_id, device_id, ip_address, expires_at
 		   FROM office_refresh_tokens
 		  WHERE token_id = $1 AND employee_id = $2`,
 		tokenHash, employeeID,
-	).Scan(&revokedAt, &familyID, &expiresAt)
+	).Scan(&revokedAt, &rec.FamilyID, &rec.DeviceID, &rec.IPAddress, &expiresAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return refreshTokenNotFound, "", nil
+			return refreshTokenNotFound, refreshTokenRecord{}, nil
 		}
-		return refreshTokenNotFound, "", err
+		return refreshTokenNotFound, refreshTokenRecord{}, err
 	}
 	if revokedAt.Valid {
-		return refreshTokenRevoked, familyID, nil
+		return refreshTokenRevoked, rec, nil
 	}
 	if time.Now().UTC().After(expiresAt) {
-		return refreshTokenExpired, familyID, nil
+		return refreshTokenExpired, rec, nil
 	}
-	return refreshTokenValid, familyID, nil
+	return refreshTokenValid, rec, nil
 }
 
 // revokeRefreshToken marks a single refresh token as revoked and records
