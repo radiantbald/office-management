@@ -24,12 +24,11 @@ const (
 // non-sensitive claims from the tokens.  The raw JWT strings are never
 // exposed — they live exclusively in HttpOnly cookies.
 type sessionResponse struct {
-	EmployeeID       string                 `json:"employee_id"`
-	UserName         string                 `json:"user_name,omitempty"`
-	Role             int                    `json:"role"`
-	Responsibilities *TokenResponsibilities `json:"responsibilities,omitempty"`
-	AccessExp        int64                  `json:"access_exp"`
-	RefreshExp       int64                  `json:"refresh_exp,omitempty"`
+	EmployeeID string `json:"employee_id"`
+	UserName   string `json:"user_name,omitempty"`
+	Role       int    `json:"role"`
+	AccessExp  int64  `json:"access_exp"`
+	RefreshExp int64  `json:"refresh_exp,omitempty"`
 }
 
 // isSecureContext returns true when the request arrived over TLS (direct) or
@@ -669,20 +668,22 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 		roleID = roleEmployee
 	}
 
-	// Load user responsibilities for the token
-	responsibilities := a.loadResponsibilitiesForToken(employeeID)
-
 	// Create access token
 	accessClaims := OfficeAccessTokenClaims{
-		EmployeeID:       employeeID,
-		UserName:         strings.TrimSpace(verifiedUser.UserName),
-		Role:             roleID,
-		Responsibilities: responsibilities,
+		EmployeeID: employeeID,
+		UserName:   strings.TrimSpace(verifiedUser.UserName),
+		Role:       roleID,
 	}
 	accessToken, err := SignOfficeAccessToken(accessClaims, a.officeJWTSecret)
 	if err != nil {
 		log.Printf("handleAuthOfficeToken: failed to sign access token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to issue office access token")
+		return
+	}
+	parsedAccessClaims, err := VerifyOfficeAccessToken(accessToken, a.officeJWTSecret)
+	if err != nil {
+		log.Printf("handleAuthOfficeToken: failed to parse access token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to process access token")
 		return
 	}
 
@@ -730,16 +731,15 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 
 	// Set tokens as HttpOnly cookies (XSS-safe: JS cannot read them).
 	setTokenCookies(w, r, accessToken, refreshToken,
-		accessClaims.Exp, parsedRefreshClaims.Exp)
+		parsedAccessClaims.Exp, parsedRefreshClaims.Exp)
 
 	respondJSON(w, http.StatusOK, map[string]any{
 		"session": sessionResponse{
-			EmployeeID:       accessClaims.EmployeeID,
-			UserName:         accessClaims.UserName,
-			Role:             accessClaims.Role,
-			Responsibilities: accessClaims.Responsibilities,
-			AccessExp:        accessClaims.Exp,
-			RefreshExp:       parsedRefreshClaims.Exp,
+			EmployeeID: parsedAccessClaims.EmployeeID,
+			UserName:   parsedAccessClaims.UserName,
+			Role:       parsedAccessClaims.Role,
+			AccessExp:  parsedAccessClaims.Exp,
+			RefreshExp: parsedRefreshClaims.Exp,
 		},
 	})
 }
@@ -868,19 +868,22 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		log.Printf("handleAuthRefreshToken: failed to get user name for %s: %v", refreshClaims.EmployeeID, err)
 		userName = ""
 	}
-	responsibilities := a.loadResponsibilitiesForToken(refreshClaims.EmployeeID)
-
 	// 4c. Issue new access token.
 	accessClaims := OfficeAccessTokenClaims{
-		EmployeeID:       refreshClaims.EmployeeID,
-		UserName:         userName,
-		Role:             roleID,
-		Responsibilities: responsibilities,
+		EmployeeID: refreshClaims.EmployeeID,
+		UserName:   userName,
+		Role:       roleID,
 	}
 	accessToken, err := SignOfficeAccessToken(accessClaims, a.officeJWTSecret)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to sign access token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to issue access token")
+		return
+	}
+	parsedAccessClaims, err := VerifyOfficeAccessToken(accessToken, a.officeJWTSecret)
+	if err != nil {
+		log.Printf("handleAuthRefreshToken: failed to parse access token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to process access token")
 		return
 	}
 
@@ -921,16 +924,15 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 
 	// Set new tokens as HttpOnly cookies.
 	setTokenCookies(w, r, accessToken, newRefreshToken,
-		accessClaims.Exp, parsedNewRefresh.Exp)
+		parsedAccessClaims.Exp, parsedNewRefresh.Exp)
 
 	respondJSON(w, http.StatusOK, map[string]any{
 		"session": sessionResponse{
-			EmployeeID:       accessClaims.EmployeeID,
-			UserName:         accessClaims.UserName,
-			Role:             accessClaims.Role,
-			Responsibilities: accessClaims.Responsibilities,
-			AccessExp:        accessClaims.Exp,
-			RefreshExp:       parsedNewRefresh.Exp,
+			EmployeeID: parsedAccessClaims.EmployeeID,
+			UserName:   parsedAccessClaims.UserName,
+			Role:       parsedAccessClaims.Role,
+			AccessExp:  parsedAccessClaims.Exp,
+			RefreshExp: parsedNewRefresh.Exp,
 		},
 	})
 }
@@ -1003,12 +1005,11 @@ func (a *app) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 
 	respondJSON(w, http.StatusOK, map[string]any{
 		"session": sessionResponse{
-			EmployeeID:       atClaims.EmployeeID,
-			UserName:         atClaims.UserName,
-			Role:             atClaims.Role,
-			Responsibilities: atClaims.Responsibilities,
-			AccessExp:        atClaims.Exp,
-			RefreshExp:       refreshExp,
+			EmployeeID: atClaims.EmployeeID,
+			UserName:   atClaims.UserName,
+			Role:       atClaims.Role,
+			AccessExp:  atClaims.Exp,
+			RefreshExp: refreshExp,
 		},
 	})
 }

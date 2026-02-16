@@ -27,14 +27,13 @@ type TokenResponsibilities struct {
 	Coworkings []int64 `json:"coworkings,omitempty"`
 }
 
-// OfficeAccessTokenClaims carries identity + role + responsibilities inside the signed Office Access Token JWT.
+// OfficeAccessTokenClaims carries minimal identity + role in the signed Office Access Token JWT.
 type OfficeAccessTokenClaims struct {
-	EmployeeID        string                 `json:"employee_id"`
-	UserName          string                 `json:"user_name,omitempty"`
-	Role              int                    `json:"role"`
-	Responsibilities  *TokenResponsibilities `json:"responsibilities,omitempty"`
-	Exp               int64                  `json:"exp"`
-	Iat               int64                  `json:"iat"`
+	EmployeeID string `json:"employee_id"`
+	UserName   string `json:"user_name,omitempty"`
+	Role       int    `json:"role"`
+	Exp        int64  `json:"exp"`
+	Iat        int64  `json:"iat"`
 }
 
 // OfficeRefreshTokenClaims carries minimal identity info for refresh tokens.
