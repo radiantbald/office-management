@@ -582,6 +582,18 @@ const hideAuthGate = () => {
   document.body.classList.remove("auth-locked");
 };
 
+const hasActiveSession = () => Boolean(getSessionClaims());
+
+const requireActiveSession = (message = "Для продолжения авторизуйтесь.") => {
+  if (hasActiveSession()) {
+    return true;
+  }
+  showAuthGate();
+  setAuthStep("phone");
+  setAuthStatus(message, "warning");
+  return false;
+};
+
 const getDisplayNameFromUser = (user) =>
   user?.name ||
   user?.full_name ||
@@ -1139,6 +1151,40 @@ const refreshAccessToken = async () => {
   }
 };
 
+/**
+ * Try to close the server-side session and clear HttpOnly auth cookies.
+ * Returns true when logout succeeded on the backend.
+ */
+const logoutOfficeSession = async () => {
+  const sendLogoutRequest = async () => {
+    const csrfToken = getCsrfToken();
+    const headers = csrfToken ? { "X-CSRF-Token": csrfToken } : {};
+    return fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include",
+      headers,
+    });
+  };
+
+  try {
+    let response = await sendLogoutRequest();
+    if (response.ok) {
+      return true;
+    }
+
+    // Legacy sessions might miss a CSRF cookie; /api/auth/session mints it.
+    if (response.status === 403) {
+      await fetch("/api/auth/session", { method: "GET", credentials: "include" }).catch(() => null);
+      response = await sendLogoutRequest();
+      return response.ok;
+    }
+  } catch {
+    // Network/transport errors are handled by local logout fallback below.
+  }
+
+  return false;
+};
+
 const TOKEN_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const ACTIVITY_WINDOW_MS = 15 * 60 * 1000;
 
@@ -1310,15 +1356,6 @@ const initializeAuth = async () => {
     updateAuthUserBlock(cachedUser);
   }
 
-  if (!token) {
-    if (authGate) {
-      showAuthGate();
-      return;
-    }
-    await runAppInit();
-    return;
-  }
-
   // Restore in-memory session from HttpOnly cookies via backend.
   // On page reload, JS has no access to the cookie values, so we ask
   // the server to validate them and return the non-sensitive claims.
@@ -1344,12 +1381,28 @@ const initializeAuth = async () => {
     }
   }
 
+  // If both external auth token and cookie-based office session are absent,
+  // we need explicit login.
+  if (!token && !getSessionClaims()) {
+    if (authGate) {
+      showAuthGate();
+      return;
+    }
+    await runAppInit();
+    return;
+  }
+
   // Ensure we have a valid Office Access Token before any API requests.
   // This is a no-op if the stored session is still valid (checked inside).
-  await fetchOfficeToken(token);
+  if (token) {
+    await fetchOfficeToken(token);
+  }
   
-  // Start automatic token refresh checking
-  startAutoTokenRefresh();
+  // Start automatic token refresh checking only for authenticated session.
+  if (getSessionClaims()) {
+    startAutoTokenRefresh();
+  }
+
   if (cachedUser) {
     if (authGate) {
       hideAuthGate();
@@ -1357,6 +1410,17 @@ const initializeAuth = async () => {
     }
     refreshDeskBookingOwnership();
     await fetchResponsibilitiesForUser({ force: true });
+    await runAppInit();
+    return;
+  }
+
+  // Session is valid, but external token is unavailable (memory-only storage
+  // after page reload). Continue without re-fetching profile from upstream.
+  if (!token && getSessionClaims()) {
+    if (authGate) {
+      hideAuthGate();
+      setAuthStatus("");
+    }
     await runAppInit();
     return;
   }
@@ -10446,6 +10510,9 @@ const renderBuildings = () => {
     name.textContent = building.name;
     tile.append(name);
     tile.addEventListener("click", () => {
+      if (!requireActiveSession("Сессия завершена. Войдите снова, чтобы открыть здание.")) {
+        return;
+      }
       clearStatus();
       window.location.assign(`/buildings/${encodeURIComponent(building.id)}`);
     });
@@ -12703,19 +12770,29 @@ if (breadcrumbProfiles.length > 0) {
       logoutButton.addEventListener("click", async (event) => {
         event.stopPropagation();
         closeBreadcrumbMenus();
-        // Clear server-side HttpOnly cookies + revoke refresh token in DB.
-        try {
-          const csrfToken = getCsrfToken();
-          const headers = csrfToken ? { "X-CSRF-Token": csrfToken } : undefined;
-          await fetch("/api/auth/logout", { method: "POST", credentials: "include", headers });
-        } catch { /* best-effort */ }
+        const isConfirmed = window.confirm("Выйти из аккаунта?");
+        if (!isConfirmed) {
+          return;
+        }
+        const logoutSucceeded = await logoutOfficeSession();
         clearAuthStorage();
         updateAuthUserBlock(null);
+        buildings = [];
+        currentBuilding = null;
+        renderBuildings();
         authSticker = null;
         authTTL = null;
         showAuthGate();
         setAuthStep("phone");
-        window.location.assign("/buildings");
+        if (logoutSucceeded) {
+          setAuthStatus("Вы вышли из аккаунта.");
+          window.location.assign("/buildings");
+          return;
+        }
+        setAuthStatus(
+          "Сессию на сервере завершить не удалось. Выполнен локальный выход, попробуйте снова.",
+          "warning"
+        );
       });
     }
 

@@ -1,6 +1,6 @@
 /**
  * Authentication helpers — localStorage for non-sensitive data,
- * in-memory store for session claims.
+ * in-memory store for sensitive auth state.
  *
  * Office tokens (access + refresh) now live exclusively in HttpOnly
  * Secure cookies set by the backend.  JS never sees the raw JWT strings.
@@ -8,11 +8,11 @@
  * claims (employee_id, role, responsibilities, exp).
  */
 
-/** @type {string} localStorage key for the JWT access token (external, team.wb.ru) */
+/** @type {string} legacy localStorage key for the JWT access token (external, team.wb.ru) */
 export const AUTH_TOKEN_KEY = "auth_access_token";
 /** @type {string} localStorage key for serialised user info (JSON) */
 export const AUTH_USER_KEY = "auth_user_info";
-/** @type {string} localStorage key for forwarded auth cookies */
+/** @type {string} legacy localStorage key for forwarded auth cookies */
 export const AUTH_COOKIES_KEY = "auth_cookies";
 /** @type {string} localStorage key – last-cached avatar URL */
 export const AVATAR_CACHE_URL_KEY = "avatar_cache_url";
@@ -41,6 +41,10 @@ export const AVATAR_CACHE_MAX_ENTRIES = 40;
 
 /** @type {SessionClaims|null} */
 let _sessionClaims = null;
+/** @type {string|null} */
+let _authToken = null;
+/** @type {string|null} */
+let _authCookies = null;
 
 /**
  * Store session claims received from the backend.
@@ -58,22 +62,18 @@ export const clearSessionClaims = () => {
   _sessionClaims = null;
 };
 
-// ─── External auth token (team.wb.ru) — localStorage ─────────────────
+// ─── External auth token (team.wb.ru) — in-memory only ───────────────
 
 /**
  * Persist or clear the access token.
  * @param {string|null} token – JWT string, or falsy to remove
  */
 export const setAuthToken = (token) => {
-  if (token) {
-    localStorage.setItem(AUTH_TOKEN_KEY, token);
-  } else {
-    localStorage.removeItem(AUTH_TOKEN_KEY);
-  }
+  _authToken = token || null;
 };
 
 /** @returns {string|null} The stored JWT token, or null */
-export const getAuthToken = () => localStorage.getItem(AUTH_TOKEN_KEY);
+export const getAuthToken = () => _authToken;
 
 /**
  * Persist or clear the current user info object.
@@ -101,15 +101,11 @@ export const getUserInfo = () => {
  * @param {string|null} cookies
  */
 export const setAuthCookies = (cookies) => {
-  if (cookies) {
-    localStorage.setItem(AUTH_COOKIES_KEY, cookies);
-  } else {
-    localStorage.removeItem(AUTH_COOKIES_KEY);
-  }
+  _authCookies = cookies || null;
 };
 
 /** @returns {string|null} Stored cookies string, or null */
-export const getAuthCookies = () => localStorage.getItem(AUTH_COOKIES_KEY);
+export const getAuthCookies = () => _authCookies;
 
 // ─── Avatar cache ────────────────────────────────────────────────────
 
@@ -208,10 +204,17 @@ export const cacheAvatarData = (avatarUrl, dataUrl) => {
  * Note: Office token cookies are cleared server-side via POST /api/auth/logout.
  */
 export const clearAuthStorage = () => {
-  localStorage.removeItem(AUTH_TOKEN_KEY);
+  // In-memory sensitive auth state.
+  setAuthToken(null);
+  setAuthCookies(null);
+
+  // Persisted non-sensitive data.
   localStorage.removeItem(AUTH_USER_KEY);
-  localStorage.removeItem(AUTH_COOKIES_KEY);
   clearSessionClaims();
+
+  // Clean up any legacy sensitive localStorage keys.
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_COOKIES_KEY);
   // Clean up any legacy localStorage keys from before the HttpOnly cookie migration.
   localStorage.removeItem("office_access_token");
   localStorage.removeItem("office_refresh_token");

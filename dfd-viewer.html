@@ -79,6 +79,30 @@
             color: var(--accent);
         }
         .section > p { color: var(--text-muted); margin-bottom: 24px; }
+        .section-actions {
+            display: flex;
+            justify-content: flex-end;
+            margin: -8px 0 18px;
+        }
+        .save-pdf-btn {
+            border: 1px solid var(--accent);
+            background: #fff;
+            color: var(--accent);
+            border-radius: 8px;
+            cursor: pointer;
+            padding: 8px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all .2s;
+        }
+        .save-pdf-btn:hover {
+            background: var(--accent);
+            color: #fff;
+        }
+        .save-pdf-btn:disabled {
+            opacity: .6;
+            cursor: not-allowed;
+        }
 
         .diagram-card {
             background: var(--card);
@@ -204,6 +228,63 @@
                 });
             });
         }
+
+        async function saveDiagramPdf(sectionId, fileNamePrefix) {
+            var section = document.getElementById(sectionId);
+            if (!section) return;
+            var button = section.querySelector('.save-pdf-btn');
+            var diagram = section.querySelector('.diagram-card .mermaid');
+            if (!diagram || !diagram.querySelector('svg')) {
+                alert('Диаграмма ещё не отрисована. Попробуйте через пару секунд.');
+                return;
+            }
+            if (!window.jspdf || !window.jspdf.jsPDF || !window.html2canvas) {
+                alert('Библиотеки экспорта PDF не загружены.');
+                return;
+            }
+
+            if (button) button.disabled = true;
+
+            try {
+                var canvas = await window.html2canvas(diagram, {
+                    backgroundColor: '#ffffff',
+                    scale: 2,
+                    useCORS: true,
+                    logging: false
+                });
+                var imgData = canvas.toDataURL('image/png');
+                var pxWidth = Math.max(1, canvas.width);
+                var pxHeight = Math.max(1, canvas.height);
+
+                var orientation = pxWidth > pxHeight ? 'landscape' : 'portrait';
+                var doc = new window.jspdf.jsPDF({ orientation: orientation, unit: 'mm', format: 'a4' });
+                var pageWidth = doc.internal.pageSize.getWidth();
+                var pageHeight = doc.internal.pageSize.getHeight();
+                var margin = 10;
+                var drawAreaWidth = pageWidth - margin * 2;
+                var drawAreaHeight = pageHeight - margin * 2;
+                var imgRatio = pxWidth / pxHeight;
+                var areaRatio = drawAreaWidth / drawAreaHeight;
+                var pdfWidth = drawAreaWidth;
+                var pdfHeight = drawAreaHeight;
+
+                if (imgRatio > areaRatio) {
+                    pdfHeight = drawAreaWidth / imgRatio;
+                } else {
+                    pdfWidth = drawAreaHeight * imgRatio;
+                }
+
+                var x = (pageWidth - pdfWidth) / 2;
+                var y = (pageHeight - pdfHeight) / 2;
+                doc.addImage(imgData, 'PNG', x, y, pdfWidth, pdfHeight, undefined, 'FAST');
+                doc.save((fileNamePrefix || sectionId) + '.pdf');
+            } catch (err) {
+                console.error('PDF export error:', err);
+                alert('Не удалось экспортировать диаграмму в PDF.');
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
     </script>
 </head>
 <body>
@@ -232,6 +313,9 @@
 <div id="level0" class="section active">
                 <h2>Контекстная диаграмма (Level 0)</h2>
     <p>Высокоуровневое представление системы и внешних сущностей.</p>
+    <div class="section-actions">
+        <button class="save-pdf-btn" onclick="saveDiagramPdf('level0','dfd-level0')">Сохранить PDF</button>
+    </div>
 
     <div class="diagram-card">
         <pre class="mermaid">
@@ -265,6 +349,9 @@ graph LR
 <div id="level1" class="section">
                 <h2>Детализированная диаграмма (Level 1)</h2>
     <p>Основные слои приложения и взаимодействие между ними.</p>
+    <div class="section-actions">
+        <button class="save-pdf-btn" onclick="saveDiagramPdf('level1','dfd-level1')">Сохранить PDF</button>
+    </div>
                 
     <div class="diagram-card">
         <pre class="mermaid">
@@ -313,6 +400,9 @@ graph LR
 <div id="auth-api" class="section">
     <h2>Level 2 — Auth Endpoints</h2>
     <p>Все эндпоинты аутентификации и их связи с внешними сервисами и БД.</p>
+    <div class="section-actions">
+        <button class="save-pdf-btn" onclick="saveDiagramPdf('auth-api','dfd-auth-api')">Сохранить PDF</button>
+    </div>
 
     <div class="diagram-card">
         <pre class="mermaid">
@@ -410,6 +500,9 @@ graph LR
 <div id="build-api" class="section">
     <h2>Level 2 — Building &amp; Space Endpoints</h2>
     <p>CRUD-операции для зданий, этажей, пространств, столов и переговорных.</p>
+    <div class="section-actions">
+        <button class="save-pdf-btn" onclick="saveDiagramPdf('build-api','dfd-building-api')">Сохранить PDF</button>
+    </div>
 
     <div class="diagram-card">
         <pre class="mermaid">
@@ -469,6 +562,9 @@ graph LR
 <div id="book-api" class="section">
     <h2>Level 2 — Booking &amp; User Endpoints</h2>
     <p>Бронирование, управление пользователями и зоны ответственности.</p>
+    <div class="section-actions">
+        <button class="save-pdf-btn" onclick="saveDiagramPdf('book-api','dfd-booking-api')">Сохранить PDF</button>
+    </div>
 
     <div class="diagram-card">
         <pre class="mermaid">
@@ -532,6 +628,9 @@ graph LR
 <div id="auth-flow" class="section">
     <h2>Сценарий аутентификации</h2>
     <p>Полный цикл: от ввода телефона до работы с защищёнными API.</p>
+    <div class="section-actions">
+        <button class="save-pdf-btn" onclick="saveDiagramPdf('auth-flow','dfd-auth-flow')">Сохранить PDF</button>
+    </div>
 
     <div class="diagram-card">
         <pre class="mermaid">
@@ -635,6 +734,9 @@ sequenceDiagram
 <div id="booking-flow" class="section">
     <h2>Сценарий бронирования</h2>
     <p>Просмотр доступных мест, создание и отмена бронирования.</p>
+    <div class="section-actions">
+        <button class="save-pdf-btn" onclick="saveDiagramPdf('booking-flow','dfd-booking-flow')">Сохранить PDF</button>
+    </div>
 
     <div class="diagram-card">
         <pre class="mermaid">
@@ -682,6 +784,9 @@ sequenceDiagram
 <div id="building-flow" class="section">
     <h2>Управление зданиями</h2>
     <p>Создание зданий, этажей, зон и рабочих мест администратором.</p>
+    <div class="section-actions">
+        <button class="save-pdf-btn" onclick="saveDiagramPdf('building-flow','dfd-building-flow')">Сохранить PDF</button>
+    </div>
 
     <div class="diagram-card">
         <pre class="mermaid">
@@ -736,6 +841,9 @@ sequenceDiagram
 <div id="database" class="section">
     <h2>Схема базы данных</h2>
     <p>ER-диаграмма всех таблиц и их связей.</p>
+    <div class="section-actions">
+        <button class="save-pdf-btn" onclick="saveDiagramPdf('database','dfd-database')">Сохранить PDF</button>
+    </div>
 
     <div class="diagram-card">
         <pre class="mermaid">
@@ -918,6 +1026,8 @@ erDiagram
         </footer>
     
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script>
         mermaid.initialize({ 
             startOnLoad: false,

@@ -86,10 +86,21 @@ func (a *app) setCSRFCookie(w http.ResponseWriter, r *http.Request, maxAge int) 
 	if maxAge <= 0 {
 		maxAge = 3600
 	}
+	// Cleanup legacy CSRF cookie scoped to /api/ to avoid duplicate cookie
+	// values (same name, different path) causing token/header mismatches.
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfTokenCookieName,
+		Value:    "",
+		Path:     "/api/",
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: a.authCookieSameSite,
+		MaxAge:   -1,
+	})
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfTokenCookieName,
 		Value:    token,
-		Path:     "/api/",
+		Path:     "/",
 		HttpOnly: false,
 		Secure:   secure,
 		SameSite: a.authCookieSameSite,
@@ -122,6 +133,15 @@ func (a *app) clearTokenCookies(w http.ResponseWriter, r *http.Request) {
 		Name:     csrfTokenCookieName,
 		Value:    "",
 		Path:     "/api/",
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: a.authCookieSameSite,
+		MaxAge:   -1,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfTokenCookieName,
+		Value:    "",
+		Path:     "/",
 		HttpOnly: false,
 		Secure:   secure,
 		SameSite: a.authCookieSameSite,

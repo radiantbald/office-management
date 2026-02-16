@@ -43,6 +43,7 @@ describe("auth token", () => {
   it("sets and gets a token", () => {
     setAuthToken("abc123");
     expect(getAuthToken()).toBe("abc123");
+    expect(store.has(AUTH_TOKEN_KEY)).toBe(false);
   });
 
   it("removes token when falsy", () => {
@@ -72,6 +73,7 @@ describe("auth cookies", () => {
   it("sets and gets cookies string", () => {
     setAuthCookies("session=abc");
     expect(getAuthCookies()).toBe("session=abc");
+    expect(store.has(AUTH_COOKIES_KEY)).toBe(false);
   });
 
   it("removes on falsy", () => {
