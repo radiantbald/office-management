@@ -26,28 +26,27 @@ graph LR
 graph LR
     Browser["🖥️ Browser\nSPA"]
     Nginx["🌐 Nginx\nStatic + Proxy"]
-    API["⚙️ Go API\nREST Server"]
-    Auth["🔑 Auth Module\nJWT Handler"]
+    MW["🛡️ authMiddleware\nVerify Office-Access-Token\n(HS256, local)"]
+    API["⚙️ Go API\nREST Handlers"]
     DB[("💾 PostgreSQL")]
     FS["📁 File Storage\nuploads/buildings/"]
     WB["🔐 team.wb.ru\nExternal Auth"]
 
     Browser -- "HTTP/HTTPS" --> Nginx
     Nginx -- "Static files" --> Browser
-    Nginx -- "Proxy /api/*" --> API
+    Nginx -- "Proxy /api/*" --> MW
+    MW -- "claims in context" --> API
     API -- "JSON Response" --> Nginx
     API -- "SQL Queries" --> DB
     DB -- "Result Sets" --> API
     API -- "Read/Write" --> FS
-    API -- "Validate JWT" --> Auth
-    Auth -- "Claims" --> API
-    Auth -- "Verify Token" --> WB
-    WB -- "User Info" --> Auth
+    API -- "Proxy (auth endpoints only)" --> WB
+    WB -- "User Info" --> API
 
     style Browser fill:#E8F4F8,stroke:#4A90E2,stroke-width:2px
     style Nginx fill:#FFF4E6,stroke:#FD7E14,stroke-width:2px
+    style MW fill:#FFF7E6,stroke:#FA8C16,stroke-width:2px
     style API fill:#E6F7FF,stroke:#1890FF,stroke-width:2px
-    style Auth fill:#FFF7E6,stroke:#FA8C16,stroke-width:2px
     style DB fill:#F0F5FF,stroke:#597EF7,stroke-width:2px
     style FS fill:#F6FFED,stroke:#52C41A,stroke-width:2px
     style WB fill:#FFF1F0,stroke:#FF4D4F,stroke-width:2px
@@ -63,12 +62,12 @@ graph LR
         JS["🎨 Frontend JS"]
     end
 
-    subgraph AuthAPI["Auth Endpoints"]
-        Code["/api/auth/v2/code/wb-captcha\nPOST — Запрос кода"]
-        Confirm["/api/auth/v2/auth\nPOST — Подтверждение кода"]
-        UserInfo["/api/auth/user/info\nGET — Информация о пользователе"]
-        WbBand["/api/auth/user/wb-band\nGET — WB Band пользователя"]
-        OfficeToken["/api/auth/office-token\nPOST — Получение Office JWT"]
+    subgraph AuthAPI["Auth Endpoints (public — не за authMiddleware)"]
+        Code["/api/v2/auth/code/wb-captcha\nPOST — Запрос кода"]
+        Confirm["/api/v2/auth/confirm\nPOST — Подтверждение кода"]
+        UserInfo["/api/user/info\nGET — Информация о пользователе"]
+        WbBand["/api/user/wb-band\nGET — WB Band пользователя"]
+        OfficeToken["/api/auth/office-token\nPOST — Выдача Office JWT"]
         Refresh["/api/auth/refresh\nPOST — Обновление токена"]
     end
 
@@ -78,7 +77,7 @@ graph LR
     end
 
     subgraph Data
-        JWTMod["🔑 JWT Handler"]
+        JWTMod["🔑 JWT Signer\n(HS256, local)"]
         DB[("💾 PostgreSQL\nusers\noffice_refresh_tokens")]
     end
 
@@ -92,13 +91,15 @@ graph LR
     UserInfo -- "upsert user" --> DB
 
     JS -- "Authorization: Bearer" --> OfficeToken
-    OfficeToken -- "verify identity" --> TeamWB
+    OfficeToken -- "verify token (upstream call)" --> TeamWB
+    TeamWB -- "user identity (employee_id, wbUserID)" --> OfficeToken
+    OfficeToken -- "resolve role + responsibilities" --> DB
     OfficeToken -- "sign tokens" --> JWTMod
-    JWTMod -- "store refresh token" --> DB
+    JWTMod -- "store refresh token (hashed)" --> DB
     OfficeToken -- "access + refresh tokens" --> JS
 
     JS -- "office_refresh_token" --> Refresh
-    Refresh -- "validate" --> DB
+    Refresh -- "validate hash" --> DB
     Refresh -- "sign new tokens" --> JWTMod
     Refresh -- "new tokens" --> JS
 
@@ -214,57 +215,72 @@ sequenceDiagram
     participant A as API Server
     participant W as team.wb.ru
     participant DB as PostgreSQL
-    participant J as JWT Handler
+    participant J as JWT Signer
 
     Note over U,J: Шаг 1 — Получение Authorization Token
     U->>F: Открыть приложение
     F->>U: Показать форму входа
     U->>F: Ввести телефон
-    F->>A: POST /api/auth/v2/code/wb-captcha
-    A->>W: Запрос кода подтверждения
+    F->>A: POST /api/v2/auth/code/wb-captcha
+    A->>W: Запрос кода подтверждения (proxy)
     W-->>A: Код отправлен
     A-->>F: success: true
     F->>U: Показать поле для кода
     U->>F: Ввести код
-    F->>A: POST /api/auth/v2/auth
-    A->>W: Подтвердить код
+    F->>A: POST /api/v2/auth/confirm
+    A->>W: Подтвердить код (proxy)
     W-->>A: Authorization Token
     A-->>F: authorization_token
     
-    Note over U,J: Шаг 2 — Получение Office Access Token
+    Note over U,J: Шаг 2 — Получение информации + Office Token
+    F->>A: GET /api/user/info (Authorization: Bearer)
+    A->>W: proxy → GET /api/v1/user/info
+    W-->>A: User Info (employee_id, name, wbUserID)
+    A->>DB: Upsert user (full_name, employee_id, wb_user_id)
+    A-->>F: user data + role
+    
     F->>A: POST /api/auth/office-token (Authorization: Bearer)
-    A->>W: GET /api/v1/user/info
-    W-->>A: User Info (employee_id, name)
-    A->>DB: Upsert user
-    A->>DB: Получить роль + responsibilities
+    Note right of A: Rate limit (IP) → верификация через upstream
+    A->>W: GET /api/v1/user/info (Bearer token)
+    W-->>A: 200 OK — user identity (employee_id, wbUserID, fullName)
+    Note right of A: Identity получена от team.wb.ru, НЕ из локального парсинга JWT
+    A->>DB: Resolve employee_id + role + responsibilities
     DB-->>A: role, building_ids, floor_ids, coworking_ids
-    A->>J: Создать Office JWT
-    J->>DB: Сохранить refresh token
+    A->>J: Подписать Office Access + Refresh JWT (HS256)
     J-->>A: office_access_token + office_refresh_token
+    A->>DB: Сохранить refresh token (HMAC-SHA256 hash, family_id, ip, ua)
     A-->>F: Токены
     F->>F: Сохранить в localStorage
     
     Note over U,J: Шаг 3 — Работа с защищёнными API
     U->>F: Просмотр зданий
     F->>A: GET /api/buildings (Office-Access-Token)
-    A->>J: Валидировать токен
-    J-->>A: Valid, claims
+    Note right of A: authMiddleware: VerifyOfficeAccessToken (HS256, local — без внешних вызовов)
+    A->>A: claims injected в context
     A->>DB: SELECT * FROM office_buildings
     DB-->>A: Buildings data
     A-->>F: JSON response
     F->>U: Показать список зданий
     
-    Note over U,J: Шаг 4 — Обновление токена (Rotation)
+    Note over U,J: Шаг 4 — Обновление токена (Rotation + Replay Protection)
     F->>F: Office-Access-Token истёк
     F->>A: POST /api/auth/refresh (office_refresh_token)
-    A->>DB: Проверить refresh token (not revoked)
-    DB-->>A: Valid
-    A->>DB: Revoke old refresh token
-    A->>J: Создать новый Office JWT + новый Refresh
-    J->>DB: Сохранить новый refresh token
+    A->>A: HMAC-SHA256(token_id, pepper) → token_hash
+    A->>DB: SELECT revoked_at, family_id WHERE token_hash
+    DB-->>A: Valid, family_id = "abc123"
+    A->>DB: Revoke old refresh token (revoked_at + last_used_at)
+    A->>J: Подписать новый Access + Refresh JWT (same family_id)
     J-->>A: new tokens
+    A->>DB: Сохранить новый refresh token (hashed, family_id, ip, ua)
     A-->>F: office_access_token + office_refresh_token
     F->>F: Обновить в localStorage
+
+    Note over U,J: Шаг 5 — Replay Detection (атакующий использует старый refresh)
+    Note right of A: Атакующий перехватил старый refresh token
+    A->>DB: SELECT revoked_at WHERE token_hash (old)
+    DB-->>A: revoked_at IS NOT NULL → REPLAY!
+    A->>DB: Revoke ALL tokens WHERE family_id = "abc123"
+    A-->>F: 401 — session invalidated
 ```
 
 ---
@@ -319,15 +335,16 @@ sequenceDiagram
     participant A as Admin
     participant F as Frontend
     participant API as API Server
-    participant JWT as JWT Handler
     participant DB as PostgreSQL
     participant FS as File Storage
     
+    Note over A,FS: Все /api/* запросы проходят через authMiddleware (HS256 verify, claims в context)
+    
     Note over A,FS: Создание здания
     A->>F: Заполнить форму здания
-    F->>API: POST /api/buildings (multipart/form-data)
-    API->>JWT: Проверить роль (role=2 Admin)
-    JWT-->>API: OK
+    F->>API: POST /api/buildings (multipart, Office-Access-Token)
+    Note right of API: authMiddleware → claims в context
+    API->>API: Проверить роль из claims (role=2 Admin)
     API->>FS: Сохранить изображение
     FS-->>API: /uploads/buildings/123.png
     API->>DB: INSERT INTO office_buildings
@@ -338,8 +355,7 @@ sequenceDiagram
     Note over A,FS: Создание этажа
     A->>F: Добавить этаж
     F->>API: POST /api/floors (building_id, name, level, plan_svg)
-    API->>JWT: Проверить responsibility
-    JWT-->>API: Has responsibility for building
+    API->>API: Проверить responsibility из claims
     API->>DB: INSERT INTO floors
     DB-->>API: Floor ID
     API-->>F: floor_id
@@ -347,7 +363,7 @@ sequenceDiagram
     Note over A,FS: Создание пространства (коворкинг)
     A->>F: Нарисовать зону на плане
     F->>API: POST /api/spaces (floor_id, name, points, subdivision)
-    API->>JWT: Проверить responsibility
+    API->>API: Проверить responsibility из claims
     API->>DB: INSERT INTO coworkings
     DB-->>API: Space ID
     API-->>F: space_id
@@ -355,7 +371,7 @@ sequenceDiagram
     Note over A,FS: Массовое добавление столов
     A->>F: Разместить столы в зоне
     F->>API: POST /api/desks/bulk (space_id, label, x, y, width, height)
-    API->>JWT: Проверить responsibility
+    API->>API: Проверить responsibility из claims
     API->>DB: INSERT INTO workplaces (batch)
     DB-->>API: Desk IDs
     API-->>F: desk_ids
@@ -474,10 +490,14 @@ erDiagram
     
     office_refresh_tokens {
         bigint id PK
-        text token_id UK
+        text token_hash UK "HMAC-SHA256(token_id, pepper)"
         text employee_id
+        text family_id "token family for replay detection"
         timestamptz expires_at
         timestamptz revoked_at
+        timestamptz last_used_at
+        text ip_address
+        text user_agent
         timestamptz created_at
     }
 ```
@@ -488,13 +508,15 @@ erDiagram
 
 ### 1. Аутентификация
 - **Вход:** User → Frontend → API → auth-hrtech.wb.ru (код) → team.wb.ru (user info)
-- **Выход:** API → JWT Handler → `office_access_token` + `office_refresh_token` → Frontend (localStorage)
-- **Обновление:** Frontend → API `/api/auth/refresh` → revoke old token → issue new pair
+- **Выдача office-токенов:** Frontend → API `/api/auth/office-token` → **upstream verification** (team.wb.ru/api/v1/user/info) → resolve role + responsibilities → JWT Handler → `office_access_token` + `office_refresh_token` → Frontend (localStorage)
+- **Обновление:** Frontend → API `/api/auth/refresh` → hash token_id → validate in DB → revoke old → issue new pair (same family_id)
+- **Replay protection:** повторный revoked refresh → `revokeTokenFamily(family_id)` → 401 для всей цепочки
+- **Rate limiting:** `/api/auth/office-token` и login-эндпоинты защищены IP rate limiter
 
 ### 2. Управление зданиями (CRUD)
 - **Чтение:** Frontend → API → PostgreSQL → JSON → Frontend
 - **Создание:** Frontend → API (multipart) → File Storage + PostgreSQL → Frontend
-- **Проверка прав:** JWT claims (`role`, `responsibilities`) → Middleware
+- **Проверка прав:** authMiddleware → claims в context → handler читает `role`, `responsibilities`
 
 ### 3. Бронирование рабочих мест
 - **Просмотр:** Frontend → API → `workplaces LEFT JOIN workplace_bookings` → Frontend
@@ -537,17 +559,23 @@ erDiagram
    - Authorization Token (внешний, от team.wb.ru / auth-hrtech.wb.ru)
    - Office-Access-Token (внутренний JWT, TTL 1 час)
    - Office-Refresh-Token (TTL 30 дней, ротация при каждом обновлении)
+   - **Upstream token verification** — `/api/auth/office-token` **не доверяет** локально-декодированным JWT claims; вместо этого вызывает `team.wb.ru/api/v1/user/info` для подтверждения identity. Signing key внешнего токена нам недоступен, поэтому upstream-валидация — единственный надёжный способ.
+   - **Rate limiting** — `/api/auth/office-token` защищён IP rate limiter (как login-эндпоинты)
+   - **Token hashing** — token_id хранится как HMAC-SHA256(token_id, pepper), не в открытом виде
+   - **Token families** — family_id связывает цепочку ротации для replay detection
+   - **Replay protection** — повторное использование revoked refresh → инвалидация всей семьи токенов
+   - **Audit fields** — last_used_at, ip_address, user_agent в каждом refresh token
 
-2. **Middleware цепочка**
-   - CORS (whitelist origins)
-   - Security Headers (X-Content-Type-Options, X-Frame-Options, CSP, HSTS)
-   - Logging
-   - JWT Validation (Office-Access-Token)
+2. **Middleware цепочка** (оборачивает весь mux — невозможно «забыть» проверку)
+   - loggingMiddleware
+   - securityHeadersMiddleware (X-Content-Type-Options, X-Frame-Options, CSP, HSTS)
+   - corsMiddleware (whitelist origins)
+   - **authMiddleware** — проверяет Office-Access-Token (HS256, local) для всех `/api/*` кроме public paths; инжектирует claims в request context
 
 3. **Контроль доступа**
    - Роли: Employee (1), Admin (2)
    - Responsibilities в JWT: `building_ids`, `floor_ids`, `coworking_ids`
-   - Rate limiting на auth endpoints (10 req/min per IP)
+   - Rate limiting на auth endpoints + office-token (10 req/min per IP)
 
 4. **Защита данных**
    - Параметризованные SQL-запросы (pgx)
@@ -567,10 +595,10 @@ erDiagram
 5. **Connection Pooling** — настроенный пул соединений к PostgreSQL
 6. **Timezone Support** — каждое здание имеет свою временную зону
 7. **Soft Delete** — бронирования отменяются через `cancelled_at`, не удаляются
-8. **Token Rotation** — при обновлении refresh token старый отзывается, выдаётся новый
+8. **Token Rotation + Replay Detection** — при обновлении refresh token старый отзывается (revoked_at + last_used_at), выдаётся новый с тем же family_id; повторное использование revoked token → инвалидация всего семейства
 
 ---
 
 **Дата создания:** 2026-02-13
 **Обновлено:** 2026-02-15
-**Версия:** 2.0
+**Версия:** 2.3 — office-token upstream verification (team.wb.ru), rate limiting, security hardening

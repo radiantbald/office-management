@@ -244,12 +244,12 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("/api/auth/user/info", app.handleAuthUserInfo)
-	mux.HandleFunc("/api/auth/user/wb-band", app.handleAuthUserWbBand)
+	mux.HandleFunc("/api/user/info", app.handleAuthUserInfo)
+	mux.HandleFunc("/api/user/wb-band", app.handleAuthUserWbBand)
 	mux.HandleFunc("/api/auth/office-token", app.handleAuthOfficeToken)
 	mux.HandleFunc("/api/auth/refresh", app.handleAuthRefreshToken)
-	mux.HandleFunc("/api/auth/v2/code/wb-captcha", app.handleAuthRequestCode)
-	mux.HandleFunc("/api/auth/v2/auth", app.handleAuthConfirmCode)
+	mux.HandleFunc("/api/v2/auth/code/wb-captcha", app.handleAuthRequestCode)
+	mux.HandleFunc("/api/v2/auth/confirm", app.handleAuthConfirmCode)
 
 	webDir := filepath.Join("..", "frontend")
 	serveFrontendPage := func(w http.ResponseWriter, r *http.Request) {
@@ -365,7 +365,7 @@ func migrate(db *sql.DB) error {
 			subdivision_level_1 TEXT NOT NULL DEFAULT '',
 			subdivision_level_2 TEXT NOT NULL DEFAULT '',
 			responsible_employee_id TEXT NOT NULL DEFAULT '',
-			points_json TEXT NOT NULL DEFAULT '[]',
+			points_json JSONB NOT NULL DEFAULT '[]'::jsonb,
 			color TEXT NOT NULL DEFAULT '',
 			snapshot_hidden INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -375,11 +375,7 @@ func migrate(db *sql.DB) error {
 			id BIGSERIAL PRIMARY KEY,
 			coworking_id BIGINT NOT NULL,
 			label TEXT NOT NULL,
-			x DOUBLE PRECISION NOT NULL DEFAULT 0,
-			y DOUBLE PRECISION NOT NULL DEFAULT 0,
-			width DOUBLE PRECISION NOT NULL DEFAULT 200,
-			height DOUBLE PRECISION NOT NULL DEFAULT 100,
-			rotation DOUBLE PRECISION NOT NULL DEFAULT 0,
+			points_json JSONB NOT NULL DEFAULT '{"x":0,"y":0,"width":200,"height":100,"rotation":0}'::jsonb,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(coworking_id) REFERENCES coworkings(id) ON DELETE CASCADE
 		);`,
@@ -388,7 +384,7 @@ func migrate(db *sql.DB) error {
 			floor_id BIGINT NOT NULL,
 			name TEXT NOT NULL,
 			capacity INTEGER NOT NULL DEFAULT 0,
-			points_json TEXT NOT NULL DEFAULT '[]',
+			points_json JSONB NOT NULL DEFAULT '[]'::jsonb,
 			color TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			FOREIGN KEY(floor_id) REFERENCES floors(id) ON DELETE CASCADE
@@ -420,12 +416,17 @@ func migrate(db *sql.DB) error {
 			id BIGSERIAL PRIMARY KEY,
 			token_id TEXT NOT NULL UNIQUE,
 			employee_id TEXT NOT NULL,
+			family_id TEXT NOT NULL DEFAULT '',
 			expires_at TIMESTAMPTZ NOT NULL,
 			revoked_at TIMESTAMPTZ,
+			last_used_at TIMESTAMPTZ,
+			ip_address TEXT NOT NULL DEFAULT '',
+			user_agent TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);`,
 		`CREATE INDEX IF NOT EXISTS office_refresh_tokens_employee_id_idx ON office_refresh_tokens (employee_id);`,
 		`CREATE INDEX IF NOT EXISTS office_refresh_tokens_token_id_idx ON office_refresh_tokens (token_id);`,
+		// family_id index is created inside migrateRefreshTokenColumns (after ensureColumn adds the column).
 	}
 
 	for _, stmt := range stmts {
@@ -464,7 +465,7 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "floors", "responsible_employee_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "coworkings", "points_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+	if err := ensureColumn(db, "coworkings", "points_json", "JSONB NOT NULL DEFAULT '[]'::jsonb"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "coworkings", "color", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -500,7 +501,7 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
-	if err := ensureColumn(db, "meeting_rooms", "points_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+	if err := ensureColumn(db, "meeting_rooms", "points_json", "JSONB NOT NULL DEFAULT '[]'::jsonb"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "meeting_rooms", "color", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -521,19 +522,10 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
-	if err := ensureColumn(db, "workplaces", "x", "REAL NOT NULL DEFAULT 0"); err != nil {
+	if err := migratePointsJsonToJSONB(db); err != nil {
 		return err
 	}
-	if err := ensureColumn(db, "workplaces", "y", "REAL NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "workplaces", "width", "REAL NOT NULL DEFAULT 200"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "workplaces", "height", "REAL NOT NULL DEFAULT 100"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "workplaces", "rotation", "REAL NOT NULL DEFAULT 0"); err != nil {
+	if err := migrateWorkplaceGeometryToJSON(db); err != nil {
 		return err
 	}
 	if err := migrateMeetingRoomSpaces(db); err != nil {
@@ -615,6 +607,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := createBookingIndexes(db); err != nil {
+		return err
+	}
+	if err := migrateRefreshTokenColumns(db); err != nil {
 		return err
 	}
 	return nil
@@ -754,6 +749,48 @@ func createBookingIndexes(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// migrateRefreshTokenColumns adds security-related columns to the
+// office_refresh_tokens table: family_id (token-family for replay detection),
+// last_used_at (audit), ip_address and user_agent (optional tracking).
+// It also invalidates any legacy plain-text token_id rows by revoking them.
+func migrateRefreshTokenColumns(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "office_refresh_tokens")
+	if err != nil || !hasTable {
+		return err
+	}
+	if err := ensureColumn(db, "office_refresh_tokens", "family_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "office_refresh_tokens", "last_used_at", "TIMESTAMPTZ"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "office_refresh_tokens", "ip_address", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "office_refresh_tokens", "user_agent", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// Revoke any pre-existing tokens that were stored without family_id
+	// (they predate the hashing scheme so their token_id column is plain-text).
+	if _, err := db.Exec(
+		`UPDATE office_refresh_tokens
+		    SET revoked_at = now()
+		  WHERE family_id = '' AND revoked_at IS NULL`,
+	); err != nil {
+		return err
+	}
+	// Create index on family_id for efficient family revocation queries.
+	if _, err := db.Exec(
+		`CREATE INDEX IF NOT EXISTS office_refresh_tokens_family_id_idx ON office_refresh_tokens (family_id)`,
+	); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1966,6 +2003,120 @@ func normalizeTimezone(raw string) (string, error) {
 		return "", err
 	}
 	return tz, nil
+}
+
+func migratePointsJsonToJSONB(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	for _, table := range []string{"coworkings", "meeting_rooms"} {
+		exists, err := columnExists(db, table, "points_json")
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		dt, err := columnType(db, table, "points_json")
+		if err != nil {
+			return err
+		}
+		if strings.EqualFold(dt, "text") {
+			// Drop the TEXT default first — PostgreSQL cannot auto-cast it to JSONB.
+			if _, err := db.Exec(fmt.Sprintf(
+				`ALTER TABLE %q ALTER COLUMN points_json DROP DEFAULT`,
+				table,
+			)); err != nil {
+				return err
+			}
+			if _, err := db.Exec(fmt.Sprintf(
+				`ALTER TABLE %q ALTER COLUMN points_json TYPE JSONB USING CASE WHEN points_json IS NULL OR points_json = '' THEN '[]'::jsonb ELSE points_json::jsonb END`,
+				table,
+			)); err != nil {
+				return err
+			}
+			if _, err := db.Exec(fmt.Sprintf(
+				`ALTER TABLE %q ALTER COLUMN points_json SET DEFAULT '[]'::jsonb`,
+				table,
+			)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func migrateWorkplaceGeometryToJSON(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasTable, err := tableExists(db, "workplaces")
+	if err != nil || !hasTable {
+		return err
+	}
+	hasX, err := columnExists(db, "workplaces", "x")
+	if err != nil {
+		return err
+	}
+	if !hasX {
+		// Already migrated or fresh install — just ensure the column exists.
+		return ensureColumn(db, "workplaces", "points_json",
+			`JSONB NOT NULL DEFAULT '{"x":0,"y":0,"width":200,"height":100,"rotation":0}'::jsonb`)
+	}
+	// Old schema with individual columns — migrate to JSONB.
+	if err := ensureColumn(db, "workplaces", "points_json",
+		`JSONB NOT NULL DEFAULT '{"x":0,"y":0,"width":200,"height":100,"rotation":0}'::jsonb`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		`UPDATE workplaces SET points_json = jsonb_build_object(
+			'x', COALESCE(x, 0),
+			'y', COALESCE(y, 0),
+			'width', COALESCE(width, 200),
+			'height', COALESCE(height, 100),
+			'rotation', COALESCE(rotation, 0)
+		)`,
+	); err != nil {
+		return err
+	}
+	for _, col := range []string{"x", "y", "width", "height", "rotation"} {
+		if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE workplaces DROP COLUMN %q`, col)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func encodeDeskGeometry(x, y, width, height, rotation float64) (string, error) {
+	g := struct {
+		X        float64 `json:"x"`
+		Y        float64 `json:"y"`
+		Width    float64 `json:"width"`
+		Height   float64 `json:"height"`
+		Rotation float64 `json:"rotation"`
+	}{x, y, width, height, rotation}
+	raw, err := json.Marshal(g)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func decodeDeskGeometry(raw string) (x, y, width, height, rotation float64) {
+	if raw == "" {
+		return 0, 0, 200, 100, 0
+	}
+	var g struct {
+		X        float64 `json:"x"`
+		Y        float64 `json:"y"`
+		Width    float64 `json:"width"`
+		Height   float64 `json:"height"`
+		Rotation float64 `json:"rotation"`
+	}
+	if err := json.Unmarshal([]byte(raw), &g); err != nil {
+		return 0, 0, 200, 100, 0
+	}
+	return g.X, g.Y, g.Width, g.Height, g.Rotation
 }
 
 func encodePoints(points []point) (string, error) {
@@ -4318,7 +4469,7 @@ func (a *app) deleteSpace(id int64) error {
 
 func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 	rows, err := a.db.Query(
-		`SELECT id, coworking_id, label, x, y, width, height, rotation, created_at FROM workplaces WHERE coworking_id = $1 ORDER BY id DESC`,
+		`SELECT id, coworking_id, label, COALESCE(points_json, '{}'), created_at FROM workplaces WHERE coworking_id = $1 ORDER BY id DESC`,
 		spaceID,
 	)
 	if err != nil {
@@ -4329,9 +4480,11 @@ func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 	var items []desk
 	for rows.Next() {
 		var d desk
-		if err := rows.Scan(&d.ID, &d.SpaceID, &d.Label, &d.X, &d.Y, &d.Width, &d.Height, &d.Rotation, &d.CreatedAt); err != nil {
+		var geomJSON string
+		if err := rows.Scan(&d.ID, &d.SpaceID, &d.Label, &geomJSON, &d.CreatedAt); err != nil {
 			return nil, err
 		}
+		d.X, d.Y, d.Width, d.Height, d.Rotation = decodeDeskGeometry(geomJSON)
 		items = append(items, d)
 	}
 	return items, rows.Err()
@@ -4339,7 +4492,7 @@ func (a *app) listDesksBySpace(spaceID int64) ([]desk, error) {
 
 func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWithBooking, error) {
 	rows, err := a.db.Query(
-		`SELECT d.id, d.coworking_id, d.label, d.x, d.y, d.width, d.height, d.rotation, d.created_at,
+		`SELECT d.id, d.coworking_id, d.label, COALESCE(d.points_json, '{}'), d.created_at,
 		        b.applier_employee_id,
 		        COALESCE(NULLIF(u.full_name, ''), ''),
 		        COALESCE(NULLIF(u.employee_id, ''), b.applier_employee_id, ''),
@@ -4368,6 +4521,7 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 	var items []deskWithBooking
 	for rows.Next() {
 		var d deskWithBooking
+		var geomJSON string
 		var bookingApplierID sql.NullString
 		var userName sql.NullString
 		var resolvedApplierID sql.NullString
@@ -4379,11 +4533,7 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 			&d.ID,
 			&d.SpaceID,
 			&d.Label,
-			&d.X,
-			&d.Y,
-			&d.Width,
-			&d.Height,
-			&d.Rotation,
+			&geomJSON,
 			&d.CreatedAt,
 			&bookingApplierID,
 			&userName,
@@ -4395,6 +4545,7 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 		); err != nil {
 			return nil, err
 		}
+		d.X, d.Y, d.Width, d.Height, d.Rotation = decodeDeskGeometry(geomJSON)
 		d.Booking.IsBooked = bookingApplierID.Valid && strings.TrimSpace(bookingApplierID.String) != ""
 		if d.Booking.IsBooked {
 			applierValue := strings.TrimSpace(bookingApplierID.String)
@@ -4426,18 +4577,18 @@ func (a *app) listDesksBySpaceWithBookings(spaceID int64, date string) ([]deskWi
 }
 
 func (a *app) createDesk(spaceID int64, label string, x, y, width, height, rotation float64) (desk, error) {
+	geomJSON, err := encodeDeskGeometry(x, y, width, height, rotation)
+	if err != nil {
+		return desk{}, err
+	}
 	var id int64
 	if err := a.db.QueryRow(
-		`INSERT INTO workplaces (coworking_id, label, x, y, width, height, rotation)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO workplaces (coworking_id, label, points_json)
+		 VALUES ($1, $2, $3)
 		 RETURNING id`,
 		spaceID,
 		label,
-		x,
-		y,
-		width,
-		height,
-		rotation,
+		geomJSON,
 	).Scan(&id); err != nil {
 		return desk{}, err
 	}
@@ -4468,8 +4619,8 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 		}
 	}()
 	stmt, err := tx.Prepare(
-		`INSERT INTO workplaces (coworking_id, label, x, y, width, height, rotation)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO workplaces (coworking_id, label, points_json)
+		 VALUES ($1, $2, $3)
 		 RETURNING id`,
 	)
 	if err != nil {
@@ -4480,15 +4631,16 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 	now := time.Now().UTC()
 	created := make([]desk, 0, len(items))
 	for _, item := range items {
+		geomJSON, encErr := encodeDeskGeometry(item.X, item.Y, item.Width, item.Height, item.Rotation)
+		if encErr != nil {
+			err = encErr
+			return nil, encErr
+		}
 		var id int64
 		execErr := stmt.QueryRow(
 			item.SpaceID,
 			item.Label,
-			item.X,
-			item.Y,
-			item.Width,
-			item.Height,
-			item.Rotation,
+			geomJSON,
 		).Scan(&id)
 		if execErr != nil {
 			err = execErr
@@ -4515,16 +4667,18 @@ func (a *app) createDesksBulk(items []deskCreateInput) ([]desk, error) {
 
 func (a *app) getDesk(id int64) (desk, error) {
 	var d desk
+	var geomJSON string
 	row := a.db.QueryRow(
-		`SELECT id, coworking_id, label, x, y, width, height, rotation, created_at FROM workplaces WHERE id = $1`,
+		`SELECT id, coworking_id, label, COALESCE(points_json, '{}'), created_at FROM workplaces WHERE id = $1`,
 		id,
 	)
-	if err := row.Scan(&d.ID, &d.SpaceID, &d.Label, &d.X, &d.Y, &d.Width, &d.Height, &d.Rotation, &d.CreatedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.SpaceID, &d.Label, &geomJSON, &d.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return desk{}, errNotFound
 		}
 		return desk{}, err
 	}
+	d.X, d.Y, d.Width, d.Height, d.Rotation = decodeDeskGeometry(geomJSON)
 	return d, nil
 }
 
@@ -4557,14 +4711,14 @@ func (a *app) updateDesk(id int64, label *string, x *float64, y *float64, width 
 	if current.Width <= 0 || current.Height <= 0 {
 		return desk{}, errInvalidDimensions
 	}
+	geomJSON, err := encodeDeskGeometry(current.X, current.Y, current.Width, current.Height, current.Rotation)
+	if err != nil {
+		return desk{}, err
+	}
 	result, err := a.db.Exec(
-		`UPDATE workplaces SET label = $1, x = $2, y = $3, width = $4, height = $5, rotation = $6 WHERE id = $7`,
+		`UPDATE workplaces SET label = $1, points_json = $2 WHERE id = $3`,
 		current.Label,
-		current.X,
-		current.Y,
-		current.Width,
-		current.Height,
-		current.Rotation,
+		geomJSON,
 		id,
 	)
 	if err != nil {

@@ -40,7 +40,8 @@ type OfficeAccessTokenClaims struct {
 // OfficeRefreshTokenClaims carries minimal identity info for refresh tokens.
 type OfficeRefreshTokenClaims struct {
 	EmployeeID string `json:"employee_id"`
-	TokenID    string `json:"token_id"` // Unique ID for this refresh token
+	TokenID    string `json:"token_id"`  // Unique ID for this refresh token (random, high-entropy)
+	FamilyID   string `json:"family_id"` // Token-family ID for replay detection
 	Exp        int64  `json:"exp"`
 	Iat        int64  `json:"iat"`
 }
@@ -113,6 +114,9 @@ func SignOfficeRefreshToken(claims OfficeRefreshTokenClaims, secret []byte) (str
 	if claims.TokenID == "" {
 		claims.TokenID = generateTokenID()
 	}
+	if claims.FamilyID == "" {
+		claims.FamilyID = generateTokenID()
+	}
 	payloadJSON, err := json.Marshal(claims)
 	if err != nil {
 		return "", fmt.Errorf("office_refresh_token: marshal claims: %w", err)
@@ -163,6 +167,16 @@ func generateTokenID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
+}
+
+// hashTokenID produces HMAC-SHA256(token_id, pepper) so that the raw token_id
+// is never stored in the database.  Even with full DB access an attacker cannot
+// reconstruct the original value.  The pepper is the application-level JWT
+// signing secret (officeJWTSecret).
+func hashTokenID(tokenID string, pepper []byte) string {
+	mac := hmac.New(sha256.New, pepper)
+	mac.Write([]byte(tokenID))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // --- helpers ---

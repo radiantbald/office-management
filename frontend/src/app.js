@@ -906,7 +906,7 @@ const saveCookiesFromHeader = (rawHeader) => {
 
 const requestAuthCode = async (phoneNumber) => {
   try {
-    const response = await fetch("/api/auth/v2/code/wb-captcha", {
+    const response = await fetch("/api/v2/auth/code/wb-captcha", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -954,7 +954,7 @@ const confirmAuthCode = async (code, sticker) => {
       headers["X-Cookie"] = savedCookies;
     }
 
-    const response = await fetch("/api/auth/v2/auth", {
+    const response = await fetch("/api/v2/auth/confirm", {
       method: "POST",
       headers,
       credentials: "include",
@@ -995,7 +995,7 @@ const fetchAuthUserInfo = async (accessToken) => {
     if (cookies) {
       headers["X-Cookie"] = cookies;
     }
-    const response = await fetch("/api/auth/user/info", {
+    const response = await fetch("/api/user/info", {
       headers,
       credentials: "include",
     });
@@ -1182,6 +1182,10 @@ const fetchOfficeToken = async (accessToken) => {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     };
+    const cookies = getAuthCookies();
+    if (cookies) {
+      headers["X-Cookie"] = cookies;
+    }
     const response = await fetch("/api/auth/office-token", {
       method: "POST",
       headers,
@@ -1218,7 +1222,7 @@ const fetchAndStoreWBBand = async (accessToken, user) => {
       headers["X-Cookie"] = cookies;
     }
     const response = await fetch(
-      `/api/auth/user/wb-band?wb_team_profile_id=${encodeURIComponent(profileId)}`,
+      `/api/user/wb-band?wb_team_profile_id=${encodeURIComponent(profileId)}`,
       {
       headers,
       credentials: "include",
@@ -1270,9 +1274,15 @@ const initializeAuth = async () => {
   
   // Start automatic token refresh checking
   startAutoTokenRefresh();
-
-  // Kick off app initialization immediately so key data requests start without delay.
-  void runAppInit();
+  if (cachedUser) {
+    if (authGate) {
+      hideAuthGate();
+      setAuthStatus("");
+    }
+    refreshDeskBookingOwnership();
+    await runAppInit();
+    return;
+  }
 
   if (authGate) {
     setAuthLoading(true);
@@ -1289,10 +1299,10 @@ const initializeAuth = async () => {
     setUserInfo(userResult.user);
     updateAuthUserBlock(userResult.user);
     refreshDeskBookingOwnership();
-    void fetchResponsibilitiesForUser(); // Fetch responsibilities after Office-Access-Token is obtained
     if (authGate) {
       hideAuthGate();
     }
+    await runAppInit();
     return;
   }
 
@@ -1315,6 +1325,7 @@ const initializeAuth = async () => {
     hideAuthGate();
     setAuthStatus("Не удалось проверить авторизацию. Повторите попытку позже.", "warning");
   }
+  await runAppInit();
 };
 
 const shouldBlockEmployeeRequest = (path, options = {}) => {
@@ -2174,7 +2185,8 @@ const renderDatePicker = () => {
   spaceDatePicker.appendChild(footer);
 };
 
-const setBookingSelectedDate = (date) => {
+const setBookingSelectedDate = (date, options = {}) => {
+  const { reloadDesks = true } = options;
   const normalized = normalizeBookingDate(date);
   if (!normalized) {
     return;
@@ -2190,17 +2202,17 @@ const setBookingSelectedDate = (date) => {
     bookingState.currentMonth = new Date(year, month - 1, 1);
   }
   renderDatePicker();
-  if (currentSpace?.id) {
+  if (reloadDesks && currentSpace?.id) {
     void loadSpaceDesks(currentSpace.id);
   }
 };
 
-const ensureBookingDate = () => {
+const ensureBookingDate = (options = {}) => {
   if (bookingState.selectedDate) {
     return;
   }
   const today = new Date();
-  setBookingSelectedDate(formatPickerDate(today));
+  setBookingSelectedDate(formatPickerDate(today), options);
 };
 
 const getMeetingBookingHeaders = () => {
@@ -10809,7 +10821,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     }
     currentSpace = space;
     if (initialBookingDate) {
-      setBookingSelectedDate(initialBookingDate);
+      setBookingSelectedDate(initialBookingDate, { reloadDesks: false });
     }
     const floorsResponse = await apiRequest(`/api/buildings/${buildingID}/floors`);
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
@@ -10916,8 +10928,8 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     if (spaceSnapshot) {
       spaceSnapshot.classList.toggle("can-manage-bookings", canBookForOthers());
     }
+    ensureBookingDate({ reloadDesks: false });
     await loadSpaceDesks(space.id);
-    ensureBookingDate();
   } catch (error) {
     setSpacePageStatus(error.message, "error");
     if (spaceSnapshotPlaceholder) {
@@ -12328,9 +12340,6 @@ const handleAuthSuccess = async (token, user) => {
 
   // Obtain the server-signed Office_Token before making any API requests.
   await fetchOfficeToken(token);
-
-  // Fetch responsibilities after Office-Access-Token is obtained
-  void fetchResponsibilitiesForUser();
 
   await runAppInit();
 };

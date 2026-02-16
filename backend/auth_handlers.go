@@ -317,6 +317,7 @@ func firstNonEmptyString(values ...string) string {
 }
 
 // handleAuthRequestCode проксирует запрос к auth-hrtech.wb.ru/v2/code/wb-captcha
+// Route: POST /api/v2/auth/code/wb-captcha
 func (a *app) handleAuthRequestCode(w http.ResponseWriter, r *http.Request) {
 	if a.authRateLimiter != nil && !a.authRateLimiter.allow(clientIP(r)) {
 		respondError(w, http.StatusTooManyRequests, "Too many requests, try again later")
@@ -371,6 +372,7 @@ func (a *app) handleAuthRequestCode(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAuthConfirmCode проксирует запрос к auth-hrtech.wb.ru/v2/auth
+// Route: POST /api/v2/auth/confirm
 func (a *app) handleAuthConfirmCode(w http.ResponseWriter, r *http.Request) {
 	if a.authRateLimiter != nil && !a.authRateLimiter.allow(clientIP(r)) {
 		respondError(w, http.StatusTooManyRequests, "Too many requests, try again later")
@@ -433,6 +435,90 @@ func (a *app) handleAuthConfirmCode(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(respBody)
 }
 
+// verifiedUserInfo holds identity fields returned by team.wb.ru after
+// successful token validation.  All fields are populated from the upstream
+// response, NOT from locally-decoded JWT claims.
+type verifiedUserInfo struct {
+	WbUserID   string
+	UserName   string
+	EmployeeID string
+}
+
+// verifyExternalToken validates the Authorization bearer token by calling
+// team.wb.ru/api/v1/user/info.  If team.wb.ru responds with valid user data,
+// we trust the identity.  If it responds with an error or the request fails,
+// we reject the token.
+//
+// This is the ONLY way to confirm that the bearer token is legitimate — we
+// cannot verify its signature locally because the signing key belongs to
+// the external auth service.
+func (a *app) verifyExternalToken(token string, originalReq *http.Request) (*verifiedUserInfo, error) {
+	req, err := http.NewRequest(http.MethodGet, "https://team.wb.ru/api/v1/user/info", nil)
+	if err != nil {
+		return nil, fmt.Errorf("verifyExternalToken: create request: %w", err)
+	}
+
+	req.Header.Set("accept", "application/json, text/plain, */*")
+	req.Header.Set("authorization", "Bearer "+token)
+	req.Header.Set("cache-control", "no-cache")
+	req.Header.Set("pragma", "no-cache")
+	req.Header.Set("referer", "https://team.wb.ru/account")
+	req.Header.Set("sec-fetch-dest", "empty")
+	req.Header.Set("sec-fetch-mode", "cors")
+	req.Header.Set("sec-fetch-site", "same-origin")
+	req.Header.Set("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
+
+	if originalReq != nil {
+		cookie, _ := collectCookies(originalReq)
+		if cookie != "" {
+			req.Header.Set("Cookie", cookie)
+		}
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("verifyExternalToken: upstream request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("verifyExternalToken: upstream returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("verifyExternalToken: read response: %w", err)
+	}
+
+	var result struct {
+		Status int `json:"status"`
+		Data   struct {
+			WbUserID   any    `json:"wbUserID"`
+			EmployeeID any    `json:"employeeID"`
+			FullName   string `json:"fullName"`
+			Name       string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("verifyExternalToken: parse response: %w", err)
+	}
+
+	wbUserID := normalizeIDString(result.Data.WbUserID)
+	employeeID := normalizeIDString(result.Data.EmployeeID)
+	userName := firstNonEmptyString(result.Data.FullName, result.Data.Name)
+
+	if wbUserID == "" && employeeID == "" {
+		return nil, fmt.Errorf("verifyExternalToken: upstream returned empty identity")
+	}
+
+	return &verifiedUserInfo{
+		WbUserID:   wbUserID,
+		UserName:   userName,
+		EmployeeID: employeeID,
+	}, nil
+}
+
 func extractBearerToken(authHeader string) string {
 	token := authHeader
 	if strings.HasPrefix(authHeader, "Bearer ") {
@@ -445,9 +531,9 @@ func extractBearerToken(authHeader string) string {
 
 // handleAuthOfficeToken issues both access and refresh tokens.
 // The endpoint requires a valid Authorization bearer token (the caller must
-// already be authenticated). It resolves identity from the JWT claims and
-// the user's role from the database, then returns signed tokens
-// that the client can use for all subsequent API requests.
+// already be authenticated via team.wb.ru). The token is validated by calling
+// the upstream team.wb.ru/api/v1/user/info endpoint — we never trust JWT
+// claims without server-side verification.
 //
 // POST /api/auth/office-token
 // Response: { "office_access_token": "<jwt>", "office_refresh_token": "<jwt>" }
@@ -458,6 +544,12 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(a.officeJWTSecret) == 0 {
 		respondError(w, http.StatusServiceUnavailable, "Office token signing is not configured")
+		return
+	}
+
+	// Rate-limit office-token issuance the same way we rate-limit login endpoints.
+	if a.authRateLimiter != nil && !a.authRateLimiter.allow(clientIP(r)) {
+		respondError(w, http.StatusTooManyRequests, "Too many requests, try again later")
 		return
 	}
 
@@ -472,16 +564,24 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims := parseAuthClaimsFromToken(token)
-	employeeID := strings.TrimSpace(claims.EmployeeID)
+	// ── CRITICAL: Verify the external token by calling team.wb.ru ──
+	// We MUST NOT trust locally-parsed JWT claims because the external
+	// token's signing key is unknown to us.  Instead we call team.wb.ru
+	// which validates the token and returns the real user identity.
+	verifiedUser, err := a.verifyExternalToken(token, r)
+	if err != nil {
+		log.Printf("handleAuthOfficeToken: external token verification failed: %v", err)
+		respondError(w, http.StatusUnauthorized, "Authorization token is invalid or expired")
+		return
+	}
+
+	employeeID := strings.TrimSpace(verifiedUser.EmployeeID)
 	if employeeID == "" {
-		// Fallback to wb_user_id for role lookup
-		wbUserID := strings.TrimSpace(claims.WbUserID)
+		wbUserID := strings.TrimSpace(verifiedUser.WbUserID)
 		if wbUserID == "" {
 			respondError(w, http.StatusUnauthorized, "Unable to identify user from token")
 			return
 		}
-		// Try to get employee_id from database using wb_user_id
 		dbEmployeeID, err := getEmployeeIDByWbUserID(r.Context(), a.db, wbUserID)
 		if err == nil && dbEmployeeID != "" {
 			employeeID = dbEmployeeID
@@ -503,7 +603,7 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 	// Create access token
 	accessClaims := OfficeAccessTokenClaims{
 		EmployeeID:       employeeID,
-		UserName:         strings.TrimSpace(claims.UserName),
+		UserName:         strings.TrimSpace(verifiedUser.UserName),
 		Role:             roleID,
 		Responsibilities: responsibilities,
 	}
@@ -514,9 +614,10 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create refresh token
+	// Create refresh token (new token family).
 	refreshClaims := OfficeRefreshTokenClaims{
 		EmployeeID: employeeID,
+		// FamilyID is auto-generated inside SignOfficeRefreshToken
 	}
 	refreshToken, err := SignOfficeRefreshToken(refreshClaims, a.officeJWTSecret)
 	if err != nil {
@@ -525,7 +626,7 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse the refresh token to get token_id and expiration
+	// Parse the refresh token to get token_id, family_id and expiration.
 	parsedRefreshClaims, err := VerifyOfficeRefreshToken(refreshToken, a.officeJWTSecret)
 	if err != nil {
 		log.Printf("handleAuthOfficeToken: failed to parse refresh token: %v", err)
@@ -533,8 +634,19 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store refresh token in database
-	if err := a.storeRefreshToken(r.Context(), parsedRefreshClaims.TokenID, employeeID, parsedRefreshClaims.Exp); err != nil {
+	// Hash the token_id with the JWT secret as pepper — never store it in plain text.
+	tokenHash := hashTokenID(parsedRefreshClaims.TokenID, a.officeJWTSecret)
+
+	// Store refresh token in database with family, IP and User-Agent metadata.
+	if err := a.storeRefreshToken(
+		r.Context(),
+		tokenHash,
+		employeeID,
+		parsedRefreshClaims.FamilyID,
+		clientIP(r),
+		truncateUA(r.UserAgent()),
+		parsedRefreshClaims.Exp,
+	); err != nil {
 		log.Printf("handleAuthOfficeToken: failed to store refresh token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to store refresh token")
 		return
@@ -546,11 +658,19 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAuthRefreshToken exchanges a valid refresh token for a new access token.
+// handleAuthRefreshToken exchanges a valid refresh token for a new token pair
+// (access + refresh).  Implements token rotation with replay detection:
+//
+//  1. JWT signature & expiration are verified first.
+//  2. token_id is hashed (HMAC-SHA256 + pepper) and looked up in DB.
+//  3. If the token was already consumed/revoked — this is a replay attack:
+//     the whole token family is invalidated and 401 is returned.
+//  4. Otherwise: the old token is marked consumed, a new pair is issued,
+//     and the new refresh token inherits the same family_id.
 //
 // POST /api/auth/refresh
 // Body: { "office_refresh_token": "<jwt>" }
-// Response: { "office_access_token": "<jwt>" }
+// Response: { "office_access_token": "<jwt>", "office_refresh_token": "<jwt>" }
 func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -575,7 +695,7 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify refresh token signature and expiration
+	// ── Step 1: verify JWT signature and expiration ──
 	refreshClaims, err := VerifyOfficeRefreshToken(refreshToken, a.officeJWTSecret)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: invalid refresh token: %v", err)
@@ -583,36 +703,59 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if refresh token exists and is not revoked in database
-	valid, err := a.isRefreshTokenValid(r.Context(), refreshClaims.TokenID, refreshClaims.EmployeeID)
+	// ── Step 2: hash the token_id and look it up in DB ──
+	tokenHash := hashTokenID(refreshClaims.TokenID, a.officeJWTSecret)
+	status, familyID, err := a.checkRefreshToken(r.Context(), tokenHash, refreshClaims.EmployeeID)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to validate refresh token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to validate refresh token")
 		return
 	}
-	if !valid {
-		respondError(w, http.StatusUnauthorized, "Refresh token has been revoked")
+
+	switch status {
+	case refreshTokenRevoked:
+		// ── Step 3: REPLAY DETECTED — a consumed token was reused ──
+		// Invalidate the entire token family so every device in this
+		// session chain is forced to re-authenticate.
+		log.Printf("handleAuthRefreshToken: REPLAY DETECTED for employee=%s family=%s ip=%s",
+			refreshClaims.EmployeeID, familyID, clientIP(r))
+		if err := a.revokeTokenFamily(r.Context(), familyID); err != nil {
+			log.Printf("handleAuthRefreshToken: failed to revoke token family %s: %v", familyID, err)
+		}
+		respondError(w, http.StatusUnauthorized, "Refresh token has been revoked — possible replay attack, session invalidated")
+		return
+	case refreshTokenNotFound:
+		respondError(w, http.StatusUnauthorized, "Invalid refresh token")
+		return
+	case refreshTokenExpired:
+		respondError(w, http.StatusUnauthorized, "Refresh token has expired")
 		return
 	}
 
-	// Get current role from database
+	// ── Step 4: token is valid — proceed with rotation ──
+
+	// 4a. Mark old token as consumed (revoked_at + last_used_at = now).
+	if err := a.revokeRefreshToken(r.Context(), tokenHash); err != nil {
+		log.Printf("handleAuthRefreshToken: failed to revoke old refresh token: %v", err)
+		// Critical for replay protection — abort if we can't mark it consumed.
+		respondError(w, http.StatusInternalServerError, "Failed to consume refresh token")
+		return
+	}
+
+	// 4b. Resolve current role & user name from DB.
 	roleID, err := getUserRoleByWbUserID(r.Context(), a.db, refreshClaims.EmployeeID)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to resolve role for %s: %v", refreshClaims.EmployeeID, err)
 		roleID = roleEmployee
 	}
-
-	// Get user name from database
 	userName, err := getUserNameByEmployeeID(r.Context(), a.db, refreshClaims.EmployeeID)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to get user name for %s: %v", refreshClaims.EmployeeID, err)
 		userName = ""
 	}
-
-	// Load user responsibilities for the token
 	responsibilities := a.loadResponsibilitiesForToken(refreshClaims.EmployeeID)
 
-	// Issue new access token
+	// 4c. Issue new access token.
 	accessClaims := OfficeAccessTokenClaims{
 		EmployeeID:       refreshClaims.EmployeeID,
 		UserName:         userName,
@@ -626,17 +769,10 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── ROTATING REFRESH TOKEN: Issue a new refresh token and revoke the old one ──
-	
-	// Revoke the old refresh token to prevent reuse
-	if err := a.revokeRefreshToken(r.Context(), refreshClaims.TokenID); err != nil {
-		log.Printf("handleAuthRefreshToken: failed to revoke old refresh token: %v", err)
-		// Non-critical: continue even if revocation fails
-	}
-
-	// Create a new refresh token
+	// 4d. Issue new refresh token — same family_id, new token_id.
 	newRefreshClaims := OfficeRefreshTokenClaims{
 		EmployeeID: refreshClaims.EmployeeID,
+		FamilyID:   familyID, // inherit the family chain
 	}
 	newRefreshToken, err := SignOfficeRefreshToken(newRefreshClaims, a.officeJWTSecret)
 	if err != nil {
@@ -645,15 +781,23 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse and store the new refresh token
+	// 4e. Store new refresh token (hashed) in DB.
 	parsedNewRefresh, err := VerifyOfficeRefreshToken(newRefreshToken, a.officeJWTSecret)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to parse new refresh token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to process new refresh token")
 		return
 	}
-
-	if err := a.storeRefreshToken(r.Context(), parsedNewRefresh.TokenID, parsedNewRefresh.EmployeeID, parsedNewRefresh.Exp); err != nil {
+	newTokenHash := hashTokenID(parsedNewRefresh.TokenID, a.officeJWTSecret)
+	if err := a.storeRefreshToken(
+		r.Context(),
+		newTokenHash,
+		parsedNewRefresh.EmployeeID,
+		familyID,
+		clientIP(r),
+		truncateUA(r.UserAgent()),
+		parsedNewRefresh.Exp,
+	); err != nil {
 		log.Printf("handleAuthRefreshToken: failed to store new refresh token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to store new refresh token")
 		return
@@ -663,6 +807,16 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		"office_access_token":  accessToken,
 		"office_refresh_token": newRefreshToken,
 	})
+}
+
+// truncateUA limits a User-Agent string to 512 characters to avoid storing
+// extremely long values in the database.
+func truncateUA(ua string) string {
+	const maxLen = 512
+	if len(ua) > maxLen {
+		return ua[:maxLen]
+	}
+	return ua
 }
 
 func collectCookies(r *http.Request) (string, string) {

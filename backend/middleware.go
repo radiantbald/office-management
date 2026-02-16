@@ -61,6 +61,9 @@ func (a *app) authMiddleware(next http.Handler) http.Handler {
 		publicPaths := []string{
 			"/api/health",
 			"/api/auth/",
+			"/api/v2/auth/",
+			"/api/user/info",
+			"/api/user/wb-band",
 		}
 		for _, publicPath := range publicPaths {
 			if strings.HasPrefix(path, publicPath) {
