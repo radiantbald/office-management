@@ -12,22 +12,22 @@
 Office-токены (access + refresh) хранятся **исключительно в HttpOnly Secure cookies**.
 JavaScript не имеет доступа к самим JWT-строкам — это защищает от угона сессии при XSS.
 
-| Назначение | Cookie | Path | HttpOnly | Secure | SameSite | MaxAge |
-|---|---|---|---|---|---|---|
-| Access JWT | `office_access_token` | `/api/` | ✅ | ✅ (HTTPS) | Lax | 1 час |
-| Refresh JWT | `office_refresh_token` | `/api/auth/` | ✅ | ✅ (HTTPS) | Lax | 30 дней |
-| CSRF token (double-submit) | `office_csrf_token` | `/api/` | ❌ (доступен JS) | ✅ (HTTPS) | Lax | sync c refresh/session |
+| Назначение | Cookie | Path | Domain | HttpOnly | Secure | SameSite | MaxAge |
+|---|---|---|---|---|---|---|---|
+| Access JWT | `office_access_token` | `/api/` | host-only (или `AUTH_COOKIE_DOMAIN`) | ✅ | ✅ (HTTPS) | Strict (по умолчанию) | 1 час |
+| Refresh JWT | `office_refresh_token` | `/api/auth/` | host-only (или `AUTH_COOKIE_DOMAIN`) | ✅ | ✅ (HTTPS) | Strict (по умолчанию) | 30 дней |
+| CSRF token (double-submit) | `office_csrf_token` | `/` | host-only (или `AUTH_COOKIE_DOMAIN`) | ❌ (доступен JS) | ✅ (HTTPS) | Strict (по умолчанию) | sync c refresh/session |
 
 **Почему HttpOnly cookies:**
 - `HttpOnly` — JavaScript (и XSS-код) не может прочитать cookie через `document.cookie`
 - `Secure` — cookie отправляется только по HTTPS (в dev на HTTP флаг снимается автоматически)
-- `SameSite=Lax` — cookie не отправляется при cross-site POST/PUT/DELETE (защита от CSRF)
+- `SameSite=Strict` по умолчанию (`AUTH_COOKIE_SAMESITE`) — дополнительное снижение риска CSRF
 - `Path` — refresh-cookie ограничен путём `/api/auth/` и не отправляется к обычным API-эндпоинтам
 
 **CSRF-защита (фактическая реализация):**
 1. **Double-submit cookie**: `office_csrf_token` (cookie) + `X-CSRF-Token` (header) должны совпасть
 2. **Origin check**: для unsafe `/api/*` сервер проверяет `Origin` (или `Referer`) и отклоняет недоверенные источники
-3. `SameSite=Lax` для всех auth-cookie — дополнительный защитный слой
+3. `SameSite=Strict` (по умолчанию, конфигурируется через `AUTH_COOKIE_SAMESITE`) для всех auth-cookie — дополнительный защитный слой
 4. Проверка применяется middleware для state-changing методов (`POST/PUT/DELETE/...`)
 
 **Передача claims на фронтенд:**
@@ -49,9 +49,9 @@ JavaScript не имеет доступа к самим JWT-строкам — �
 
 Все остальные API эндпоинты (`/api/*`) требуют Office-Access-Token.
 
-**Middleware проверяет (в порядке приоритета):**
-1. Заголовок `Office-Access-Token` (для API-клиентов / legacy)
-2. Cookie `office_access_token` (для браузерного SPA)
+**Middleware проверяет (единый канал):**
+1. Cookie `office_access_token` (HttpOnly, Secure)
+2. Заголовок `Office-Access-Token` отклоняется (`400`) как legacy-канал (смешивание каналов запрещено)
 - Валидность подписи токена
 - Срок действия токена (не истек)
 - Наличие `employee_id` в claims
@@ -134,9 +134,9 @@ Authorization: Bearer <authorization_token>
 
 Ответ (cookies в заголовках):
 ```
-Set-Cookie: office_access_token=eyJ...; Path=/api/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600
-Set-Cookie: office_refresh_token=eyJ...; Path=/api/auth/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000
-Set-Cookie: office_csrf_token=9g...; Path=/api/; Secure; SameSite=Lax; Max-Age=2592000
+Set-Cookie: office_access_token=eyJ...; Path=/api/; HttpOnly; Secure; SameSite=Strict; Max-Age=3600
+Set-Cookie: office_refresh_token=eyJ...; Path=/api/auth/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000
+Set-Cookie: office_csrf_token=9g...; Path=/; Secure; SameSite=Strict; Max-Age=2592000
 ```
 
 ### Шаг 3: Использование Office Access Token
@@ -322,7 +322,7 @@ Refresh token привязан к стабильному `device_id`, котор
 1. **Производительность** - нет необходимости обращаться к внешнему API при каждом запросе
 2. **Безопасность** - токен подписан сервером, содержит минимальную информацию
 3. **XSS-защита** - токены в HttpOnly cookies, JS не может их прочитать
-4. **CSRF-защита** - double-submit (`office_csrf_token` + `X-CSRF-Token`) + `Origin/Referer` check + SameSite=Lax
+4. **CSRF-защита** - double-submit (`office_csrf_token` + `X-CSRF-Token`) + `Origin/Referer` check + SameSite=Strict (по умолчанию)
 5. **Роль в токене** - роль пользователя уже включена в токен, не нужно запрашивать из БД
 6. **Зоны ответственности** - ID объектов, которые пользователь может редактировать, встроены в токен
 7. **Контроль** - сервер полностью контролирует выпуск и проверку токенов
@@ -419,6 +419,32 @@ Refresh token привязан к стабильному `device_id`, котор
 - `1` - Employee (сотрудник)
 - `2` - Admin (администратор)
 
+### Базовые permissions (role → capability)
+
+Текущая реализация остаётся совместимой с 2 ролями, но сервер использует
+permission-check helper для чувствительных операций:
+
+- `manage_role_assignments` — изменение ролей пользователей (`/api/users/role`)
+- `view_any_responsibilities` — просмотр зон ответственности любого сотрудника (`/api/responsibilities?employee_id=...`)
+
+Сопоставление на данный момент:
+- `Admin` → все permissions
+- `Employee` → только свои зоны ответственности (без глобальных permissions)
+
+### Ограничение доступа к `/api/responsibilities`
+
+- **Admin** может запрашивать зоны любого `employee_id`
+- **Employee** может запрашивать **только свои** зоны (чужой `employee_id` → `403`)
+- Если `employee_id` не передан:
+  - для `Employee` используется его собственный `employee_id`
+  - для `Admin` возвращаются пустые списки (как и раньше)
+
+### Ограничение выдачи `/api/users` для Employee
+
+Для роли `Employee` endpoint `/api/users` требует `building_id` и после проверки
+доступа возвращает не полный справочник, а только пользователей из зоны
+этого здания (responsible на building/floor/coworking) + самого requester'а.
+
 ## Конфигурация
 
 Для работы Office токенов рекомендуется RS256-конфигурация:
@@ -442,7 +468,7 @@ OFFICE_JWT_SECRET=your-legacy-hs256-secret
 
 Поддерживаемые заголовки:
 - `Authorization` - для auth-эндпоинтов
-- `Office-Access-Token` - для API-клиентов (legacy header; браузер использует cookie)
+- `Office-Access-Token` - legacy заголовок для access token (не поддерживается; запрос отклоняется)
 - `X-Device-ID` - идентификатор устройства для привязки refresh token
 - `X-CSRF-Token` - double-submit CSRF header для unsafe запросов
 - `Access-Control-Allow-Credentials: true` - для отправки cookies

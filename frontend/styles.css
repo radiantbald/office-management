@@ -3042,6 +3042,11 @@ body.modal-open {
   cursor: pointer;
 }
 
+.book-for-choice-btn.ghost {
+  /* Global .ghost adds margin-top; reset it only for this modal to keep both buttons aligned. */
+  margin-top: 0;
+}
+
 .book-for-other-body {
   display: grid;
   gap: 16px;
@@ -3111,4 +3116,5 @@ body.modal-open {
   .meeting-search-content {
     grid-template-columns: 1fr;
   }
+
 }

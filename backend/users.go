@@ -21,9 +21,11 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	role, err := resolveRoleFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		respondRoleResolutionError(w, err)
 		return
 	}
+	var scopedBuildingID int64
+	var scopedRequesterEmployeeID string
 	if role == roleEmployee {
 		buildingIDRaw := strings.TrimSpace(r.URL.Query().Get("building_id"))
 		if buildingIDRaw == "" {
@@ -35,6 +37,7 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "building_id must be a number")
 			return
 		}
+		scopedBuildingID = buildingID
 		employeeID, err := extractEmployeeIDFromRequest(r, a.db)
 		if err != nil {
 			log.Printf("internal error: %v", err)
@@ -42,6 +45,7 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		employeeID = strings.TrimSpace(employeeID)
+		scopedRequesterEmployeeID = employeeID
 		if employeeID == "" {
 			respondError(w, http.StatusForbidden, "Недостаточно прав")
 			return
@@ -108,14 +112,48 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := a.db.QueryContext(r.Context(),
-		`SELECT COALESCE(employee_id, ''),
-		        COALESCE(full_name, ''),
-		        COALESCE(wb_user_id, '')
-		   FROM users
-		  WHERE TRIM(COALESCE(employee_id, '')) <> ''
-		  ORDER BY full_name, employee_id`,
-	)
+	var rows *sql.Rows
+	if role == roleEmployee {
+		rows, err = a.db.QueryContext(r.Context(),
+			`WITH allowed_ids AS (
+			     SELECT TRIM(COALESCE(responsible_employee_id, '')) AS employee_id
+			       FROM office_buildings
+			      WHERE id = $1
+			        AND TRIM(COALESCE(responsible_employee_id, '')) <> ''
+			     UNION
+			     SELECT TRIM(COALESCE(responsible_employee_id, '')) AS employee_id
+			       FROM floors
+			      WHERE building_id = $1
+			        AND TRIM(COALESCE(responsible_employee_id, '')) <> ''
+			     UNION
+			     SELECT TRIM(COALESCE(c.responsible_employee_id, '')) AS employee_id
+			       FROM coworkings c
+			       JOIN floors f ON f.id = c.floor_id
+			      WHERE f.building_id = $1
+			        AND TRIM(COALESCE(c.responsible_employee_id, '')) <> ''
+			     UNION
+			     SELECT TRIM($2) AS employee_id
+			   )
+			   SELECT COALESCE(u.employee_id, ''),
+			          COALESCE(u.full_name, ''),
+			          COALESCE(u.wb_user_id, '')
+			     FROM users u
+			     JOIN allowed_ids a ON a.employee_id = TRIM(COALESCE(u.employee_id, ''))
+			    WHERE TRIM(COALESCE(u.employee_id, '')) <> ''
+			    ORDER BY u.full_name, u.employee_id`,
+			scopedBuildingID,
+			scopedRequesterEmployeeID,
+		)
+	} else {
+		rows, err = a.db.QueryContext(r.Context(),
+			`SELECT COALESCE(employee_id, ''),
+			        COALESCE(full_name, ''),
+			        COALESCE(wb_user_id, '')
+			   FROM users
+			  WHERE TRIM(COALESCE(employee_id, '')) <> ''
+			  ORDER BY full_name, employee_id`,
+		)
+	}
 	if err != nil {
 		log.Printf("internal error: %v", err)
 		respondError(w, http.StatusInternalServerError, "internal error")

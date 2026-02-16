@@ -13,34 +13,87 @@ const (
 	roleAdmin    = 2
 )
 
+type permission string
+
+const (
+	permissionManageRoleAssignments   permission = "manage_role_assignments"
+	permissionViewAnyResponsibilities permission = "view_any_responsibilities"
+)
+
+var errRequesterIdentityRequired = errors.New("requester identity is required")
+
 func isValidRole(role int) bool {
 	return role == roleEmployee || role == roleAdmin
+}
+
+func hasPermission(role int, required permission) bool {
+	switch role {
+	case roleAdmin:
+		return true
+	case roleEmployee:
+		return false
+	default:
+		return false
+	}
+}
+
+func isMutatingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveRoleFromRequest determines the caller's role.
 //
 // Priority:
-//  1. Office-Access-Token claims (cryptographically verified, includes role).
-//  2. Database lookup by wb_user_id from the authorization claims.
+//  1. Mutating requests: database lookup by validated identity from token context.
+//  2. Read-only requests: Office-Access-Token claims (cryptographically verified, includes role).
+//  3. Fallback: database lookup.
 func resolveRoleFromRequest(r *http.Request, queryer rowQueryer) (int, error) {
-	// Fast path: role is already embedded in the verified Office-Access-Token.
-	if atClaims := officeAccessTokenClaimsFromContext(r.Context()); atClaims != nil {
-		if isValidRole(atClaims.Role) {
-			return atClaims.Role, nil
-		}
-	}
-	// Slow path: fall back to DB.
-	wbUserID, _ := extractBookingUser(r)
-	if strings.TrimSpace(wbUserID) == "" {
+	if r == nil {
 		return roleEmployee, nil
 	}
+	// For mutating endpoints always resolve role from DB so role changes apply immediately.
+	if !isMutatingMethod(r.Method) {
+		if atClaims := officeAccessTokenClaimsFromContext(r.Context()); atClaims != nil {
+			if isValidRole(atClaims.Role) {
+				return atClaims.Role, nil
+			}
+		}
+	}
+
+	// Resolve identity from validated request context first.
+	employeeID, err := extractEmployeeIDFromRequest(r, queryer)
+	if err != nil {
+		return roleEmployee, err
+	}
+	if strings.TrimSpace(employeeID) != "" {
+		return getUserRoleByWbUserID(r.Context(), queryer, employeeID)
+	}
+
+	// Final fallback: try user key from claims for legacy paths.
+	wbUserID, _ := extractBookingUser(r)
+	if strings.TrimSpace(wbUserID) == "" {
+		return roleEmployee, errRequesterIdentityRequired
+	}
 	return getUserRoleByWbUserID(r.Context(), queryer, wbUserID)
+}
+
+func respondRoleResolutionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errRequesterIdentityRequired) {
+		respondError(w, http.StatusUnauthorized, "User identity is required")
+		return
+	}
+	respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
 }
 
 func ensureNotEmployeeRole(w http.ResponseWriter, r *http.Request, queryer rowQueryer) bool {
 	role, err := resolveRoleFromRequest(r, queryer)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		respondRoleResolutionError(w, err)
 		return false
 	}
 	if role == roleEmployee {

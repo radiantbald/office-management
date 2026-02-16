@@ -914,6 +914,27 @@ const getCookieValue = (name) => {
 };
 
 const getCsrfToken = () => getCookieValue("office_csrf_token");
+const LOGOUT_REDIRECT_SKIP_KEY = "office_skip_session_restore_once";
+
+const markLogoutRedirect = () => {
+  try {
+    sessionStorage.setItem(LOGOUT_REDIRECT_SKIP_KEY, "1");
+  } catch {
+    // Ignore storage access errors (private mode, restricted context).
+  }
+};
+
+const consumeLogoutRedirectMark = () => {
+  try {
+    if (sessionStorage.getItem(LOGOUT_REDIRECT_SKIP_KEY) === "1") {
+      sessionStorage.removeItem(LOGOUT_REDIRECT_SKIP_KEY);
+      return true;
+    }
+  } catch {
+    // Ignore storage access errors and keep default behavior.
+  }
+  return false;
+};
 
 const parseSetCookieHeader = (rawHeader) => {
   if (!rawHeader) {
@@ -1352,6 +1373,7 @@ const runAppInit = async () => {
 const initializeAuth = async () => {
   const token = getAuthToken();
   const cachedUser = getUserInfo();
+  const skipSessionRestore = consumeLogoutRedirectMark();
   if (cachedUser) {
     updateAuthUserBlock(cachedUser);
   }
@@ -1359,7 +1381,7 @@ const initializeAuth = async () => {
   // Restore in-memory session from HttpOnly cookies via backend.
   // On page reload, JS has no access to the cookie values, so we ask
   // the server to validate them and return the non-sensitive claims.
-  if (!getSessionClaims()) {
+  if (!skipSessionRestore && !getSessionClaims()) {
     try {
       const sessionResp = await fetch("/api/auth/session", {
         credentials: "include",
@@ -1478,27 +1500,18 @@ const shouldBlockEmployeeRequest = (path, options = {}) => {
   if (!["POST", "PUT", "DELETE"].includes(method)) {
     return false;
   }
-  const target = typeof path === "string" ? path : String(path);
-  if (target.startsWith("/api/spaces")) {
-    if (method === "POST") {
-      return !canManageFloorResources(getUserInfo(), currentFloor);
-    }
-    return !canManageActiveSpaceResources(getUserInfo());
-  }
-  if (target.startsWith("/api/desks")) {
-    return !canManageActiveSpaceResources(getUserInfo());
-  }
-  if (target.startsWith("/api/floors")) {
-    if (method === "PUT") {
-      return !canManageFloorResources(getUserInfo(), currentFloor);
-    }
+  // Keep only hard-deny rules that are always forbidden for employee role.
+  // Contextual permissions (responsible employee, hierarchy access, etc.)
+  // are resolved on the backend and may change between requests.
+  const target = String(typeof path === "string" ? path : path || "");
+  const pathOnly = target.split("?")[0] || "";
+  if (method === "POST" && pathOnly === "/api/buildings") {
     return true;
   }
-  if (target.startsWith("/api/meeting-rooms")) {
-    return !canManageFloorResources(getUserInfo(), currentFloor);
+  if ((method === "POST" || method === "PUT") && pathOnly === "/api/users/role") {
+    return true;
   }
-  const restrictedPrefixes = ["/api/buildings"];
-  return restrictedPrefixes.some((prefix) => target.startsWith(prefix));
+  return false;
 };
 
 const apiRequest = async (path, options = {}) => {
@@ -12786,6 +12799,7 @@ if (breadcrumbProfiles.length > 0) {
         setAuthStep("phone");
         if (logoutSucceeded) {
           setAuthStatus("Вы вышли из аккаунта.");
+          markLogoutRedirect();
           window.location.assign("/buildings");
           return;
         }

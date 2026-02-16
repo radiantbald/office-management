@@ -75,12 +75,15 @@ func (a *app) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		// ── Require Office-Access-Token (server-signed JWT) for all protected endpoints ──
-		// Priority: 1) Header (legacy / API clients), 2) HttpOnly cookie (browser SPA).
-		officeAccessToken := r.Header.Get("Office-Access-Token")
-		if officeAccessToken == "" {
-			if c, err := r.Cookie("office_access_token"); err == nil {
-				officeAccessToken = c.Value
-			}
+		// Single channel only: HttpOnly cookie for browser/API clients behind trusted frontend.
+		// Reject the legacy header explicitly to avoid mixed-channel auth.
+		if strings.TrimSpace(r.Header.Get("Office-Access-Token")) != "" {
+			respondError(w, http.StatusBadRequest, "Office-Access-Token header is not supported; use cookie auth")
+			return
+		}
+		officeAccessToken := ""
+		if c, err := r.Cookie("office_access_token"); err == nil {
+			officeAccessToken = c.Value
 		}
 		if officeAccessToken == "" {
 			respondError(w, http.StatusUnauthorized, "Office-Access-Token is required")
@@ -135,8 +138,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 		}
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Office-Access-Token, Office-Refresh-Token, X-Device-ID, X-CSRF-Token, deviceid, devicename, Accept, Cache-Control, Pragma, X-Cookie, wb-apptype, Origin, Referer")
-		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, Office-Access-Token, Office-Refresh-Token, X-Set-Cookie, Content-Disposition")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Office-Refresh-Token, X-Device-ID, X-CSRF-Token, deviceid, devicename, Accept, Cache-Control, Pragma, X-Cookie, wb-apptype, Origin, Referer")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, Office-Refresh-Token, X-Set-Cookie, Content-Disposition")
 		w.Header().Set("Access-Control-Max-Age", "3600")
 
 		if r.Method == http.MethodOptions {

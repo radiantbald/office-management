@@ -69,7 +69,7 @@ func (a *app) getBuildingIDByFloorID(floorID int64) (int64, error) {
 func (a *app) ensureCanManageBuilding(w http.ResponseWriter, r *http.Request, buildingID int64) bool {
 	role, err := resolveRoleFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		respondRoleResolutionError(w, err)
 		return false
 	}
 	if role != roleEmployee {
@@ -152,7 +152,7 @@ func (a *app) ensureCanManageFloorBySpace(w http.ResponseWriter, r *http.Request
 func (a *app) ensureCanManageFloor(w http.ResponseWriter, r *http.Request, floorID int64) bool {
 	role, err := resolveRoleFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		respondRoleResolutionError(w, err)
 		return false
 	}
 	if role != roleEmployee {
@@ -258,7 +258,7 @@ func (a *app) getCoworkingIDsByDeskIDs(ids []int64) ([]int64, error) {
 func (a *app) ensureCanManageSpace(w http.ResponseWriter, r *http.Request, spaceID int64) bool {
 	role, err := resolveRoleFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		respondRoleResolutionError(w, err)
 		return false
 	}
 	if role != roleEmployee {
@@ -330,7 +330,7 @@ func (a *app) ensureCanManageSpace(w http.ResponseWriter, r *http.Request, space
 func (a *app) ensureCanManageCoworking(w http.ResponseWriter, r *http.Request, coworkingID int64) bool {
 	role, err := resolveRoleFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		respondRoleResolutionError(w, err)
 		return false
 	}
 	if role != roleEmployee {
@@ -383,7 +383,7 @@ func (a *app) ensureCanManageCoworkings(w http.ResponseWriter, r *http.Request, 
 	}
 	role, err := resolveRoleFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		respondRoleResolutionError(w, err)
 		return false
 	}
 	if role != roleEmployee {
@@ -463,7 +463,7 @@ func (a *app) ensureCanManageCoworkings(w http.ResponseWriter, r *http.Request, 
 func (a *app) ensureCanManageDesk(w http.ResponseWriter, r *http.Request, deskID int64) bool {
 	role, err := resolveRoleFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		respondRoleResolutionError(w, err)
 		return false
 	}
 	if role != roleEmployee {
@@ -517,7 +517,7 @@ func (a *app) ensureCanManageDesks(w http.ResponseWriter, r *http.Request, deskI
 	}
 	role, err := resolveRoleFromRequest(r, a.db)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		respondRoleResolutionError(w, err)
 		return false
 	}
 	if role != roleEmployee {

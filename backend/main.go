@@ -39,6 +39,7 @@ type app struct {
 	officeTokenKeys    *officeTokenKeyManager
 	refreshTokenPepper []byte
 	authCookieSameSite http.SameSite
+	authCookieDomain   string
 }
 
 type building struct {
@@ -233,7 +234,22 @@ func main() {
 	accessTTL := parseEnvDurationMinutes("OFFICE_ACCESS_TTL_MINUTES", 10, 5, 10)
 	refreshTTL := parseEnvDurationDays("OFFICE_REFRESH_TTL_DAYS", 30, 7, 30)
 	configureOfficeTokenTTLs(accessTTL, refreshTTL)
+	jwtIssuer := strings.TrimSpace(os.Getenv("OFFICE_JWT_ISSUER"))
+	if jwtIssuer == "" {
+		jwtIssuer = "office-management"
+	}
+	jwtAccessAudience := strings.TrimSpace(os.Getenv("OFFICE_JWT_ACCESS_AUDIENCE"))
+	if jwtAccessAudience == "" {
+		jwtAccessAudience = "office-management-api"
+	}
+	jwtRefreshAudience := strings.TrimSpace(os.Getenv("OFFICE_JWT_REFRESH_AUDIENCE"))
+	if jwtRefreshAudience == "" {
+		jwtRefreshAudience = "office-management-refresh"
+	}
+	jwtClockSkew := parseEnvDurationSeconds("OFFICE_JWT_CLOCK_SKEW_SECONDS", 30, 0, 120)
+	configureOfficeJWTValidation(jwtIssuer, jwtAccessAudience, jwtRefreshAudience, jwtClockSkew)
 	authSameSite := parseSameSiteEnv("AUTH_COOKIE_SAMESITE", http.SameSiteStrictMode)
+	authCookieDomain := parseCookieDomainEnv("AUTH_COOKIE_DOMAIN")
 
 	app := &app{
 		db:                 db,
@@ -243,6 +259,7 @@ func main() {
 		officeTokenKeys:    officeTokenKeys,
 		refreshTokenPepper: []byte(refreshPepper),
 		authCookieSameSite: authSameSite,
+		authCookieDomain:   authCookieDomain,
 	}
 
 	mux := http.NewServeMux()
@@ -385,6 +402,27 @@ func parseEnvDurationDays(name string, defaultDays, minDays, maxDays int) time.D
 	return time.Duration(parsed) * 24 * time.Hour
 }
 
+func parseEnvDurationSeconds(name string, defaultSeconds, minSeconds, maxSeconds int) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return time.Duration(defaultSeconds) * time.Second
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Printf("WARNING: %s=%q is invalid, using default=%d", name, value, defaultSeconds)
+		return time.Duration(defaultSeconds) * time.Second
+	}
+	if parsed < minSeconds {
+		log.Printf("WARNING: %s=%d is below minimum=%d, clamping", name, parsed, minSeconds)
+		parsed = minSeconds
+	}
+	if parsed > maxSeconds {
+		log.Printf("WARNING: %s=%d is above maximum=%d, clamping", name, parsed, maxSeconds)
+		parsed = maxSeconds
+	}
+	return time.Duration(parsed) * time.Second
+}
+
 func parseSameSiteEnv(name string, defaultValue http.SameSite) http.SameSite {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
 	if value == "" {
@@ -401,6 +439,24 @@ func parseSameSiteEnv(name string, defaultValue http.SameSite) http.SameSite {
 		log.Printf("WARNING: %s=%q is invalid (expected strict|lax|none), using default", name, value)
 		return defaultValue
 	}
+}
+
+func parseCookieDomainEnv(name string) string {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return ""
+	}
+	// RFC allows a leading dot, but browsers ignore it today; normalize value.
+	value = strings.TrimPrefix(value, ".")
+	if strings.Contains(value, "://") || strings.Contains(value, "/") || strings.Contains(value, ":") {
+		log.Printf("WARNING: %s=%q looks invalid for cookie Domain, ignoring", name, value)
+		return ""
+	}
+	if strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") || strings.Contains(value, "..") {
+		log.Printf("WARNING: %s=%q looks invalid for cookie Domain, ignoring", name, value)
+		return ""
+	}
+	return value
 }
 
 func migrate(db *sql.DB) error {
@@ -511,8 +567,24 @@ func migrate(db *sql.DB) error {
 			user_agent TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);`,
+		`CREATE TABLE IF NOT EXISTS responsibility_audit_log (
+			id BIGSERIAL PRIMARY KEY,
+			entity_type TEXT NOT NULL,
+			entity_id BIGINT NOT NULL,
+			previous_employee_id TEXT NOT NULL DEFAULT '',
+			new_employee_id TEXT NOT NULL DEFAULT '',
+			changed_by_employee_id TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		);`,
 		`CREATE INDEX IF NOT EXISTS office_refresh_tokens_employee_id_idx ON office_refresh_tokens (employee_id);`,
 		`CREATE INDEX IF NOT EXISTS office_refresh_tokens_token_id_idx ON office_refresh_tokens (token_id);`,
+		`CREATE INDEX IF NOT EXISTS responsibility_audit_log_entity_idx ON responsibility_audit_log (entity_type, entity_id, created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS responsibility_audit_log_actor_idx ON responsibility_audit_log (changed_by_employee_id, created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS office_buildings_responsible_employee_id_idx ON office_buildings (responsible_employee_id);`,
+		`CREATE INDEX IF NOT EXISTS floors_responsible_employee_id_idx ON floors (responsible_employee_id);`,
+		`CREATE INDEX IF NOT EXISTS coworkings_responsible_employee_id_idx ON coworkings (responsible_employee_id);`,
+		`CREATE INDEX IF NOT EXISTS floors_building_id_responsible_employee_id_idx ON floors (building_id, responsible_employee_id);`,
+		`CREATE INDEX IF NOT EXISTS coworkings_floor_id_responsible_employee_id_idx ON coworkings (floor_id, responsible_employee_id);`,
 		// family_id index is created inside migrateRefreshTokenColumns (after ensureColumn adds the column).
 	}
 
@@ -2381,6 +2453,13 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			if !a.ensureCanManageBuilding(w, r, id) {
 				return
 			}
+			requesterEmployeeID, requesterErr := extractEmployeeIDFromRequest(r, a.db)
+			if requesterErr != nil {
+				log.Printf("internal error: %v", requesterErr)
+				respondError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			requesterEmployeeID = strings.TrimSpace(requesterEmployeeID)
 			var payload struct {
 				Name                  string  `json:"name"`
 				Address               string  `json:"address"`
@@ -2404,7 +2483,7 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				payload.ResponsibleEmployeeID = &trimmed
 				role, err := resolveRoleFromRequest(r, a.db)
 				if err != nil {
-					respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+					respondRoleResolutionError(w, err)
 					return
 				}
 				if role != roleAdmin {
@@ -2441,6 +2520,15 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusBadRequest, "aboveground_floors must be non-negative")
 				return
 			}
+			previousResponsible := ""
+			if payload.ResponsibleEmployeeID != nil {
+				previousResponsible, err = a.getBuildingResponsibleEmployeeID(id)
+				if err != nil && !errors.Is(err, errNotFound) {
+					log.Printf("internal error: %v", err)
+					respondError(w, http.StatusInternalServerError, "internal error")
+					return
+				}
+			}
 			result, err := a.updateBuilding(
 				id,
 				payload.Name,
@@ -2458,6 +2546,9 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				log.Printf("internal error: %v", err)
 				respondError(w, http.StatusInternalServerError, "internal error")
 				return
+			}
+			if payload.ResponsibleEmployeeID != nil {
+				a.auditResponsibilityChange(r.Context(), "building", id, previousResponsible, *payload.ResponsibleEmployeeID, requesterEmployeeID)
 			}
 			respondJSON(w, http.StatusOK, result)
 		case http.MethodDelete:
@@ -2629,6 +2720,13 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 			if !a.ensureCanManageFloor(w, r, id) {
 				return
 			}
+			requesterEmployeeID, err := extractEmployeeIDFromRequest(r, a.db)
+			if err != nil {
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			requesterEmployeeID = strings.TrimSpace(requesterEmployeeID)
 			var payload struct {
 				Name                  *string `json:"name"`
 				PlanSVG               *string `json:"plan_svg"`
@@ -2665,34 +2763,46 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			var (
 				updated floor
-				err     error
+				opErr   error
 			)
 			if payload.PlanSVG != nil {
-				updated, err = a.updateFloorPlan(id, *payload.PlanSVG)
-				if err != nil {
-					if errors.Is(err, errNotFound) {
+				updated, opErr = a.updateFloorPlan(id, *payload.PlanSVG)
+				if opErr != nil {
+					if errors.Is(opErr, errNotFound) {
 						respondError(w, http.StatusNotFound, "floor not found")
 						return
 					}
-					log.Printf("internal error: %v", err)
+					log.Printf("internal error: %v", opErr)
 					respondError(w, http.StatusInternalServerError, "internal error")
 					return
 				}
 			}
 			if payload.Name != nil || payload.ResponsibleEmployeeID != nil {
-				updated, err = a.updateFloorDetails(id, payload.Name, payload.ResponsibleEmployeeID)
-				if err != nil {
-					if errors.Is(err, errNotFound) {
+				previousResponsible := ""
+				if payload.ResponsibleEmployeeID != nil {
+					previousResponsible, opErr = a.getFloorResponsibleEmployeeID(id)
+					if opErr != nil && !errors.Is(opErr, errNotFound) {
+						log.Printf("internal error: %v", opErr)
+						respondError(w, http.StatusInternalServerError, "internal error")
+						return
+					}
+				}
+				updated, opErr = a.updateFloorDetails(id, payload.Name, payload.ResponsibleEmployeeID)
+				if opErr != nil {
+					if errors.Is(opErr, errNotFound) {
 						respondError(w, http.StatusNotFound, "floor not found")
 						return
 					}
-					if errors.Is(err, errNameRequired) {
-						respondError(w, http.StatusBadRequest, err.Error())
+					if errors.Is(opErr, errNameRequired) {
+						respondError(w, http.StatusBadRequest, opErr.Error())
 						return
 					}
-					log.Printf("internal error: %v", err)
+					log.Printf("internal error: %v", opErr)
 					respondError(w, http.StatusInternalServerError, "internal error")
 					return
+				}
+				if payload.ResponsibleEmployeeID != nil {
+					a.auditResponsibilityChange(r.Context(), "floor", id, previousResponsible, *payload.ResponsibleEmployeeID, requesterEmployeeID)
 				}
 			}
 			respondJSON(w, http.StatusOK, updated)
@@ -2736,6 +2846,13 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	requesterEmployeeID, err := extractEmployeeIDFromRequest(r, a.db)
+	if err != nil {
+		log.Printf("internal error: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	requesterEmployeeID = strings.TrimSpace(requesterEmployeeID)
 	var payload struct {
 		FloorID                    int64   `json:"floor_id"`
 		Name                       string  `json:"name"`
@@ -2791,7 +2908,18 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	previousFloorResponsible := ""
 	if payload.FloorResponsibleEmployeeID != "" {
+		previousFloorResponsible, err = a.getFloorResponsibleEmployeeID(payload.FloorID)
+		if err != nil {
+			if errors.Is(err, errNotFound) {
+				respondError(w, http.StatusNotFound, "floor not found")
+				return
+			}
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 		if !a.ensureCanManageBuildingByFloor(w, r, payload.FloorID) {
 			return
 		}
@@ -2822,6 +2950,10 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+		a.auditResponsibilityChange(r.Context(), "floor", payload.FloorID, previousFloorResponsible, payload.FloorResponsibleEmployeeID, requesterEmployeeID)
+	}
+	if payload.Kind == "coworking" {
+		a.auditResponsibilityChange(r.Context(), "coworking", result.ID, "", payload.ResponsibleEmployeeID, requesterEmployeeID)
 	}
 	respondJSON(w, http.StatusCreated, result)
 }
@@ -2851,6 +2983,13 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			if !a.ensureCanManageSpace(w, r, id) {
 				return
 			}
+			requesterEmployeeID, requesterErr := extractEmployeeIDFromRequest(r, a.db)
+			if requesterErr != nil {
+				log.Printf("internal error: %v", requesterErr)
+				respondError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			requesterEmployeeID = strings.TrimSpace(requesterEmployeeID)
 			var payload struct {
 				Name                       string  `json:"name"`
 				Kind                       string  `json:"kind"`
@@ -2872,36 +3011,60 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			payload.Color = strings.TrimSpace(payload.Color)
 			payload.SubdivisionLevel1 = strings.TrimSpace(payload.SubdivisionLevel1)
 			payload.SubdivisionLevel2 = strings.TrimSpace(payload.SubdivisionLevel2)
+			var lookupErr error
+			previousCoworkingResponsible := ""
 			if payload.ResponsibleEmployeeID != nil {
+				previousCoworkingResponsible, lookupErr = a.getCoworkingResponsibleEmployeeID(id)
+				if lookupErr != nil && !errors.Is(lookupErr, errNotFound) {
+					log.Printf("internal error: %v", lookupErr)
+					respondError(w, http.StatusInternalServerError, "internal error")
+					return
+				}
 				trimmed := strings.TrimSpace(*payload.ResponsibleEmployeeID)
 				payload.ResponsibleEmployeeID = &trimmed
 				if !a.ensureCanManageFloorBySpace(w, r, id) {
 					return
 				}
 			}
+			previousFloorResponsible := ""
 			if payload.FloorResponsibleEmployeeID != nil {
 				trimmed := strings.TrimSpace(*payload.FloorResponsibleEmployeeID)
 				payload.FloorResponsibleEmployeeID = &trimmed
+				floorID, floorErr := a.getSpaceFloorID(id)
+				if floorErr != nil {
+					if errors.Is(floorErr, errNotFound) {
+						respondError(w, http.StatusNotFound, "space not found")
+						return
+					}
+					respondError(w, http.StatusInternalServerError, floorErr.Error())
+					return
+				}
+				previousFloorResponsible, lookupErr = a.getFloorResponsibleEmployeeID(floorID)
+				if lookupErr != nil && !errors.Is(lookupErr, errNotFound) {
+					log.Printf("internal error: %v", lookupErr)
+					respondError(w, http.StatusInternalServerError, "internal error")
+					return
+				}
 				if !a.ensureCanManageBuildingBySpace(w, r, id) {
 					return
 				}
 			}
 			var (
 				result space
-				err    error
+				opErr  error
 			)
 			if len(payload.Points) > 0 {
 				if len(payload.Points) < 3 {
 					respondError(w, http.StatusBadRequest, "points are required")
 					return
 				}
-				result, err = a.updateSpaceGeometry(id, payload.Points, payload.Color)
+				result, opErr = a.updateSpaceGeometry(id, payload.Points, payload.Color)
 			} else if payload.SnapshotHidden != nil &&
 				payload.Name == "" &&
 				payload.Kind == "" &&
 				payload.Capacity == nil &&
 				payload.Color == "" {
-				result, err = a.updateSpaceSnapshotHidden(id, *payload.SnapshotHidden)
+				result, opErr = a.updateSpaceSnapshotHidden(id, *payload.SnapshotHidden)
 			} else {
 				if payload.Name == "" {
 					respondError(w, http.StatusBadRequest, "name is required")
@@ -2945,7 +3108,7 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 					payload.SubdivisionLevel1 = ""
 					payload.SubdivisionLevel2 = ""
 				}
-				result, err = a.updateSpaceDetails(
+				result, opErr = a.updateSpaceDetails(
 					id,
 					payload.Name,
 					payload.Kind,
@@ -2957,14 +3120,17 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 					payload.ResponsibleEmployeeID,
 				)
 			}
-			if err != nil {
-				if errors.Is(err, errNotFound) {
+			if opErr != nil {
+				if errors.Is(opErr, errNotFound) {
 					respondError(w, http.StatusNotFound, "space not found")
 					return
 				}
-				log.Printf("internal error: %v", err)
+				log.Printf("internal error: %v", opErr)
 				respondError(w, http.StatusInternalServerError, "internal error")
 				return
+			}
+			if payload.ResponsibleEmployeeID != nil {
+				a.auditResponsibilityChange(r.Context(), "coworking", id, previousCoworkingResponsible, *payload.ResponsibleEmployeeID, requesterEmployeeID)
 			}
 			if payload.FloorResponsibleEmployeeID != nil {
 				floorID, floorErr := a.getSpaceFloorID(id)
@@ -2985,6 +3151,7 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusInternalServerError, "internal error")
 					return
 				}
+				a.auditResponsibilityChange(r.Context(), "floor", floorID, previousFloorResponsible, *payload.FloorResponsibleEmployeeID, requesterEmployeeID)
 			}
 			respondJSON(w, http.StatusOK, result)
 		case http.MethodDelete:
@@ -5084,7 +5251,34 @@ func (a *app) handleResponsibilities(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+
+	requesterRole, err := resolveRoleFromRequest(r, a.db)
+	if err != nil {
+		respondRoleResolutionError(w, err)
+		return
+	}
+	requesterEmployeeID, err := extractEmployeeIDFromRequest(r, a.db)
+	if err != nil {
+		log.Printf("responsibilities: failed to resolve requester identity: %v", err)
+		respondError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	requesterEmployeeID = strings.TrimSpace(requesterEmployeeID)
+
 	employeeID := strings.TrimSpace(r.URL.Query().Get("employee_id"))
+	if !hasPermission(requesterRole, permissionViewAnyResponsibilities) {
+		if requesterEmployeeID == "" {
+			respondError(w, http.StatusUnauthorized, "User identity is required")
+			return
+		}
+		if employeeID == "" {
+			employeeID = requesterEmployeeID
+		}
+		if employeeID != requesterEmployeeID {
+			respondError(w, http.StatusForbidden, "Недостаточно прав")
+			return
+		}
+	}
 	if employeeID == "" {
 		respondJSON(w, http.StatusOK, map[string]any{
 			"buildings":  []any{},

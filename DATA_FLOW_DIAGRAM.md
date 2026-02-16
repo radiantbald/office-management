@@ -26,7 +26,7 @@ graph LR
 graph LR
     Browser["🖥️ Browser\nSPA"]
     Nginx["🌐 Nginx\nStatic + Proxy"]
-    MW["🛡️ authMiddleware\nVerify Office-Access-Token\n(kid-aware: RS256 primary, HS256 legacy)"]
+    MW["🛡️ authMiddleware\nVerify office_access_token cookie\n(kid-aware: RS256 primary, HS256 legacy)"]
     API["⚙️ Go API\nREST Handlers"]
     DB[("💾 PostgreSQL")]
     FS["📁 File Storage\nuploads/buildings/"]
@@ -98,13 +98,13 @@ graph LR
     OfficeToken -- "resolve role" --> DB
     OfficeToken -- "sign tokens" --> JWTMod
     JWTMod -- "store refresh token (hashed)" --> DB
-    OfficeToken -- "Set-Cookie: access + refresh + csrf" --> JS
+    OfficeToken -- "Set-Cookie: access(HttpOnly,/api) + refresh(HttpOnly,/api/auth) + csrf(JS-readable,/)" --> JS
 
     JS -- "office_refresh_token + X-CSRF-Token + X-Device-ID" --> Refresh
     Refresh -- "Origin/Referer + double-submit check" --> Refresh
     Refresh -- "validate hash" --> DB
     Refresh -- "sign new tokens" --> JWTMod
-    Refresh -- "Set-Cookie: new access + refresh + csrf" --> JS
+    Refresh -- "Set-Cookie: new access(HttpOnly,/api) + refresh(HttpOnly,/api/auth) + csrf(JS-readable,/)" --> JS
 
     JS -- "cookie auto" --> Session
     Session -- "session claims (+ ensure CSRF cookie)" --> JS
@@ -143,12 +143,12 @@ graph LR
         FS["📁 uploads/buildings/"]
     end
 
-    JS -- "Office-Access-Token" --> Buildings
-    JS -- "Office-Access-Token" --> Floors
-    JS -- "Office-Access-Token" --> Spaces
-    JS -- "Office-Access-Token" --> Desks
-    JS -- "Office-Access-Token" --> DeskBulk
-    JS -- "Office-Access-Token" --> MeetRooms
+    JS -- "cookie auto (office_access_token)" --> Buildings
+    JS -- "cookie auto (office_access_token)" --> Floors
+    JS -- "cookie auto (office_access_token)" --> Spaces
+    JS -- "cookie auto (office_access_token)" --> Desks
+    JS -- "cookie auto (office_access_token)" --> DeskBulk
+    JS -- "cookie auto (office_access_token)" --> MeetRooms
 
     Buildings -- "office_buildings" --> DB
     Buildings -- "image upload" --> FS
@@ -190,14 +190,14 @@ graph LR
         DB[("💾 PostgreSQL")]
     end
 
-    JS -- "Office-Access-Token" --> Bookings
-    JS -- "Office-Access-Token" --> BookingSub
-    JS -- "Office-Access-Token" --> MRBook
-    JS -- "Office-Access-Token" --> MRBookSub
+    JS -- "cookie auto (office_access_token)" --> Bookings
+    JS -- "cookie auto (office_access_token)" --> BookingSub
+    JS -- "cookie auto (office_access_token)" --> MRBook
+    JS -- "cookie auto (office_access_token)" --> MRBookSub
 
-    JS -- "Office-Access-Token" --> Users
-    JS -- "Office-Access-Token" --> UserRole
-    JS -- "Office-Access-Token" --> Resp
+    JS -- "cookie auto (office_access_token)" --> Users
+    JS -- "cookie auto (office_access_token)" --> UserRole
+    JS -- "cookie auto (office_access_token)" --> Resp
 
     Bookings -- "workplace_bookings" --> DB
     BookingSub -- "UPDATE cancelled_at" --> DB
@@ -259,13 +259,13 @@ sequenceDiagram
     A->>J: Подписать Office Access + Refresh JWT (RS256 + kid)
     J-->>A: office_access_token + office_refresh_token
     A->>DB: Сохранить refresh token (HMAC-SHA256 hash, family_id, device_id, ip, ua)
-    A-->>F: Set-Cookie: HttpOnly + session claims (JSON)
-    F->>F: Сохранить session claims в памяти (не localStorage!)
+    A-->>F: Set-Cookie: access(HttpOnly, Path=/api/) + refresh(HttpOnly, Path=/api/auth/) + csrf(JS-readable, Path=/, HttpOnly=false), SameSite=AUTH_COOKIE_SAMESITE, Domain=AUTH_COOKIE_DOMAIN(optional) + response body: session claims
+    F->>F: Сохранить session claims только в памяти (не localStorage)
     
     Note over U,J: Шаг 3 — Работа с защищёнными API
     U->>F: Просмотр зданий
-    F->>A: GET /api/buildings (Cookie: office_access_token)
-    Note right of A: authMiddleware: VerifyOfficeAccessToken (kid-aware local verify — без внешних вызовов)
+    F->>A: GET /api/buildings (cookie отправляется автоматически)
+    Note right of A: authMiddleware: cookie-only Office Access Token (HttpOnly) → kid-aware verify
     A->>A: claims injected в context
     A->>DB: SELECT * FROM office_buildings
     DB-->>A: Buildings data
@@ -283,21 +283,21 @@ sequenceDiagram
     A->>J: Подписать новый Access + Refresh JWT (same family_id)
     J-->>A: new tokens
     A->>DB: Сохранить новый refresh token (hashed, family_id, device_id, ip, ua)
-    A-->>F: Set-Cookie: HttpOnly + new session claims
+    A-->>F: Set-Cookie: new access(HttpOnly, Path=/api/) + refresh(HttpOnly, Path=/api/auth/) + csrf(JS-readable, Path=/), SameSite=AUTH_COOKIE_SAMESITE, Domain=AUTH_COOKIE_DOMAIN(optional) + response body: session claims
     F->>F: Обновить session claims в памяти
 
     Note over U,J: Шаг 4a — Восстановление сессии (перезагрузка страницы)
-    F->>A: GET /api/auth/session (Cookie: office_access_token)
+    F->>A: GET /api/auth/session (cookie auto)
     A->>A: Verify JWT из cookie
     A->>A: If CSRF cookie missing → mint office_csrf_token
-    A-->>F: session claims (employee_id, user_name, role, access_exp, refresh_exp)
-    F->>F: Сохранить в памяти
+    A-->>F: response body: session claims (employee_id, user_name, role, access_exp, refresh_exp)
+    F->>F: Сохранить session claims в памяти
 
     Note over U,J: Шаг 4b — Logout
     U->>F: Нажать "Выход"
-    F->>A: POST /api/auth/logout (Cookie + X-CSRF-Token)
+    F->>A: POST /api/auth/logout (cookie auto + X-CSRF-Token)
     A->>A: CSRF middleware: Origin/Referer + double-submit
-    A->>DB: Revoke refresh token
+    A->>DB: Best-effort revoke current refresh token (by token_hash)
     A-->>F: Clear-Cookie: access + refresh + csrf
     F->>F: Очистить in-memory session
 
@@ -369,7 +369,7 @@ sequenceDiagram
     
     Note over A,FS: Создание здания
     A->>F: Заполнить форму здания
-    F->>API: POST /api/buildings (multipart, Office-Access-Token)
+    F->>API: POST /api/buildings (multipart + cookie auto)
     Note right of API: authMiddleware → claims в context
     API->>API: Проверить роль из claims (role=2 Admin)
     API->>FS: Сохранить изображение
@@ -535,11 +535,11 @@ erDiagram
 
 ### 1. Аутентификация
 - **Вход:** User → Frontend → API → auth-hrtech.wb.ru (код) → team.wb.ru (user info)
-- **Выдача office-токенов:** Frontend → API `/api/auth/office-token` → **upstream verification** (team.wb.ru/api/v1/user/info) → resolve role → JWT Handler → **HttpOnly cookies** (access + refresh) + session claims (JSON, convenience-only) → Frontend (in-memory)
+- **Выдача office-токенов:** Frontend → API `/api/auth/office-token` → **upstream verification** (team.wb.ru/api/v1/user/info) → resolve role → JWT Handler → cookies: access (HttpOnly, `Path=/api/`) + refresh (HttpOnly, `Path=/api/auth/`) + csrf (JS-readable, `Path=/`, `HttpOnly=false`); `SameSite` берётся из `AUTH_COOKIE_SAMESITE` (Strict default), `Domain` — host-only или `AUTH_COOKIE_DOMAIN` → Frontend (session claims in-memory)
 - **Восстановление сессии:** Frontend → `GET /api/auth/session` → validate access cookie → session claims → Frontend (in-memory)
-- **Обновление:** Frontend → API `/api/auth/refresh` (cookie + `X-CSRF-Token` + `X-Device-ID`) → **CSRF middleware** (`Origin/Referer` + double-submit) → hash token_id → **atomic consume** (UPDATE…RETURNING, race-safe) → **device_id check** → issue new pair (same family_id) → новые cookies (access + refresh + csrf)
+- **Обновление:** Frontend → API `/api/auth/refresh` (cookie + `X-CSRF-Token` + `X-Device-ID`) → **CSRF middleware** (`Origin/Referer` + double-submit) → hash token_id → **atomic consume** (UPDATE…RETURNING, race-safe) → **device_id check** → issue new pair (same family_id) → новые cookies (access + refresh + csrf, с теми же `Path`/`SameSite`/`Domain` правилами)
 - **Sliding expiration (по активности):** авто-refresh запускается только при недавней активности пользователя; idle-сессия не продлевается бесконечно
-- **Выход:** Frontend → `POST /api/auth/logout` (`X-CSRF-Token`) → **CSRF middleware** → revoke refresh in DB → clear cookies (access + refresh + csrf)
+- **Выход:** Frontend → `POST /api/auth/logout` (`X-CSRF-Token`) → **CSRF middleware** → revoke refresh in DB → clear cookies (access + refresh + csrf, включая legacy-cleanup для CSRF `Path=/api/`)
 - **Replay protection:** повторный revoked refresh → `revokeTokenFamily(family_id)` → 401 для всей цепочки
 - **Device binding:** refresh привязан к `device_id`; несовпадение → revoke family → 401
 - **IP/UA:** audit-only — логируются для forensics, **не блокируют** (VPN, NAT, mobile)
@@ -609,7 +609,7 @@ erDiagram
    - securityHeadersMiddleware (X-Content-Type-Options, X-Frame-Options, CSP, HSTS)
    - corsMiddleware (whitelist origins)
    - csrfProtectionMiddleware (unsafe `/api/*`: Origin/Referer + double-submit)
-   - **authMiddleware** — проверяет Office-Access-Token (kid-aware local verify: RS256 primary, HS256 legacy fallback) для всех `/api/*` кроме public paths; инжектирует claims в request context
+   - **authMiddleware** — проверяет `office_access_token` из HttpOnly cookie (kid-aware local verify: RS256 primary, HS256 legacy fallback) для всех `/api/*` кроме public paths; legacy заголовок `Office-Access-Token` отклоняется (`400`); claims инжектируются в request context
 
 3. **Контроль доступа**
    - Роли: Employee (1), Admin (2)

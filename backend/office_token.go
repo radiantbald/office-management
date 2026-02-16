@@ -20,6 +20,10 @@ import (
 var (
 	officeAccessTokenTTL  = 10 * time.Minute
 	officeRefreshTokenTTL = 30 * 24 * time.Hour
+	officeJWTIssuer       = "office-management"
+	officeJWTAccessAud    = "office-management-api"
+	officeJWTRefreshAud   = "office-management-refresh"
+	officeJWTClockSkew    = 30 * time.Second
 )
 
 // configureOfficeTokenTTLs updates token TTLs at startup.
@@ -33,6 +37,21 @@ func configureOfficeTokenTTLs(accessTTL, refreshTTL time.Duration) {
 	}
 }
 
+func configureOfficeJWTValidation(issuer, accessAudience, refreshAudience string, clockSkew time.Duration) {
+	if trimmed := strings.TrimSpace(issuer); trimmed != "" {
+		officeJWTIssuer = trimmed
+	}
+	if trimmed := strings.TrimSpace(accessAudience); trimmed != "" {
+		officeJWTAccessAud = trimmed
+	}
+	if trimmed := strings.TrimSpace(refreshAudience); trimmed != "" {
+		officeJWTRefreshAud = trimmed
+	}
+	if clockSkew >= 0 {
+		officeJWTClockSkew = clockSkew
+	}
+}
+
 // TokenResponsibilities holds the IDs of buildings, floors, and coworkings
 // that the user is responsible for (can edit).
 type TokenResponsibilities struct {
@@ -43,20 +62,29 @@ type TokenResponsibilities struct {
 
 // OfficeAccessTokenClaims carries minimal identity + role in the signed Office Access Token JWT.
 type OfficeAccessTokenClaims struct {
-	EmployeeID string `json:"employee_id"`
-	UserName   string `json:"user_name,omitempty"`
-	Role       int    `json:"role"`
-	Exp        int64  `json:"exp"`
-	Iat        int64  `json:"iat"`
+	EmployeeID       string                 `json:"employee_id"`
+	UserName         string                 `json:"user_name,omitempty"`
+	Role             int                    `json:"role"`
+	Responsibilities *TokenResponsibilities `json:"responsibilities,omitempty"`
+	Iss              string                 `json:"iss"`
+	Aud              []string               `json:"aud"`
+	Exp              int64                  `json:"exp"`
+	Nbf              int64                  `json:"nbf"`
+	Iat              int64                  `json:"iat"`
+	JTI              string                 `json:"jti"`
 }
 
 // OfficeRefreshTokenClaims carries minimal identity info for refresh tokens.
 type OfficeRefreshTokenClaims struct {
-	EmployeeID string `json:"employee_id"`
-	TokenID    string `json:"token_id"`  // Unique ID for this refresh token (random, high-entropy)
-	FamilyID   string `json:"family_id"` // Token-family ID for replay detection
-	Exp        int64  `json:"exp"`
-	Iat        int64  `json:"iat"`
+	EmployeeID string   `json:"employee_id"`
+	TokenID    string   `json:"token_id"`  // Unique ID for this refresh token (random, high-entropy)
+	FamilyID   string   `json:"family_id"` // Token-family ID for replay detection
+	Iss        string   `json:"iss"`
+	Aud        []string `json:"aud"`
+	Exp        int64    `json:"exp"`
+	Nbf        int64    `json:"nbf"`
+	Iat        int64    `json:"iat"`
+	JTI        string   `json:"jti"`
 }
 
 // jwtHeader is the constant HS256 header.
@@ -68,7 +96,7 @@ func SignOfficeAccessToken(claims OfficeAccessTokenClaims, secret []byte) (strin
 		return "", errors.New("office_access_token: empty signing secret")
 	}
 	now := time.Now().UTC()
-	claims.Iat = now.Unix()
+	claims = prepareOfficeAccessClaims(claims, now)
 	if claims.Exp == 0 {
 		claims.Exp = now.Add(officeAccessTokenTTL).Unix()
 	}
@@ -108,8 +136,8 @@ func VerifyOfficeAccessToken(tokenStr string, secret []byte) (*OfficeAccessToken
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
 		return nil, fmt.Errorf("office_access_token: unmarshal claims: %w", err)
 	}
-	if time.Now().UTC().Unix() > claims.Exp {
-		return nil, errors.New("office_access_token: token expired")
+	if err := validateOfficeAccessClaims(claims); err != nil {
+		return nil, err
 	}
 	return &claims, nil
 }
@@ -120,12 +148,9 @@ func SignOfficeRefreshToken(claims OfficeRefreshTokenClaims, secret []byte) (str
 		return "", errors.New("office_refresh_token: empty signing secret")
 	}
 	now := time.Now().UTC()
-	claims.Iat = now.Unix()
+	claims = prepareOfficeRefreshClaims(claims, now)
 	if claims.Exp == 0 {
 		claims.Exp = now.Add(officeRefreshTokenTTL).Unix()
-	}
-	if claims.TokenID == "" {
-		claims.TokenID = generateTokenID()
 	}
 	if claims.FamilyID == "" {
 		claims.FamilyID = generateTokenID()
@@ -166,10 +191,132 @@ func VerifyOfficeRefreshToken(tokenStr string, secret []byte) (*OfficeRefreshTok
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
 		return nil, fmt.Errorf("office_refresh_token: unmarshal claims: %w", err)
 	}
-	if time.Now().UTC().Unix() > claims.Exp {
-		return nil, errors.New("office_refresh_token: token expired")
+	if claims.TokenID == "" {
+		claims.TokenID = strings.TrimSpace(claims.JTI)
+	}
+	if err := validateOfficeRefreshClaims(claims); err != nil {
+		return nil, err
 	}
 	return &claims, nil
+}
+
+func prepareOfficeAccessClaims(claims OfficeAccessTokenClaims, now time.Time) OfficeAccessTokenClaims {
+	nowUnix := now.Unix()
+	if claims.Iat == 0 {
+		claims.Iat = nowUnix
+	}
+	if claims.Nbf == 0 {
+		claims.Nbf = claims.Iat
+	}
+	if strings.TrimSpace(claims.Iss) == "" {
+		claims.Iss = officeJWTIssuer
+	}
+	if len(claims.Aud) == 0 {
+		claims.Aud = []string{officeJWTAccessAud}
+	}
+	if strings.TrimSpace(claims.JTI) == "" {
+		claims.JTI = generateTokenID()
+	}
+	return claims
+}
+
+func prepareOfficeRefreshClaims(claims OfficeRefreshTokenClaims, now time.Time) OfficeRefreshTokenClaims {
+	nowUnix := now.Unix()
+	if claims.Iat == 0 {
+		claims.Iat = nowUnix
+	}
+	if claims.Nbf == 0 {
+		claims.Nbf = claims.Iat
+	}
+	if strings.TrimSpace(claims.Iss) == "" {
+		claims.Iss = officeJWTIssuer
+	}
+	if len(claims.Aud) == 0 {
+		claims.Aud = []string{officeJWTRefreshAud}
+	}
+	if claims.TokenID == "" {
+		claims.TokenID = generateTokenID()
+	}
+	if strings.TrimSpace(claims.JTI) == "" {
+		claims.JTI = claims.TokenID
+	}
+	if claims.TokenID == "" {
+		claims.TokenID = claims.JTI
+	}
+	return claims
+}
+
+func validateOfficeAccessClaims(claims OfficeAccessTokenClaims) error {
+	return validateStandardOfficeJWTClaims(
+		"office_access_token",
+		claims.Iss,
+		claims.Aud,
+		claims.Exp,
+		claims.Nbf,
+		claims.Iat,
+		claims.JTI,
+		officeJWTAccessAud,
+	)
+}
+
+func validateOfficeRefreshClaims(claims OfficeRefreshTokenClaims) error {
+	return validateStandardOfficeJWTClaims(
+		"office_refresh_token",
+		claims.Iss,
+		claims.Aud,
+		claims.Exp,
+		claims.Nbf,
+		claims.Iat,
+		claims.JTI,
+		officeJWTRefreshAud,
+	)
+}
+
+func validateStandardOfficeJWTClaims(tokenType, iss string, aud []string, exp, nbf, iat int64, jti, requiredAudience string) error {
+	if strings.TrimSpace(iss) == "" {
+		return fmt.Errorf("%s: missing iss", tokenType)
+	}
+	if iss != officeJWTIssuer {
+		return fmt.Errorf("%s: invalid iss", tokenType)
+	}
+	if len(aud) == 0 {
+		return fmt.Errorf("%s: missing aud", tokenType)
+	}
+	if !audContains(aud, requiredAudience) {
+		return fmt.Errorf("%s: invalid aud", tokenType)
+	}
+	if exp <= 0 {
+		return fmt.Errorf("%s: missing exp", tokenType)
+	}
+	if nbf <= 0 {
+		return fmt.Errorf("%s: missing nbf", tokenType)
+	}
+	if iat <= 0 {
+		return fmt.Errorf("%s: missing iat", tokenType)
+	}
+	if strings.TrimSpace(jti) == "" {
+		return fmt.Errorf("%s: missing jti", tokenType)
+	}
+
+	now := time.Now().UTC().Unix()
+	skewSeconds := int64(officeJWTClockSkew / time.Second)
+	if now > exp+skewSeconds {
+		return fmt.Errorf("%s: token expired", tokenType)
+	}
+	if now+skewSeconds < nbf {
+		return fmt.Errorf("%s: token is not active yet", tokenType)
+	}
+	return nil
+}
+
+func audContains(aud []string, required string) bool {
+	required = strings.TrimSpace(required)
+	for _, candidate := range aud {
+		if strings.TrimSpace(candidate) == required {
+			return true
+		}
+	}
+	return false
 }
 
 // generateTokenID creates a unique token ID for refresh tokens.

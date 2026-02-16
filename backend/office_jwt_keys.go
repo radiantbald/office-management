@@ -399,7 +399,7 @@ func (m *officeTokenKeyManager) selectVerifier(header jwtHeaderData) *officeJWTV
 
 func SignOfficeAccessTokenWithKeyManager(claims OfficeAccessTokenClaims, keys *officeTokenKeyManager) (string, error) {
 	now := time.Now().UTC()
-	claims.Iat = now.Unix()
+	claims = prepareOfficeAccessClaims(claims, now)
 	if claims.Exp == 0 {
 		claims.Exp = now.Add(officeAccessTokenTTL).Unix()
 	}
@@ -411,20 +411,17 @@ func VerifyOfficeAccessTokenWithKeyManager(tokenStr string, keys *officeTokenKey
 	if err := keys.verifyJWT(tokenStr, "office_access_token", &claims); err != nil {
 		return nil, err
 	}
-	if time.Now().UTC().Unix() > claims.Exp {
-		return nil, errors.New("office_access_token: token expired")
+	if err := validateOfficeAccessClaims(claims); err != nil {
+		return nil, err
 	}
 	return &claims, nil
 }
 
 func SignOfficeRefreshTokenWithKeyManager(claims OfficeRefreshTokenClaims, keys *officeTokenKeyManager) (string, error) {
 	now := time.Now().UTC()
-	claims.Iat = now.Unix()
+	claims = prepareOfficeRefreshClaims(claims, now)
 	if claims.Exp == 0 {
 		claims.Exp = now.Add(officeRefreshTokenTTL).Unix()
-	}
-	if claims.TokenID == "" {
-		claims.TokenID = generateTokenID()
 	}
 	if claims.FamilyID == "" {
 		claims.FamilyID = generateTokenID()
@@ -437,8 +434,11 @@ func VerifyOfficeRefreshTokenWithKeyManager(tokenStr string, keys *officeTokenKe
 	if err := keys.verifyJWT(tokenStr, "office_refresh_token", &claims); err != nil {
 		return nil, err
 	}
-	if time.Now().UTC().Unix() > claims.Exp {
-		return nil, errors.New("office_refresh_token: token expired")
+	if claims.TokenID == "" {
+		claims.TokenID = strings.TrimSpace(claims.JTI)
+	}
+	if err := validateOfficeRefreshClaims(claims); err != nil {
+		return nil, err
 	}
 	return &claims, nil
 }

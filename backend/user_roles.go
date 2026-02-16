@@ -18,18 +18,22 @@ func (a *app) handleUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	requesterID, _ := extractBookingUser(r)
+	requesterID, err := extractEmployeeIDFromRequest(r, a.db)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to resolve requester identity")
+		return
+	}
 	if strings.TrimSpace(requesterID) == "" {
-		respondError(w, http.StatusForbidden, "User identity is required")
+		respondError(w, http.StatusUnauthorized, "User identity is required")
 		return
 	}
 
 	requesterRole, err := getUserRoleByWbUserID(r.Context(), a.db, requesterID)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to resolve requester role")
+		respondRoleResolutionError(w, err)
 		return
 	}
-	if requesterRole != roleAdmin {
+	if !hasPermission(requesterRole, permissionManageRoleAssignments) {
 		respondError(w, http.StatusForbidden, "Admin role is required")
 		return
 	}
