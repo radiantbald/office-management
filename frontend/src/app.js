@@ -1024,15 +1024,24 @@ const fetchAuthUserInfo = async (accessToken) => {
  */
 const isOfficeAccessTokenValid = () => {
   try {
-    const token = getOfficeAccessToken();
-    if (!token) return false;
-    const parts = token.split(".");
-    if (parts.length !== 3) return false;
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    const payload = getOfficeAccessTokenPayload();
+    if (!payload) return false;
     // Refresh 60 s before actual expiry to avoid using a stale token.
     return typeof payload.exp === "number" && payload.exp > Date.now() / 1000 + 60;
   } catch {
     return false;
+  }
+};
+
+const getOfficeAccessTokenPayload = () => {
+  try {
+    const token = getOfficeAccessToken();
+    if (!token) return null;
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    return JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    return null;
   }
 };
 
@@ -1041,22 +1050,25 @@ const isOfficeAccessTokenValid = () => {
  * Returns { buildings: [], floors: [], coworkings: [] } or null if no token/responsibilities.
  */
 const getResponsibilitiesFromToken = () => {
-  try {
-    const token = getOfficeAccessToken();
-    if (!token) return null;
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-    const resp = payload.responsibilities;
-    if (!resp) return null;
-    return {
-      buildings: Array.isArray(resp.buildings) ? resp.buildings : [],
-      floors: Array.isArray(resp.floors) ? resp.floors : [],
-      coworkings: Array.isArray(resp.coworkings) ? resp.coworkings : [],
-    };
-  } catch {
+  const payload = getOfficeAccessTokenPayload();
+  if (!payload) {
     return null;
   }
+  const resp = payload.responsibilities;
+  if (!resp) {
+    return null;
+  }
+  return {
+    buildings: Array.isArray(resp.buildings) ? resp.buildings : [],
+    floors: Array.isArray(resp.floors) ? resp.floors : [],
+    coworkings: Array.isArray(resp.coworkings) ? resp.coworkings : [],
+  };
+};
+
+const getEmployeeIDFromOfficeAccessToken = () => {
+  const payload = getOfficeAccessTokenPayload();
+  const employeeID = String(payload?.employee_id ?? "").trim();
+  return employeeID || null;
 };
 
 /**
@@ -1280,6 +1292,7 @@ const initializeAuth = async () => {
       setAuthStatus("");
     }
     refreshDeskBookingOwnership();
+    await fetchResponsibilitiesForUser({ force: true });
     await runAppInit();
     return;
   }
@@ -1302,6 +1315,7 @@ const initializeAuth = async () => {
     if (authGate) {
       hideAuthGate();
     }
+    await fetchResponsibilitiesForUser({ force: true });
     await runAppInit();
     return;
   }
@@ -1496,6 +1510,7 @@ const getBookingUserInfo = () => {
 
 const RESPONSIBILITIES_EMPTY_MESSAGE = "Зон ответственности пока нет.";
 const RESPONSIBILITIES_LOADING_MESSAGE = "Загрузка...";
+const RESPONSIBILITIES_PATH_SEPARATOR = " • ";
 
 const getEmptyResponsibilities = () => ({ buildings: [], floors: [], coworkings: [] });
 
@@ -1542,7 +1557,11 @@ const resetResponsibilitiesState = () => {
 
 const getBuildingLabel = (building) => {
   const name = typeof building?.name === "string" ? building.name.trim() : "";
-  return name || "Здание";
+  if (name) {
+    return name;
+  }
+  const id = String(building?.id ?? "").trim();
+  return id ? `Здание #${id}` : "Здание";
 };
 
 const getFloorLabel = (floor) => {
@@ -1555,13 +1574,154 @@ const getFloorLabel = (floor) => {
     return name;
   }
   const level = Number(floor?.floorLevel ?? floor?.level);
-  return Number.isFinite(level) ? `Этаж ${level}` : "Этаж";
+  if (Number.isFinite(level)) {
+    return `Этаж ${level}`;
+  }
+  const id = String(floor?.id ?? "").trim();
+  return id ? `Этаж #${id}` : "Этаж";
 };
 
 const getCoworkingLabel = (space) => {
   const name = typeof space?.name === "string" ? space.name.trim() : "";
-  return name || "Коворкинг";
+  if (name) {
+    return name;
+  }
+  const id = String(space?.id ?? "").trim();
+  return id ? `Коворкинг #${id}` : "Коворкинг";
 };
+
+const joinResponsibilityPath = (parts) =>
+  parts
+    .map((part) => (typeof part === "string" ? part.trim() : ""))
+    .filter(Boolean)
+    .join(RESPONSIBILITIES_PATH_SEPARATOR);
+
+const normalizeResponsibilitiesFromToken = (tokenResp) => {
+  const toArray = (value) => (Array.isArray(value) ? value : []);
+  const toOptionalNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : undefined;
+  };
+  const toOptionalString = (value) => {
+    const text = String(value ?? "").trim();
+    return text || undefined;
+  };
+  const normalizeID = (value) => {
+    const text = String(value ?? "").trim();
+    return text || null;
+  };
+  const normalizeBuilding = (item) => {
+    if (item && typeof item === "object") {
+      const id = normalizeID(item.id ?? item.building_id ?? item.buildingId);
+      if (!id) {
+        return null;
+      }
+      return {
+        id,
+        name: toOptionalString(item.name),
+        address: toOptionalString(item.address),
+      };
+    }
+    const id = normalizeID(item);
+    return id ? { id } : null;
+  };
+  const normalizeFloor = (item) => {
+    if (item && typeof item === "object") {
+      const id = normalizeID(item.id ?? item.floor_id ?? item.floorId);
+      if (!id) {
+        return null;
+      }
+      return {
+        id,
+        name: toOptionalString(item.name),
+        level: toOptionalNumber(item.level),
+        floorName: toOptionalString(item.floor_name ?? item.floorName),
+        floorLevel: toOptionalNumber(item.floor_level ?? item.floorLevel),
+        buildingId: normalizeID(item.building_id ?? item.buildingId),
+        buildingName: toOptionalString(item.building_name ?? item.buildingName),
+        buildingAddress: toOptionalString(item.building_address ?? item.buildingAddress),
+      };
+    }
+    const id = normalizeID(item);
+    return id ? { id } : null;
+  };
+  const normalizeCoworking = (item) => {
+    if (item && typeof item === "object") {
+      const id = normalizeID(item.id ?? item.space_id ?? item.spaceId);
+      if (!id) {
+        return null;
+      }
+      return {
+        id,
+        name: toOptionalString(item.name),
+        floorId: normalizeID(item.floor_id ?? item.floorId),
+        floorName: toOptionalString(item.floor_name ?? item.floorName),
+        floorLevel: toOptionalNumber(item.floor_level ?? item.floorLevel),
+        buildingId: normalizeID(item.building_id ?? item.buildingId),
+        buildingName: toOptionalString(item.building_name ?? item.buildingName),
+        buildingAddress: toOptionalString(item.building_address ?? item.buildingAddress),
+        subdivisionLevel1: toOptionalString(item.subdivision_level_1 ?? item.subdivisionLevel1),
+        subdivisionLevel2: toOptionalString(item.subdivision_level_2 ?? item.subdivisionLevel2),
+      };
+    }
+    const id = normalizeID(item);
+    return id ? { id } : null;
+  };
+  return {
+    buildings: toArray(tokenResp?.buildings).map(normalizeBuilding).filter(Boolean),
+    floors: toArray(tokenResp?.floors).map(normalizeFloor).filter(Boolean),
+    coworkings: toArray(tokenResp?.coworkings).map(normalizeCoworking).filter(Boolean),
+  };
+};
+
+const getResponsibilityItemID = (item) => String(item?.id ?? "").trim();
+
+const getResponsibilityItemRichness = (item) => {
+  if (!item || typeof item !== "object") {
+    return 0;
+  }
+  return Object.values(item).reduce((score, value) => {
+    if (typeof value === "string") {
+      return value.trim() ? score + 1 : score;
+    }
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? score + 1 : score;
+    }
+    return value ? score + 1 : score;
+  }, 0);
+};
+
+const mergeResponsibilityItems = (apiItems, tokenItems) => {
+  const merged = new Map();
+  const append = (items) => {
+    if (!Array.isArray(items)) {
+      return;
+    }
+    items.forEach((item) => {
+      const id = getResponsibilityItemID(item);
+      if (!id) {
+        return;
+      }
+      const existing = merged.get(id);
+      if (!existing) {
+        merged.set(id, item);
+        return;
+      }
+      if (getResponsibilityItemRichness(item) > getResponsibilityItemRichness(existing)) {
+        merged.set(id, item);
+      }
+    });
+  };
+  append(tokenItems);
+  append(apiItems);
+  return Array.from(merged.values());
+};
+
+const mergeResponsibilitiesData = (apiData, tokenData) => ({
+  buildings: mergeResponsibilityItems(apiData?.buildings, tokenData?.buildings),
+  floors: mergeResponsibilityItems(apiData?.floors, tokenData?.floors),
+  coworkings: mergeResponsibilityItems(apiData?.coworkings, tokenData?.coworkings),
+});
 
 /**
  * Expand responsibility IDs to full objects by fetching data from API.
@@ -1574,6 +1734,31 @@ const expandResponsibilitiesFromIDs = async (tokenResp) => {
     floors: [],
     coworkings: [],
   };
+  const toIDSet = (values) => {
+    const set = new Set();
+    if (!Array.isArray(values)) {
+      return set;
+    }
+    values.forEach((value) => {
+      const normalized = String(value ?? "").trim();
+      if (normalized) {
+        set.add(normalized);
+      }
+    });
+    return set;
+  };
+  const toItemsArray = (payload) => {
+    if (Array.isArray(payload)) {
+      return payload;
+    }
+    if (Array.isArray(payload?.items)) {
+      return payload.items;
+    }
+    return [];
+  };
+  const buildingIDSet = toIDSet(tokenResp?.buildings);
+  const floorIDSet = toIDSet(tokenResp?.floors);
+  const coworkingIDSet = toIDSet(tokenResp?.coworkings);
 
   // Fetch all entities if we have any IDs
   const needsBuildings = tokenResp.buildings.length > 0;
@@ -1585,58 +1770,69 @@ const expandResponsibilitiesFromIDs = async (tokenResp) => {
   }
 
   try {
-    // Fetch buildings if needed (for buildings, floors, or coworkings)
+    // Bypass client-side "employee write restrictions": this is read-only data for profile UI.
     let allBuildings = null;
     if (needsBuildings || needsFloors || needsCoworkings) {
-      allBuildings = await apiRequest("/api/buildings");
-      if (Array.isArray(allBuildings) && needsBuildings) {
-        result.buildings = allBuildings.filter((b) => tokenResp.buildings.includes(b.id));
+      const buildingsResponse = await makeApiRequest("/api/buildings");
+      allBuildings = toItemsArray(buildingsResponse);
+      if (needsBuildings) {
+        result.buildings = allBuildings.filter((b) => buildingIDSet.has(String(b?.id ?? "").trim()));
       }
     }
 
-    // Fetch all floors (we need building context for floors)
+    // Fetch floors via dedicated endpoint: /api/buildings returns only floor IDs.
     if (needsFloors || needsCoworkings) {
       if (Array.isArray(allBuildings)) {
         for (const building of allBuildings) {
-          if (Array.isArray(building.floors)) {
-            for (const floor of building.floors) {
-              // Add floor data if user is responsible
-              if (needsFloors && tokenResp.floors.includes(floor.id)) {
-                result.floors.push({
-                  id: floor.id,
-                  name: floor.name,
-                  level: floor.level,
-                  buildingId: building.id,
-                  buildingName: building.name,
-                  buildingAddress: building.address,
-                });
-              }
+          let floors = [];
+          try {
+            const floorsResponse = await makeApiRequest(`/api/buildings/${building.id}/floors`);
+            floors = toItemsArray(floorsResponse);
+          } catch (err) {
+            // Skip this building if we can't fetch floors
+            continue;
+          }
+          for (const floor of floors) {
+            // Add floor data if user is responsible
+            if (needsFloors && floorIDSet.has(String(floor?.id ?? "").trim())) {
+              result.floors.push({
+                id: floor.id,
+                name: floor.name,
+                level: floor.level,
+                buildingId: building.id,
+                buildingName: building.name,
+                buildingAddress: building.address,
+              });
+            }
 
-              // Fetch coworkings for this floor if needed
-              if (needsCoworkings) {
-                try {
-                  const spaces = await apiRequest(`/api/floors/${floor.id}/spaces`);
-                  if (Array.isArray(spaces)) {
-                    for (const space of spaces) {
-                      if (space.kind === "coworking" && tokenResp.coworkings.includes(space.id)) {
-                        result.coworkings.push({
-                          id: space.id,
-                          name: space.name,
-                          floorId: floor.id,
-                          floorName: floor.name,
-                          floorLevel: floor.level,
-                          buildingId: building.id,
-                          buildingName: building.name,
-                          buildingAddress: building.address,
-                          subdivisionLevel1: space.subdivision_level_1 || "",
-                          subdivisionLevel2: space.subdivision_level_2 || "",
-                        });
-                      }
+            // Fetch coworkings for this floor if needed
+            if (needsCoworkings) {
+              try {
+                const spacesResponse = await makeApiRequest(`/api/floors/${floor.id}/spaces`);
+                const spaces = toItemsArray(spacesResponse);
+                if (Array.isArray(spaces)) {
+                  for (const space of spaces) {
+                    if (
+                      space.kind === "coworking" &&
+                      coworkingIDSet.has(String(space?.id ?? "").trim())
+                    ) {
+                      result.coworkings.push({
+                        id: space.id,
+                        name: space.name,
+                        floorId: floor.id,
+                        floorName: floor.name,
+                        floorLevel: floor.level,
+                        buildingId: building.id,
+                        buildingName: building.name,
+                        buildingAddress: building.address,
+                        subdivisionLevel1: space.subdivision_level_1 || "",
+                        subdivisionLevel2: space.subdivision_level_2 || "",
+                      });
                     }
                   }
-                } catch (err) {
-                  // Skip this floor if we can't fetch spaces
                 }
+              } catch (err) {
+                // Skip this floor if we can't fetch spaces
               }
             }
           }
@@ -1670,22 +1866,45 @@ const fetchResponsibilitiesForUser = async ({ force = false } = {}) => {
     return empty;
   }
 
-  // NEW: Try to get responsibilities from token first (no API call needed!)
+  // Read responsibilities directly from Office Access Token.
   const tokenResp = getResponsibilitiesFromToken();
-  if (tokenResp) {
-    const data = await expandResponsibilitiesFromIDs(tokenResp);
-    responsibilitiesState = {
-      status: "loaded",
-      data,
-      error: null,
-      loadedAt: Date.now(),
-    };
-    setResponsibilitiesMenuVisibility(hasResponsibilities(data));
-    return data;
+  const tokenData = tokenResp ? normalizeResponsibilitiesFromToken(tokenResp) : getEmptyResponsibilities();
+  const employeeIDFromToken = getEmployeeIDFromOfficeAccessToken();
+  const employeeID = employeeIDFromToken || getBookingUserEmployeeID(getUserInfo());
+
+  // Build a complete list from API (source of truth) and token (fallback/extra IDs).
+  // This keeps labels consistent with page header naming and avoids stale/partial token payloads.
+  if (employeeID) {
+    try {
+      const raw = await apiRequest(`/api/responsibilities?employee_id=${encodeURIComponent(employeeID)}`);
+      const apiData = normalizeResponsibilitiesFromToken(raw || {});
+      const merged = mergeResponsibilitiesData(apiData, tokenData);
+      responsibilitiesState = {
+        status: "loaded",
+        data: merged,
+        error: null,
+        loadedAt: Date.now(),
+      };
+      setResponsibilitiesMenuVisibility(hasResponsibilities(merged));
+      return merged;
+    } catch (error) {
+      // Continue with token data below.
+    }
   }
 
-  // Fallback: token doesn't have responsibilities (shouldn't happen with new tokens)
-  // Use empty response
+  if (tokenResp) {
+    if (hasResponsibilities(tokenData)) {
+      responsibilitiesState = {
+        status: "loaded",
+        data: tokenData,
+        error: null,
+        loadedAt: Date.now(),
+      };
+      setResponsibilitiesMenuVisibility(true);
+      return tokenData;
+    }
+  }
+
   const empty = getEmptyResponsibilities();
   responsibilitiesState = {
     status: "loaded",
@@ -1695,6 +1914,14 @@ const fetchResponsibilitiesForUser = async ({ force = false } = {}) => {
   };
   setResponsibilitiesMenuVisibility(false);
   return empty;
+};
+
+const bootstrapResponsibilitiesVisibility = async () => {
+  try {
+    await fetchResponsibilitiesForUser({ force: true });
+  } catch {
+    setResponsibilitiesMenuVisibility(false);
+  }
 };
 
 const renderResponsibilitiesList = (data) => {
@@ -1730,12 +1957,19 @@ const renderResponsibilitiesList = (data) => {
 
   appendSection("Здания", data.buildings, (building) => {
     const title = getBuildingLabel(building);
+    const buildingAddress = typeof building?.address === "string" ? building.address.trim() : "";
     const item = document.createElement("div");
     item.className = "responsibilities-item responsibilities-item--clickable";
     const label = document.createElement("div");
     label.className = "responsibilities-item-title";
     label.textContent = title;
     item.appendChild(label);
+    if (buildingAddress) {
+      const meta = document.createElement("div");
+      meta.className = "responsibilities-item-meta";
+      meta.textContent = buildingAddress;
+      item.appendChild(meta);
+    }
     item.addEventListener("click", () => {
       closeResponsibilitiesModal();
       window.location.assign(`/buildings/${encodeURIComponent(building.id)}`);
@@ -1747,14 +1981,19 @@ const renderResponsibilitiesList = (data) => {
     const buildingName = typeof floor?.buildingName === "string" ? floor.buildingName.trim() : "";
     const level = Number(floor?.level);
     const floorLabel = Number.isFinite(level) ? `Этаж ${level}` : getFloorLabel(floor);
-    const pathParts = [buildingName, floorLabel].filter(Boolean);
     const item = document.createElement("div");
     item.className = "responsibilities-item responsibilities-item--clickable";
     const label = document.createElement("div");
     label.className = "responsibilities-item-title";
-    label.textContent = pathParts.join(" · ");
+    label.textContent = floorLabel;
     item.appendChild(label);
-    if (floor.buildingId && Number.isFinite(floor.level)) {
+    if (buildingName) {
+      const meta = document.createElement("div");
+      meta.className = "responsibilities-item-meta";
+      meta.textContent = buildingName;
+      item.appendChild(meta);
+    }
+    if (floor.buildingId && Number.isFinite(level)) {
       item.addEventListener("click", () => {
         closeResponsibilitiesModal();
         window.location.assign(
@@ -1772,14 +2011,20 @@ const renderResponsibilitiesList = (data) => {
     const sub1 = typeof space?.subdivisionLevel1 === "string" ? space.subdivisionLevel1.trim() : "";
     const sub2 = typeof space?.subdivisionLevel2 === "string" ? space.subdivisionLevel2.trim() : "";
     const coworkingName = getCoworkingLabel(space);
-    const pathParts = [buildingName, floorLabel, sub1, sub2, coworkingName].filter(Boolean);
+    const path = joinResponsibilityPath([buildingName, floorLabel, sub1, sub2]);
     const item = document.createElement("div");
     item.className = "responsibilities-item responsibilities-item--clickable";
     const label = document.createElement("div");
     label.className = "responsibilities-item-title";
-    label.textContent = pathParts.join(" · ");
+    label.textContent = coworkingName;
     item.appendChild(label);
-    if (space.buildingId && Number.isFinite(space.floorLevel) && space.id) {
+    if (path) {
+      const meta = document.createElement("div");
+      meta.className = "responsibilities-item-meta";
+      meta.textContent = path;
+      item.appendChild(meta);
+    }
+    if (space.buildingId && Number.isFinite(floorLevel) && space.id) {
       item.addEventListener("click", () => {
         closeResponsibilitiesModal();
         window.location.assign(
@@ -12340,6 +12585,7 @@ const handleAuthSuccess = async (token, user) => {
 
   // Obtain the server-signed Office_Token before making any API requests.
   await fetchOfficeToken(token);
+  await bootstrapResponsibilitiesVisibility();
 
   await runAppInit();
 };
