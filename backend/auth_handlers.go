@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +20,7 @@ var profileIDPattern = regexp.MustCompile(`^\d+$`)
 const (
 	accessTokenCookieName  = "office_access_token"
 	refreshTokenCookieName = "office_refresh_token"
+	csrfTokenCookieName    = "office_csrf_token"
 )
 
 // sessionResponse is the JSON payload returned to the frontend with
@@ -38,7 +41,7 @@ func isSecureContext(r *http.Request) bool {
 }
 
 // setTokenCookies writes both access and refresh tokens as HttpOnly cookies.
-func setTokenCookies(w http.ResponseWriter, r *http.Request, accessToken, refreshToken string, accessExp, refreshExp int64) {
+func (a *app) setTokenCookies(w http.ResponseWriter, r *http.Request, accessToken, refreshToken string, accessExp, refreshExp int64) {
 	secure := isSecureContext(r)
 	now := time.Now().UTC().Unix()
 
@@ -48,7 +51,7 @@ func setTokenCookies(w http.ResponseWriter, r *http.Request, accessToken, refres
 		Path:     "/api/",
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: a.authCookieSameSite,
 		MaxAge:   int(accessExp - now),
 	})
 	http.SetCookie(w, &http.Cookie{
@@ -57,13 +60,45 @@ func setTokenCookies(w http.ResponseWriter, r *http.Request, accessToken, refres
 		Path:     "/api/auth/",
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: a.authCookieSameSite,
 		MaxAge:   int(refreshExp - now),
+	})
+
+	// CSRF token cookie (readable by JS): used for double-submit protection.
+	a.setCSRFCookie(w, r, int(refreshExp-now))
+}
+
+func newCSRFToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func (a *app) setCSRFCookie(w http.ResponseWriter, r *http.Request, maxAge int) {
+	secure := isSecureContext(r)
+	token, err := newCSRFToken()
+	if err != nil {
+		log.Printf("setCSRFCookie: failed to generate token: %v", err)
+		return
+	}
+	if maxAge <= 0 {
+		maxAge = 3600
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfTokenCookieName,
+		Value:    token,
+		Path:     "/api/",
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: a.authCookieSameSite,
+		MaxAge:   maxAge,
 	})
 }
 
 // clearTokenCookies expires both token cookies.
-func clearTokenCookies(w http.ResponseWriter, r *http.Request) {
+func (a *app) clearTokenCookies(w http.ResponseWriter, r *http.Request) {
 	secure := isSecureContext(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     accessTokenCookieName,
@@ -71,7 +106,7 @@ func clearTokenCookies(w http.ResponseWriter, r *http.Request) {
 		Path:     "/api/",
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: a.authCookieSameSite,
 		MaxAge:   -1,
 	})
 	http.SetCookie(w, &http.Cookie{
@@ -80,7 +115,16 @@ func clearTokenCookies(w http.ResponseWriter, r *http.Request) {
 		Path:     "/api/auth/",
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: a.authCookieSameSite,
+		MaxAge:   -1,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfTokenCookieName,
+		Value:    "",
+		Path:     "/api/",
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: a.authCookieSameSite,
 		MaxAge:   -1,
 	})
 }
@@ -613,7 +657,7 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if len(a.officeJWTSecret) == 0 {
+	if a.officeTokenKeys == nil || !a.officeTokenKeys.CanSign() {
 		respondError(w, http.StatusServiceUnavailable, "Office token signing is not configured")
 		return
 	}
@@ -674,13 +718,13 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 		UserName:   strings.TrimSpace(verifiedUser.UserName),
 		Role:       roleID,
 	}
-	accessToken, err := SignOfficeAccessToken(accessClaims, a.officeJWTSecret)
+	accessToken, err := SignOfficeAccessTokenWithKeyManager(accessClaims, a.officeTokenKeys)
 	if err != nil {
 		log.Printf("handleAuthOfficeToken: failed to sign access token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to issue office access token")
 		return
 	}
-	parsedAccessClaims, err := VerifyOfficeAccessToken(accessToken, a.officeJWTSecret)
+	parsedAccessClaims, err := VerifyOfficeAccessTokenWithKeyManager(accessToken, a.officeTokenKeys)
 	if err != nil {
 		log.Printf("handleAuthOfficeToken: failed to parse access token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to process access token")
@@ -692,7 +736,7 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 		EmployeeID: employeeID,
 		// FamilyID is auto-generated inside SignOfficeRefreshToken
 	}
-	refreshToken, err := SignOfficeRefreshToken(refreshClaims, a.officeJWTSecret)
+	refreshToken, err := SignOfficeRefreshTokenWithKeyManager(refreshClaims, a.officeTokenKeys)
 	if err != nil {
 		log.Printf("handleAuthOfficeToken: failed to sign refresh token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to issue office refresh token")
@@ -700,15 +744,15 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse the refresh token to get token_id, family_id and expiration.
-	parsedRefreshClaims, err := VerifyOfficeRefreshToken(refreshToken, a.officeJWTSecret)
+	parsedRefreshClaims, err := VerifyOfficeRefreshTokenWithKeyManager(refreshToken, a.officeTokenKeys)
 	if err != nil {
 		log.Printf("handleAuthOfficeToken: failed to parse refresh token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to process refresh token")
 		return
 	}
 
-	// Hash the token_id with the JWT secret as pepper — never store it in plain text.
-	tokenHash := hashTokenID(parsedRefreshClaims.TokenID, a.officeJWTSecret)
+	// Hash token_id with application pepper — never store raw token_id in DB.
+	tokenHash := hashTokenID(parsedRefreshClaims.TokenID, a.refreshTokenPepper)
 
 	// Extract device_id — used to bind the refresh token to a specific device.
 	deviceID := extractDeviceID(r)
@@ -730,7 +774,7 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set tokens as HttpOnly cookies (XSS-safe: JS cannot read them).
-	setTokenCookies(w, r, accessToken, refreshToken,
+	a.setTokenCookies(w, r, accessToken, refreshToken,
 		parsedAccessClaims.Exp, parsedRefreshClaims.Exp)
 
 	respondJSON(w, http.StatusOK, map[string]any{
@@ -762,8 +806,8 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if len(a.officeJWTSecret) == 0 {
-		respondError(w, http.StatusServiceUnavailable, "Office token signing is not configured")
+	if a.officeTokenKeys == nil || !a.officeTokenKeys.CanSign() || !a.officeTokenKeys.CanVerify() {
+		respondError(w, http.StatusServiceUnavailable, "Office token keys are not configured")
 		return
 	}
 
@@ -787,7 +831,7 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Step 1: verify JWT signature and expiration ──
-	refreshClaims, err := VerifyOfficeRefreshToken(refreshToken, a.officeJWTSecret)
+	refreshClaims, err := VerifyOfficeRefreshTokenWithKeyManager(refreshToken, a.officeTokenKeys)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: invalid refresh token: %v", err)
 		respondError(w, http.StatusUnauthorized, "Invalid or expired refresh token")
@@ -798,7 +842,7 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 	// This single SQL statement both validates the token and marks it as
 	// consumed in one atomic operation, eliminating the TOCTOU race condition
 	// when parallel requests hit /refresh simultaneously.
-	tokenHash := hashTokenID(refreshClaims.TokenID, a.officeJWTSecret)
+	tokenHash := hashTokenID(refreshClaims.TokenID, a.refreshTokenPepper)
 	status, rec, err := a.consumeRefreshToken(r.Context(), tokenHash, refreshClaims.EmployeeID)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to consume refresh token: %v", err)
@@ -874,13 +918,13 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		UserName:   userName,
 		Role:       roleID,
 	}
-	accessToken, err := SignOfficeAccessToken(accessClaims, a.officeJWTSecret)
+	accessToken, err := SignOfficeAccessTokenWithKeyManager(accessClaims, a.officeTokenKeys)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to sign access token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to issue access token")
 		return
 	}
-	parsedAccessClaims, err := VerifyOfficeAccessToken(accessToken, a.officeJWTSecret)
+	parsedAccessClaims, err := VerifyOfficeAccessTokenWithKeyManager(accessToken, a.officeTokenKeys)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to parse access token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to process access token")
@@ -892,7 +936,7 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 		EmployeeID: refreshClaims.EmployeeID,
 		FamilyID:   familyID, // inherit the family chain
 	}
-	newRefreshToken, err := SignOfficeRefreshToken(newRefreshClaims, a.officeJWTSecret)
+	newRefreshToken, err := SignOfficeRefreshTokenWithKeyManager(newRefreshClaims, a.officeTokenKeys)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to sign new refresh token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to issue new refresh token")
@@ -900,13 +944,13 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4e. Store new refresh token (hashed) in DB — inherits the same device_id.
-	parsedNewRefresh, err := VerifyOfficeRefreshToken(newRefreshToken, a.officeJWTSecret)
+	parsedNewRefresh, err := VerifyOfficeRefreshTokenWithKeyManager(newRefreshToken, a.officeTokenKeys)
 	if err != nil {
 		log.Printf("handleAuthRefreshToken: failed to parse new refresh token: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to process new refresh token")
 		return
 	}
-	newTokenHash := hashTokenID(parsedNewRefresh.TokenID, a.officeJWTSecret)
+	newTokenHash := hashTokenID(parsedNewRefresh.TokenID, a.refreshTokenPepper)
 	if err := a.storeRefreshToken(
 		r.Context(),
 		newTokenHash,
@@ -923,7 +967,7 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set new tokens as HttpOnly cookies.
-	setTokenCookies(w, r, accessToken, newRefreshToken,
+	a.setTokenCookies(w, r, accessToken, newRefreshToken,
 		parsedAccessClaims.Exp, parsedNewRefresh.Exp)
 
 	respondJSON(w, http.StatusOK, map[string]any{
@@ -978,7 +1022,7 @@ func (a *app) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if len(a.officeJWTSecret) == 0 {
+	if a.officeTokenKeys == nil || !a.officeTokenKeys.CanVerify() {
 		respondError(w, http.StatusServiceUnavailable, "Office token verification is not configured")
 		return
 	}
@@ -989,7 +1033,7 @@ func (a *app) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	atClaims, err := VerifyOfficeAccessToken(c.Value, a.officeJWTSecret)
+	atClaims, err := VerifyOfficeAccessTokenWithKeyManager(c.Value, a.officeTokenKeys)
 	if err != nil {
 		respondError(w, http.StatusUnauthorized, "Session expired")
 		return
@@ -998,9 +1042,20 @@ func (a *app) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 	// Try to read refresh token exp for proactive rotation info.
 	var refreshExp int64
 	if rc, err := r.Cookie(refreshTokenCookieName); err == nil && rc.Value != "" {
-		if rtClaims, err := VerifyOfficeRefreshToken(rc.Value, a.officeJWTSecret); err == nil {
+		if rtClaims, err := VerifyOfficeRefreshTokenWithKeyManager(rc.Value, a.officeTokenKeys); err == nil {
 			refreshExp = rtClaims.Exp
 		}
+	}
+
+	// Migration path: if a legacy session exists without CSRF cookie,
+	// mint one so the next unsafe request can pass double-submit validation.
+	if _, err := r.Cookie(csrfTokenCookieName); err != nil {
+		now := time.Now().UTC().Unix()
+		maxAge := int(atClaims.Exp - now)
+		if refreshExp > now {
+			maxAge = int(refreshExp - now)
+		}
+		a.setCSRFCookie(w, r, maxAge)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]any{
@@ -1025,10 +1080,10 @@ func (a *app) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Best-effort revoke the refresh token in DB.
-	if len(a.officeJWTSecret) > 0 {
+	if a.officeTokenKeys != nil && a.officeTokenKeys.CanVerify() {
 		if rc, err := r.Cookie(refreshTokenCookieName); err == nil && rc.Value != "" {
-			if rtClaims, err := VerifyOfficeRefreshToken(rc.Value, a.officeJWTSecret); err == nil {
-				tokenHash := hashTokenID(rtClaims.TokenID, a.officeJWTSecret)
+			if rtClaims, err := VerifyOfficeRefreshTokenWithKeyManager(rc.Value, a.officeTokenKeys); err == nil {
+				tokenHash := hashTokenID(rtClaims.TokenID, a.refreshTokenPepper)
 				if err := a.revokeRefreshToken(r.Context(), tokenHash); err != nil {
 					log.Printf("handleAuthLogout: failed to revoke refresh token: %v", err)
 				}
@@ -1036,7 +1091,7 @@ func (a *app) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	clearTokenCookies(w, r)
+	a.clearTokenCookies(w, r)
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

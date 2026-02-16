@@ -271,7 +271,7 @@ graph LR
 graph LR
     Browser["🖥️ Browser&#10;SPA"]
     Nginx["🌐 Nginx&#10;Static + Proxy"]
-    MW["🛡️ authMiddleware&#10;Verify Office-Access-Token&#10;(HttpOnly cookie → HS256)"]
+    MW["🛡️ auth + csrf middleware&#10;kid-aware JWT verify + CSRF checks&#10;(RS256 primary, HS256 legacy)"]
     API["⚙️ Go API&#10;REST Handlers"]
     DB[("💾 PostgreSQL")]
     FS["📁 File Storage&#10;uploads/buildings/"]
@@ -326,10 +326,10 @@ graph LR
         Confirm["/api/v2/auth/confirm&#10;POST"]
         UserInfo["/api/user/info&#10;GET"]
         WbBand["/api/user/wb-band&#10;GET"]
-        OToken["/api/auth/office-token&#10;POST — HttpOnly cookies + claims"]
-        Refr["/api/auth/refresh&#10;POST — cookie auto"]
+        OToken["/api/auth/office-token&#10;POST — HttpOnly cookies + session"]
+        Refr["/api/auth/refresh&#10;POST — cookie + X-CSRF-Token + X-Device-ID"]
         Session["/api/auth/session&#10;GET — restore session"]
-        Logout["/api/auth/logout&#10;POST — clear cookies"]
+        Logout["/api/auth/logout&#10;POST — cookie + X-CSRF-Token"]
     end
 
     subgraph Ext["External"]
@@ -338,7 +338,7 @@ graph LR
     end
 
     subgraph Data
-        JWT["🔑 JWT Signer&#10;(HS256, local)"]
+        JWT["🔑 JWT Key Manager&#10;(RS256 + kid, HS256 legacy fallback)"]
         DB[("💾 PostgreSQL&#10;users &#8226; refresh_tokens")]
     end
 
@@ -359,21 +359,23 @@ graph LR
     JS -- "Bearer token" --> OToken
     OToken -- "verify token (upstream)" --> TeamWB
     TeamWB -- "user identity" --> OToken
-    OToken -- "resolve role + responsibilities" --> DB
+    OToken -- "resolve role (users)" --> DB
     OToken -- "sign tokens" --> JWT
     JWT -- "store refresh (hashed)" --> DB
     OToken -- "Set-Cookie HttpOnly" --> JS
     OToken -- "session claims JSON" --> JS
 
-    JS -- "cookie auto" --> Refr
+    JS -- "cookie auto + X-CSRF-Token + X-Device-ID" --> Refr
+    Refr -- "Origin/Referer + double-submit check" --> Refr
     Refr -- "validate hash" --> DB
     Refr -- "sign new" --> JWT
     Refr -- "Set-Cookie HttpOnly" --> JS
 
     JS -- "cookie auto" --> Session
-    Session -- "session claims" --> JS
+    Session -- "session claims (+ ensure CSRF cookie)" --> JS
 
-    JS -- "cookie auto" --> Logout
+    JS -- "cookie auto + X-CSRF-Token" --> Logout
+    Logout -- "Origin/Referer + double-submit check" --> Logout
     Logout -- "revoke refresh" --> DB
     Logout -- "Clear-Cookie" --> JS
 
@@ -389,14 +391,17 @@ graph LR
         <ul>
             <li><strong>Authorization Token</strong> — внешний токен от auth-hrtech.wb.ru</li>
             <li><strong>Upstream verification</strong> — <code>/api/auth/office-token</code> вызывает <code>team.wb.ru/api/v1/user/info</code> для подтверждения identity; локально-декодированные JWT claims не доверяются</li>
-            <li><strong>Office-Access-Token</strong> — JWT (HS256, TTL 1 час) в HttpOnly Secure cookie (SameSite=Lax)</li>
-            <li><strong>Office-Refresh-Token</strong> — JWT (TTL 30 дней) в HttpOnly Secure cookie, ротация, HMAC-SHA256 хеш в БД, family_id, <strong>device_id binding</strong>, <strong>atomic consume</strong> (race-safe), replay detection, ip/ua audit-only</li>
-            <li><strong>Session Claims</strong> — employee_id, user_name, role, responsibilities возвращаются в JSON, хранятся в памяти (не localStorage)</li>
+            <li><strong>Office-Access-Token</strong> — JWT (RS256 + <code>kid</code>, TTL по умолчанию 10 минут; конфиг <code>OFFICE_ACCESS_TTL_MINUTES</code>, clamp 5..10) в HttpOnly Secure cookie (SameSite=Strict по умолчанию)</li>
+            <li><strong>Key rotation</strong> — активный ключ выбирается через <code>OFFICE_JWT_ACTIVE_KID</code>, верификация идёт по key ring (<code>OFFICE_JWT_PUBLIC_KEYS_JSON</code>), legacy HS256-токены поддерживаются на период миграции</li>
+            <li><strong>Office-Refresh-Token</strong> — JWT (TTL по умолчанию 30 дней; конфиг <code>OFFICE_REFRESH_TTL_DAYS</code>, clamp 7..30) в HttpOnly Secure cookie, ротация, HMAC-SHA256 хеш в БД, family_id, <strong>device_id binding</strong>, <strong>atomic consume</strong> (race-safe), replay detection, ip/ua audit-only</li>
+            <li><strong>Фактические JWT claims (по коду)</strong> — Access: <code>employee_id</code>, <code>user_name</code>, <code>role</code>, <code>exp</code>, <code>iat</code>; Refresh: <code>employee_id</code>, <code>token_id</code>, <code>family_id</code>, <code>exp</code>, <code>iat</code></li>
+            <li><strong>Sliding expiration</strong> — refresh/rotation выполняется только при активности пользователя; idle-сессия не продлевается бесконечно</li>
+            <li><strong>Session Claims</strong> — employee_id, user_name, role возвращаются в JSON (convenience-only, не источник авторизации), хранятся в памяти (не localStorage)</li>
             <li><strong>GET /api/auth/session</strong> — восстановление сессии при перезагрузке (валидация cookie → claims)</li>
             <li><strong>POST /api/auth/logout</strong> — очистка cookies + ревокация refresh в БД</li>
             <li><strong>Rate limiting</strong> — <code>/api/auth/office-token</code> и login-эндпоинты защищены IP rate limiter</li>
             <li><strong>XSS-защита</strong> — JS не имеет доступа к raw JWT (HttpOnly cookies)</li>
-            <li><strong>CSRF-защита</strong> — SameSite=Lax + JSON Content-Type + CORS whitelist</li>
+            <li><strong>CSRF-защита</strong> — double-submit cookie (<code>office_csrf_token</code> + <code>X-CSRF-Token</code>) + <code>Origin/Referer</code> check + SameSite=Strict (по умолчанию; конфигурируется)</li>
         </ul>
     </div>
 </div>
@@ -414,12 +419,12 @@ graph LR
     end
 
     subgraph API["Building Endpoints"]
-        Build["/api/buildings&#10;GET / POST"]
-        Floor["/api/floors&#10;GET / POST / PUT / DELETE"]
-        Space["/api/spaces&#10;GET / POST / PUT / DELETE"]
-        Desk["/api/desks&#10;GET / POST / PUT / DELETE"]
+        Build["/api/buildings + /api/buildings/:id&#10;GET / POST / PUT / DELETE"]
+        Floor["/api/floors + /api/floors/:id&#10;GET / POST / PUT / DELETE"]
+        Space["/api/spaces + /api/spaces/:id&#10;POST / GET / PUT / DELETE"]
+        Desk["/api/desks + /api/desks/:id&#10;GET / POST / PUT / DELETE"]
         Bulk["/api/desks/bulk&#10;POST batch"]
-        MR["/api/meeting-rooms&#10;GET / POST / PUT / DELETE"]
+        MR["/api/meeting-rooms&#10;POST (create only)"]
     end
 
     subgraph Data
@@ -536,7 +541,7 @@ sequenceDiagram
     participant A as API Server
     participant W as team.wb.ru
     participant DB as PostgreSQL
-    participant J as JWT Signer
+    participant J as JWT Key Manager
 
     Note over U,J: Шаг 1 — Получение Authorization Token
     U->>F: Открыть приложение
@@ -565,18 +570,18 @@ sequenceDiagram
     A->>W: GET /api/v1/user/info (Bearer token)
     W-->>A: 200 OK — user identity (employee_id, wbUserID)
     Note right of A: Identity от team.wb.ru, НЕ из локального парсинга JWT
-    A->>DB: Resolve employee_id + role + responsibilities
-    DB-->>A: role, building_ids, floor_ids, coworking_ids
-    A->>J: Подписать Office Access + Refresh JWT (HS256)
+    A->>DB: Resolve employee_id + role
+    DB-->>A: role
+    A->>J: Подписать Office Access + Refresh JWT (RS256 + kid)
     J-->>A: office_access_token + office_refresh_token
     A->>DB: Сохранить refresh token (HMAC-SHA256 hash, family_id, device_id, ip, ua)
-    A-->>F: Set-Cookie: HttpOnly Secure SameSite=Lax + session_claims JSON
-    F->>F: Сохранить claims в памяти (НЕ localStorage)
+    A-->>F: Set-Cookie: HttpOnly Secure SameSite=Strict(default) + session JSON
+    F->>F: Сохранить session в памяти (НЕ localStorage)
     
     Note over U,J: Шаг 3 — Работа с защищёнными API
     U->>F: Просмотр зданий
     F->>A: GET /api/buildings (cookie отправляется автоматически)
-    Note right of A: authMiddleware: cookie → VerifyOfficeAccessToken (HS256)
+    Note right of A: authMiddleware: cookie → VerifyOfficeAccessToken (kid-aware verify)
     A->>A: claims injected в context
     A->>DB: SELECT FROM office_buildings
     DB-->>A: Buildings data
@@ -586,12 +591,14 @@ sequenceDiagram
     Note over U,J: Шаг 3.5 — Восстановление сессии (page reload)
     F->>A: GET /api/auth/session (cookie auto)
     A->>A: Validate access cookie
-    A-->>F: session_claims JSON
+    A->>A: If CSRF cookie missing → mint office_csrf_token
+    A-->>F: session JSON
     F->>F: Восстановить in-memory session
     
     Note over U,J: Шаг 4 — Обновление токена (Rotation + Device Binding)
     F->>F: Токен истёк
-    F->>A: POST /api/auth/refresh (cookie auto + X-Device-ID)
+    F->>A: POST /api/auth/refresh (cookie auto + X-Device-ID + X-CSRF-Token)
+    A->>A: CSRF middleware: Origin/Referer + double-submit
     A->>A: HMAC-SHA256(token_id, pepper) → token_hash
     A->>DB: ATOMIC: UPDATE SET revoked_at=now() WHERE hash AND revoked_at IS NULL RETURNING ...
     Note right of DB: Row-level atomicity: only 1 of N parallel requests wins
@@ -602,14 +609,15 @@ sequenceDiagram
     A->>J: Подписать новый Access + Refresh JWT (same family_id)
     J-->>A: new tokens
     A->>DB: Сохранить новый refresh (hashed, family_id, device_id, ip, ua)
-    A-->>F: Set-Cookie: new HttpOnly cookies + session_claims JSON
+    A-->>F: Set-Cookie: new HttpOnly cookies + session JSON
     F->>F: Обновить in-memory session
 
     Note over U,J: Шаг 5 — Выход (Logout)
     U->>F: Нажать "Выход"
-    F->>A: POST /api/auth/logout (cookie auto)
+    F->>A: POST /api/auth/logout (cookie auto + X-CSRF-Token)
+    A->>A: CSRF middleware: Origin/Referer + double-submit
     A->>DB: Revoke refresh token family
-    A-->>F: Clear-Cookie: access + refresh
+    A-->>F: Clear-Cookie: access + refresh + csrf
     F->>F: Очистить in-memory session
 
     Note over U,J: Replay Detection (atomic — race-safe)
@@ -684,7 +692,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant FS as File Storage
     
-    Note over A,FS: Все /api/* проходят через authMiddleware (HS256 verify, claims в context)
+    Note over A,FS: Все защищённые /api/* проходят через authMiddleware (kid-aware verify, claims в context)
     
     Note over A,FS: Создание здания
     A->>F: Заполнить форму
@@ -700,7 +708,7 @@ sequenceDiagram
     Note over A,FS: Создание этажа
     A->>F: Добавить этаж
     F->>API: POST /api/floors
-    API->>API: Проверить responsibility из claims
+    API->>API: Проверить responsibility в БД (employee_id из claims)
     API->>DB: INSERT INTO floors
     DB-->>API: Floor ID
     API-->>F: floor_id
@@ -708,7 +716,7 @@ sequenceDiagram
     Note over A,FS: Создание зоны (коворкинг)
     A->>F: Нарисовать зону
     F->>API: POST /api/spaces
-    API->>API: Проверить responsibility из claims
+    API->>API: Проверить responsibility в БД (employee_id из claims)
     API->>DB: INSERT INTO coworkings
     DB-->>API: Space ID
     API-->>F: space_id
@@ -716,7 +724,7 @@ sequenceDiagram
     Note over A,FS: Массовое добавление столов
     A->>F: Разместить столы
     F->>API: POST /api/desks/bulk
-    API->>API: Проверить responsibility из claims
+    API->>API: Проверить responsibility в БД (employee_id из claims)
     API->>DB: INSERT INTO workplaces (batch)
     DB-->>API: Desk IDs
     API-->>F: desk_ids
@@ -761,7 +769,7 @@ erDiagram
         text timezone
         text image_url
         text responsible_employee_id
-        text floors_json
+        text floors
         timestamptz created_at
     }
     
@@ -782,7 +790,7 @@ erDiagram
         text subdivision_level_1
         text subdivision_level_2
         text responsible_employee_id
-        text points_json
+        jsonb points_json
         text color
         int snapshot_hidden
         timestamptz created_at
@@ -792,11 +800,7 @@ erDiagram
         bigint id PK
         bigint coworking_id FK
         text label
-        float x
-        float y
-        float width
-        float height
-        float rotation
+        jsonb points_json
         timestamptz created_at
     }
     
@@ -816,7 +820,7 @@ erDiagram
         bigint floor_id FK
         text name
         int capacity
-        text points_json
+        jsonb points_json
         text color
         timestamptz created_at
     }
@@ -834,7 +838,7 @@ erDiagram
     
     office_refresh_tokens {
         bigint id PK
-        text token_hash UK "HMAC-SHA256 of token_id"
+        text token_hash UK "HMAC-SHA256(token_id, pepper)"
         text employee_id
         text family_id "replay detection chain"
         text device_id "device binding - hard check"
@@ -854,7 +858,7 @@ erDiagram
             <li><strong>users</strong> — пользователи с ролями (1=Employee, 2=Admin)</li>
             <li><strong>office_buildings</strong> → <strong>floors</strong> → <strong>coworkings</strong> → <strong>workplaces</strong> — иерархия объектов</li>
             <li><strong>meeting_rooms</strong> — переговорные комнаты на этажах</li>
-            <li><strong>workplace_bookings</strong> — бронирования столов (UNIQUE workplace_id + date)</li>
+            <li><strong>workplace_bookings</strong> — бронирования столов (UNIQUE workplace_id + date только для активных, cancelled_at IS NULL)</li>
             <li><strong>meeting_room_bookings</strong> — бронирования переговорных (start_at / end_at)</li>
             <li><strong>office_refresh_tokens</strong> — refresh-токены: HMAC-SHA256 хеш, family_id для replay detection, device_id binding (жёсткая проверка), ротация, ip/ua audit-only</li>
                     </ul>
@@ -870,7 +874,7 @@ erDiagram
         <div class="tech-card"><h4>🎨 Frontend</h4><p>Vanilla JS, HTML5, CSS3, Vite. SPA без фреймворков.</p></div>
         <div class="tech-card"><h4>🔧 Backend</h4><p>Go 1.21+, net/http, pgx. REST API с middleware.</p></div>
         <div class="tech-card"><h4>💾 Database</h4><p>PostgreSQL 16 Alpine. JSON-поля, индексы, constraints.</p></div>
-        <div class="tech-card"><h4>🔐 Auth</h4><p>JWT HS256. HttpOnly Secure cookies + SameSite. Двухуровневые токены. team.wb.ru API.</p></div>
+        <div class="tech-card"><h4>🔐 Auth</h4><p>JWT RS256 + kid (HS256 legacy fallback). HttpOnly cookies + CSRF double-submit + Origin check. Двухуровневые токены. team.wb.ru API.</p></div>
         <div class="tech-card"><h4>🌐 Web Server</h4><p>Nginx (prod) с reverse proxy. Go FileServer (dev).</p></div>
         <div class="tech-card"><h4>🐳 Deploy</h4><p>Docker + Docker Compose. Multi-stage builds.</p></div>
                     </div>
@@ -878,11 +882,11 @@ erDiagram
     <h3 style="margin:28px 0 12px;color:var(--accent)">Безопасность</h3>
     <div class="info">
         <ul>
-            <li><strong>Двухуровневая аутентификация</strong> — Authorization Token (team.wb.ru) + Office JWT в HttpOnly Secure cookies (SameSite=Lax); <code>/api/auth/office-token</code> верифицирует внешний токен через upstream (team.wb.ru); refresh token hashed (HMAC-SHA256 + pepper), family-based replay detection, <strong>atomic consume</strong> (race-safe), IP rate limiting</li>
+            <li><strong>Двухуровневая аутентификация</strong> — Authorization Token (team.wb.ru) + Office JWT в HttpOnly Secure cookies (SameSite=Strict по умолчанию, конфигурируется); <code>/api/auth/office-token</code> верифицирует внешний токен через upstream (team.wb.ru); Office JWT подписываются RS256 с <code>kid</code> и ротацией ключей (HS256 fallback на период миграции); refresh token hashed (HMAC-SHA256 + отдельный pepper <code>OFFICE_REFRESH_PEPPER</code>, fallback на <code>OFFICE_JWT_SECRET</code>), family-based replay detection, <strong>atomic consume</strong> (race-safe), IP rate limiting</li>
             <li><strong>XSS-защита</strong> — токены в HttpOnly cookies, JS не имеет доступа к raw JWT; session claims хранятся in-memory</li>
-            <li><strong>CSRF-защита</strong> — SameSite=Lax cookies + JSON Content-Type + CORS whitelist</li>
-            <li><strong>Middleware цепочка</strong> — logging → securityHeaders → CORS → <strong>authMiddleware</strong> (cookie/header → HS256 verify, claims в context — оборачивает весь mux)</li>
-            <li><strong>Контроль доступа</strong> — роли + responsibilities в JWT</li>
+            <li><strong>CSRF-защита</strong> — <code>office_csrf_token</code> (cookie) + <code>X-CSRF-Token</code> (header), проверка <code>Origin/Referer</code>, SameSite=Strict по умолчанию (конфигурируется)</li>
+            <li><strong>Middleware цепочка</strong> — logging → securityHeaders → CORS → <strong>csrfProtectionMiddleware</strong> → <strong>authMiddleware</strong> (cookie/header → kid-aware verify, claims в context — оборачивает весь mux)</li>
+            <li><strong>Контроль доступа</strong> — роль в JWT + проверка responsibilities в БД по <code>responsible_employee_id</code>; массивы responsibilities в JWT не хранятся</li>
             <li><strong>Rate Limiting</strong> — 10 req/min на auth endpoints</li>
             <li><strong>SQL Injection</strong> — параметризованные запросы (pgx)</li>
             <li><strong>HTTPS</strong> — в production, HSTS header</li>
@@ -893,7 +897,7 @@ erDiagram
     <h3 style="margin:28px 0 12px;color:var(--accent)">Архитектурные решения</h3>
     <div class="info">
         <ul>
-            <li><strong>Stateless API</strong> — вся информация о пользователе в JWT</li>
+            <li><strong>Stateless API</strong> — ключевые claims пользователя передаются в JWT</li>
             <li><strong>Graceful Shutdown</strong> — SIGTERM / SIGINT</li>
             <li><strong>Health Check</strong> — GET /api/health</li>
             <li><strong>Auto Migrations</strong> — при старте сервера</li>
@@ -910,7 +914,7 @@ erDiagram
         
         <footer>
     <strong>Office Management System — Data Flow Diagram</strong><br>
-    Создано: 2026-02-13 &nbsp;|&nbsp; Обновлено: 2026-02-16 &nbsp;|&nbsp; Версия 3.0 (HttpOnly cookies)
+    Создано: 2026-02-13 &nbsp;|&nbsp; Обновлено: 2026-02-16 &nbsp;|&nbsp; Версия 3.2 (RS256+kid key management)
         </footer>
     
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>

@@ -26,7 +26,7 @@ graph LR
 graph LR
     Browser["🖥️ Browser\nSPA"]
     Nginx["🌐 Nginx\nStatic + Proxy"]
-    MW["🛡️ authMiddleware\nVerify Office-Access-Token\n(HS256, local)"]
+    MW["🛡️ authMiddleware\nVerify Office-Access-Token\n(kid-aware: RS256 primary, HS256 legacy)"]
     API["⚙️ Go API\nREST Handlers"]
     DB[("💾 PostgreSQL")]
     FS["📁 File Storage\nuploads/buildings/"]
@@ -68,7 +68,9 @@ graph LR
         UserInfo["/api/user/info\nGET — Информация о пользователе"]
         WbBand["/api/user/wb-band\nGET — WB Band пользователя"]
         OfficeToken["/api/auth/office-token\nPOST — Выдача Office JWT"]
-        Refresh["/api/auth/refresh\nPOST — Обновление токена"]
+        Refresh["/api/auth/refresh\nPOST — cookie + X-CSRF-Token + X-Device-ID"]
+        Session["/api/auth/session\nGET — restore session + CSRF cookie"]
+        Logout["/api/auth/logout\nPOST — cookie + X-CSRF-Token"]
     end
 
     subgraph Ext["External"]
@@ -77,7 +79,7 @@ graph LR
     end
 
     subgraph Data
-        JWTMod["🔑 JWT Signer\n(HS256, local)"]
+        JWTMod["🔑 JWT Key Manager\n(RS256 + kid, HS256 legacy fallback)"]
         DB[("💾 PostgreSQL\nusers\noffice_refresh_tokens")]
     end
 
@@ -93,15 +95,23 @@ graph LR
     JS -- "Authorization: Bearer" --> OfficeToken
     OfficeToken -- "verify token (upstream call)" --> TeamWB
     TeamWB -- "user identity (employee_id, wbUserID)" --> OfficeToken
-    OfficeToken -- "resolve role + responsibilities" --> DB
+    OfficeToken -- "resolve role" --> DB
     OfficeToken -- "sign tokens" --> JWTMod
     JWTMod -- "store refresh token (hashed)" --> DB
-    OfficeToken -- "access + refresh tokens" --> JS
+    OfficeToken -- "Set-Cookie: access + refresh + csrf" --> JS
 
-    JS -- "office_refresh_token" --> Refresh
+    JS -- "office_refresh_token + X-CSRF-Token + X-Device-ID" --> Refresh
+    Refresh -- "Origin/Referer + double-submit check" --> Refresh
     Refresh -- "validate hash" --> DB
     Refresh -- "sign new tokens" --> JWTMod
-    Refresh -- "new tokens" --> JS
+    Refresh -- "Set-Cookie: new access + refresh + csrf" --> JS
+
+    JS -- "cookie auto" --> Session
+    Session -- "session claims (+ ensure CSRF cookie)" --> JS
+
+    JS -- "cookie auto + X-CSRF-Token" --> Logout
+    Logout -- "Origin/Referer + double-submit check" --> Logout
+    Logout -- "revoke refresh + clear all auth cookies" --> DB
 
     style Client fill:#FFF4E6,stroke:#FD7E14,stroke-width:2px
     style AuthAPI fill:#FFF7E6,stroke:#FA8C16,stroke-width:2px
@@ -215,7 +225,7 @@ sequenceDiagram
     participant A as API Server
     participant W as team.wb.ru
     participant DB as PostgreSQL
-    participant J as JWT Signer
+    participant J as JWT Key Manager
 
     Note over U,J: Шаг 1 — Получение Authorization Token
     U->>F: Открыть приложение
@@ -244,9 +254,9 @@ sequenceDiagram
     A->>W: GET /api/v1/user/info (Bearer token)
     W-->>A: 200 OK — user identity (employee_id, wbUserID, fullName)
     Note right of A: Identity получена от team.wb.ru, НЕ из локального парсинга JWT
-    A->>DB: Resolve employee_id + role + responsibilities
-    DB-->>A: role, building_ids, floor_ids, coworking_ids
-    A->>J: Подписать Office Access + Refresh JWT (HS256)
+    A->>DB: Resolve employee_id + role
+    DB-->>A: role
+    A->>J: Подписать Office Access + Refresh JWT (RS256 + kid)
     J-->>A: office_access_token + office_refresh_token
     A->>DB: Сохранить refresh token (HMAC-SHA256 hash, family_id, device_id, ip, ua)
     A-->>F: Set-Cookie: HttpOnly + session claims (JSON)
@@ -255,7 +265,7 @@ sequenceDiagram
     Note over U,J: Шаг 3 — Работа с защищёнными API
     U->>F: Просмотр зданий
     F->>A: GET /api/buildings (Cookie: office_access_token)
-    Note right of A: authMiddleware: VerifyOfficeAccessToken (HS256, local — без внешних вызовов)
+    Note right of A: authMiddleware: VerifyOfficeAccessToken (kid-aware local verify — без внешних вызовов)
     A->>A: claims injected в context
     A->>DB: SELECT * FROM office_buildings
     DB-->>A: Buildings data
@@ -264,7 +274,8 @@ sequenceDiagram
     
     Note over U,J: Шаг 4 — Обновление токена (Rotation + Replay Protection)
     F->>F: access_exp из session claims истёк
-    F->>A: POST /api/auth/refresh (Cookie: office_refresh_token)
+    F->>A: POST /api/auth/refresh (Cookie: office_refresh_token + X-CSRF-Token + X-Device-ID)
+    A->>A: CSRF middleware: Origin/Referer + double-submit
     A->>A: HMAC-SHA256(token_id, pepper) → token_hash
     A->>DB: ATOMIC: UPDATE SET revoked_at=now() WHERE hash AND revoked_at IS NULL RETURNING ...
     Note right of DB: Row-level atomicity: only 1 of N parallel requests gets the row
@@ -278,8 +289,17 @@ sequenceDiagram
     Note over U,J: Шаг 4a — Восстановление сессии (перезагрузка страницы)
     F->>A: GET /api/auth/session (Cookie: office_access_token)
     A->>A: Verify JWT из cookie
-    A-->>F: session claims (employee_id, role, responsibilities, exp)
+    A->>A: If CSRF cookie missing → mint office_csrf_token
+    A-->>F: session claims (employee_id, user_name, role, access_exp, refresh_exp)
     F->>F: Сохранить в памяти
+
+    Note over U,J: Шаг 4b — Logout
+    U->>F: Нажать "Выход"
+    F->>A: POST /api/auth/logout (Cookie + X-CSRF-Token)
+    A->>A: CSRF middleware: Origin/Referer + double-submit
+    A->>DB: Revoke refresh token
+    A-->>F: Clear-Cookie: access + refresh + csrf
+    F->>F: Очистить in-memory session
 
     Note over U,J: Шаг 5 — Replay Detection (atomic, race-safe)
     Note right of A: Атакующий отправляет старый refresh token
@@ -345,7 +365,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant FS as File Storage
     
-    Note over A,FS: Все /api/* запросы проходят через authMiddleware (HS256 verify, claims в context)
+    Note over A,FS: Все /api/* запросы проходят через authMiddleware (kid-aware verify, claims в context)
     
     Note over A,FS: Создание здания
     A->>F: Заполнить форму здания
@@ -515,21 +535,22 @@ erDiagram
 
 ### 1. Аутентификация
 - **Вход:** User → Frontend → API → auth-hrtech.wb.ru (код) → team.wb.ru (user info)
-- **Выдача office-токенов:** Frontend → API `/api/auth/office-token` → **upstream verification** (team.wb.ru/api/v1/user/info) → resolve role + responsibilities → JWT Handler → **HttpOnly cookies** (access + refresh) + session claims (JSON) → Frontend (in-memory)
+- **Выдача office-токенов:** Frontend → API `/api/auth/office-token` → **upstream verification** (team.wb.ru/api/v1/user/info) → resolve role → JWT Handler → **HttpOnly cookies** (access + refresh) + session claims (JSON, convenience-only) → Frontend (in-memory)
 - **Восстановление сессии:** Frontend → `GET /api/auth/session` → validate access cookie → session claims → Frontend (in-memory)
-- **Обновление:** Frontend → API `/api/auth/refresh` (cookie + X-Device-ID auto) → hash token_id → **atomic consume** (UPDATE…RETURNING, race-safe) → **device_id check** → issue new pair (same family_id) → new HttpOnly cookies
-- **Выход:** Frontend → `POST /api/auth/logout` → revoke refresh in DB → clear cookies
+- **Обновление:** Frontend → API `/api/auth/refresh` (cookie + `X-CSRF-Token` + `X-Device-ID`) → **CSRF middleware** (`Origin/Referer` + double-submit) → hash token_id → **atomic consume** (UPDATE…RETURNING, race-safe) → **device_id check** → issue new pair (same family_id) → новые cookies (access + refresh + csrf)
+- **Sliding expiration (по активности):** авто-refresh запускается только при недавней активности пользователя; idle-сессия не продлевается бесконечно
+- **Выход:** Frontend → `POST /api/auth/logout` (`X-CSRF-Token`) → **CSRF middleware** → revoke refresh in DB → clear cookies (access + refresh + csrf)
 - **Replay protection:** повторный revoked refresh → `revokeTokenFamily(family_id)` → 401 для всей цепочки
 - **Device binding:** refresh привязан к `device_id`; несовпадение → revoke family → 401
 - **IP/UA:** audit-only — логируются для forensics, **не блокируют** (VPN, NAT, mobile)
 - **Rate limiting:** `/api/auth/office-token` и login-эндпоинты защищены IP rate limiter
 - **XSS-защита:** токены в HttpOnly cookies — JS не имеет доступа к raw JWT
-- **CSRF-защита:** SameSite=Lax + JSON Content-Type + CORS whitelist
+- **CSRF-защита:** double-submit cookie (`office_csrf_token` + `X-CSRF-Token`) + `Origin/Referer` check + SameSite=Strict (по умолчанию; конфигурируется)
 
 ### 2. Управление зданиями (CRUD)
 - **Чтение:** Frontend → API → PostgreSQL → JSON → Frontend
 - **Создание:** Frontend → API (multipart) → File Storage + PostgreSQL → Frontend
-- **Проверка прав:** authMiddleware → claims в context → handler читает `role`, `responsibilities`
+- **Проверка прав:** authMiddleware → claims в context (`employee_id`, `role`) → handler проверяет роль из JWT и ответственность в БД по `employee_id`
 
 ### 3. Бронирование рабочих мест
 - **Просмотр:** Frontend → API → `workplaces LEFT JOIN workplace_bookings` → Frontend
@@ -543,7 +564,7 @@ erDiagram
 
 ### 5. Управление пользователями
 - **Роли:** Admin → API → `UPDATE users SET role` (1=Employee, 2=Admin)
-- **Responsibilities:** через `responsible_employee_id` в таблицах buildings, floors, coworkings → включаются в JWT
+- **Responsibilities:** через `responsible_employee_id` в таблицах buildings, floors, coworkings → проверяются в БД при изменяющих операциях
 
 ### 6. Файловое хранилище
 - **Загрузка:** Frontend → API → `/uploads/buildings/` (local FS)
@@ -558,7 +579,7 @@ erDiagram
 | **Frontend** | Vanilla JavaScript, HTML5, CSS3, Vite |
 | **Backend** | Go 1.21+, net/http, pgx driver |
 | **Database** | PostgreSQL 16 Alpine |
-| **Auth** | JWT HS256 (custom), team.wb.ru API |
+| **Auth** | JWT RS256 + kid (custom, HS256 legacy fallback), team.wb.ru API |
 | **File Storage** | Local filesystem (`uploads/`) |
 | **Web Server** | Nginx (prod), Go http.FileServer (dev) |
 | **Containerization** | Docker, Docker Compose |
@@ -570,12 +591,16 @@ erDiagram
 
 1. **Двухуровневая аутентификация**
    - Authorization Token (внешний, от team.wb.ru / auth-hrtech.wb.ru)
-   - Office-Access-Token (внутренний JWT, TTL 1 час)
-   - Office-Refresh-Token (TTL 30 дней, ротация при каждом обновлении)
+   - Office-Access-Token (внутренний JWT, TTL по умолчанию 10 минут; конфиг `OFFICE_ACCESS_TTL_MINUTES`, clamp 5..10)
+   - Office-Refresh-Token (TTL по умолчанию 30 дней; конфиг `OFFICE_REFRESH_TTL_DAYS`, clamp 7..30; ротация при каждом обновлении)
    - **Upstream token verification** — `/api/auth/office-token` **не доверяет** локально-декодированным JWT claims; вместо этого вызывает `team.wb.ru/api/v1/user/info` для подтверждения identity. Signing key внешнего токена нам недоступен, поэтому upstream-валидация — единственный надёжный способ.
    - **Rate limiting** — `/api/auth/office-token` защищён IP rate limiter (как login-эндпоинты)
-   - **Token hashing** — token_id хранится как HMAC-SHA256(token_id, pepper), не в открытом виде
+   - **Key management** — Office JWT подписываются RS256 с `kid`; активный ключ выбирается через `OFFICE_JWT_ACTIVE_KID`, верификация выполняется по key ring (`OFFICE_JWT_PUBLIC_KEYS_JSON`), legacy HS256 токены поддерживаются на период миграции
+   - **Token hashing** — token_id хранится как HMAC-SHA256(token_id, pepper), не в открытом виде; pepper задаётся отдельно (`OFFICE_REFRESH_PEPPER`, fallback на `OFFICE_JWT_SECRET`)
    - **Token families** — family_id связывает цепочку ротации для replay detection
+   - **Фактические JWT claims (по коду):**
+     - Access JWT: `employee_id`, `user_name`, `role`, `exp`, `iat`
+     - Refresh JWT: `employee_id`, `token_id`, `family_id`, `exp`, `iat`
    - **Replay protection** — повторное использование revoked refresh → инвалидация всей семьи токенов; **atomic consume** (UPDATE…RETURNING) исключает race condition при параллельных refresh
    - **Audit fields** — last_used_at, ip_address, user_agent в каждом refresh token
 
@@ -583,11 +608,12 @@ erDiagram
    - loggingMiddleware
    - securityHeadersMiddleware (X-Content-Type-Options, X-Frame-Options, CSP, HSTS)
    - corsMiddleware (whitelist origins)
-   - **authMiddleware** — проверяет Office-Access-Token (HS256, local) для всех `/api/*` кроме public paths; инжектирует claims в request context
+   - csrfProtectionMiddleware (unsafe `/api/*`: Origin/Referer + double-submit)
+   - **authMiddleware** — проверяет Office-Access-Token (kid-aware local verify: RS256 primary, HS256 legacy fallback) для всех `/api/*` кроме public paths; инжектирует claims в request context
 
 3. **Контроль доступа**
    - Роли: Employee (1), Admin (2)
-   - Responsibilities в JWT: `building_ids`, `floor_ids`, `coworking_ids`
+   - Responsibilities не хранятся в JWT; проверка выполняется по БД (`responsible_employee_id`) с `employee_id` из access claims
    - Rate limiting на auth endpoints + office-token (10 req/min per IP)
 
 4. **Защита данных**
@@ -601,7 +627,7 @@ erDiagram
 
 ## Особенности архитектуры
 
-1. **Stateless API** — вся информация о пользователе хранится в JWT-токене
+1. **Stateless API** — в JWT хранятся минимальные claims для авторизации, без массивов responsibilities
 2. **Graceful Shutdown** — корректное завершение при SIGTERM/SIGINT
 3. **Health Check** — `GET /api/health` для мониторинга
 4. **Auto Migrations** — автоматическое применение миграций при старте сервера
@@ -613,5 +639,5 @@ erDiagram
 ---
 
 **Дата создания:** 2026-02-13
-**Обновлено:** 2026-02-15
-**Версия:** 2.3 — office-token upstream verification (team.wb.ru), rate limiting, security hardening
+**Обновлено:** 2026-02-16
+**Версия:** 2.5 — RS256+kid key management + DFD sync

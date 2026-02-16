@@ -887,6 +887,22 @@ const getDeviceId = () => {
 const getDeviceName = () =>
   navigator.userAgent.includes("Macintosh") ? "Apple Macintosh" : "Windows PC";
 
+const getCookieValue = (name) => {
+  if (typeof document === "undefined" || !document.cookie) {
+    return "";
+  }
+  const encodedName = `${encodeURIComponent(name)}=`;
+  const parts = document.cookie.split("; ");
+  for (const part of parts) {
+    if (part.startsWith(encodedName)) {
+      return decodeURIComponent(part.slice(encodedName.length));
+    }
+  }
+  return "";
+};
+
+const getCsrfToken = () => getCookieValue("office_csrf_token");
+
 const parseSetCookieHeader = (rawHeader) => {
   if (!rawHeader) {
     return [];
@@ -1091,12 +1107,17 @@ const isRefreshTokenExpiringSoon = () => {
  */
 const refreshAccessToken = async () => {
   try {
+    const csrfToken = getCsrfToken();
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Device-ID": getDeviceId(),
+    };
+    if (csrfToken) {
+      headers["X-CSRF-Token"] = csrfToken;
+    }
     const response = await fetch("/api/auth/refresh", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Device-ID": getDeviceId(),
-      },
+      headers,
       body: "{}",
       credentials: "include",
     });
@@ -1118,9 +1139,22 @@ const refreshAccessToken = async () => {
   }
 };
 
+const TOKEN_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const ACTIVITY_WINDOW_MS = 15 * 60 * 1000;
+
+let lastUserActivityAt = Date.now();
+let refreshInFlight = false;
+
+const markUserActivity = () => {
+  lastUserActivityAt = Date.now();
+};
+
+const isRecentUserActivity = () => Date.now() - lastUserActivityAt <= ACTIVITY_WINDOW_MS;
+
 /**
  * Start automatic token refresh checking.
  * Checks every 5 minutes if tokens need to be refreshed.
+ * Refresh is allowed only after recent user activity (sliding expiration).
  * - Access token: refreshed when expired or about to expire (60s margin)
  * - Refresh token: proactively rotated when expiring within 7 days
  */
@@ -1128,26 +1162,44 @@ const startAutoTokenRefresh = () => {
   const checkAndRefresh = async () => {
     const session = getSessionClaims();
     if (!session) return; // Not logged in
+    if (!isRecentUserActivity()) return; // Idle users should not keep extending session lifetime.
+    if (refreshInFlight) return;
 
     const accessTokenValid = isOfficeAccessTokenValid();
     const refreshExpiringSoon = isRefreshTokenExpiringSoon();
 
     // Scenario 1: Access token expired or invalid → refresh immediately
     if (!accessTokenValid) {
-      await refreshAccessToken();
+      refreshInFlight = true;
+      try {
+        await refreshAccessToken();
+      } finally {
+        refreshInFlight = false;
+      }
     }
     // Scenario 2: Access token is valid but refresh token expiring soon → proactively rotate
     else if (refreshExpiringSoon) {
-      await refreshAccessToken();
+      refreshInFlight = true;
+      try {
+        await refreshAccessToken();
+      } finally {
+        refreshInFlight = false;
+      }
     }
   };
-  
-  // Check every 5 minutes
-  setInterval(checkAndRefresh, 5 * 60 * 1000);
-  
+
+  const activityEvents = ["click", "keydown", "mousemove", "touchstart", "scroll"];
+  for (const eventName of activityEvents) {
+    window.addEventListener(eventName, markUserActivity, { passive: true });
+  }
+
+  // Check periodically while tab is active.
+  setInterval(checkAndRefresh, TOKEN_REFRESH_INTERVAL_MS);
+
   // Also check when page becomes visible again (user returns to tab)
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
+      markUserActivity();
       checkAndRefresh();
     }
   });
@@ -12653,7 +12705,9 @@ if (breadcrumbProfiles.length > 0) {
         closeBreadcrumbMenus();
         // Clear server-side HttpOnly cookies + revoke refresh token in DB.
         try {
-          await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+          const csrfToken = getCsrfToken();
+          const headers = csrfToken ? { "X-CSRF-Token": csrfToken } : undefined;
+          await fetch("/api/auth/logout", { method: "POST", credentials: "include", headers });
         } catch { /* best-effort */ }
         clearAuthStorage();
         updateAuthUserBlock(null);

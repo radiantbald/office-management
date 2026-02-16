@@ -7,6 +7,25 @@
  * Permission checking stays in app.js where it has access to application state.
  */
 
+const getCookieValue = (name) => {
+  if (typeof document === "undefined" || !document.cookie) {
+    return "";
+  }
+  const encodedName = `${encodeURIComponent(name)}=`;
+  const parts = document.cookie.split("; ");
+  for (const part of parts) {
+    if (part.startsWith(encodedName)) {
+      return decodeURIComponent(part.slice(encodedName.length));
+    }
+  }
+  return "";
+};
+
+const isUnsafeMethod = (method) => {
+  const normalized = String(method || "GET").toUpperCase();
+  return !["GET", "HEAD", "OPTIONS", "TRACE"].includes(normalized);
+};
+
 /**
  * Base HTTP helper — parses the JSON response.
  *
@@ -25,6 +44,12 @@
 export const makeApiRequest = async (path, options = {}) => {
   const headers = { ...(options.headers || {}) };
   const isFormData = options.body instanceof FormData;
+  if (isUnsafeMethod(options.method)) {
+    const csrfToken = getCookieValue("office_csrf_token");
+    if (csrfToken && !headers["X-CSRF-Token"]) {
+      headers["X-CSRF-Token"] = csrfToken;
+    }
+  }
   if (!isFormData && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }

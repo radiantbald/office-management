@@ -32,11 +32,13 @@ const maxBuildingFormSize = maxBuildingImageSize + (1 << 20)
 const defaultBuildingTimezone = "Europe/Moscow"
 
 type app struct {
-	db                *sql.DB
-	uploadDir         string
-	buildingUploadDir string
-	authRateLimiter   *ipRateLimiter
-	officeJWTSecret   []byte
+	db                 *sql.DB
+	uploadDir          string
+	buildingUploadDir  string
+	authRateLimiter    *ipRateLimiter
+	officeTokenKeys    *officeTokenKeyManager
+	refreshTokenPepper []byte
+	authCookieSameSite http.SameSite
 }
 
 type building struct {
@@ -208,17 +210,39 @@ func main() {
 		log.Fatalf("create upload dir: %v", err)
 	}
 
-	officeSecret := strings.TrimSpace(os.Getenv("OFFICE_JWT_SECRET"))
-	if officeSecret == "" {
-		log.Println("WARNING: OFFICE_JWT_SECRET is not set — Office_Token will not be issued/verified")
+	officeTokenKeys, err := loadOfficeTokenKeyManagerFromEnv()
+	if err != nil {
+		log.Fatalf("load office jwt keys: %v", err)
 	}
+	if !officeTokenKeys.CanSign() {
+		log.Println("WARNING: office JWT signing key is not set — Office_Token will not be issued")
+	}
+	if !officeTokenKeys.CanVerify() {
+		log.Println("WARNING: office JWT verification keys are not set — Office_Token will not be verified")
+	}
+	refreshPepper := strings.TrimSpace(os.Getenv("OFFICE_REFRESH_PEPPER"))
+	if refreshPepper == "" {
+		// Backward-compatible fallback: reuse legacy HS secret only when present.
+		if legacySecret := officeTokenKeys.LegacySecret(); len(legacySecret) > 0 {
+			refreshPepper = string(legacySecret)
+			log.Println("WARNING: OFFICE_REFRESH_PEPPER is not set — falling back to OFFICE_JWT_SECRET")
+		} else {
+			log.Println("WARNING: OFFICE_REFRESH_PEPPER is not set — configure it explicitly")
+		}
+	}
+	accessTTL := parseEnvDurationMinutes("OFFICE_ACCESS_TTL_MINUTES", 10, 5, 10)
+	refreshTTL := parseEnvDurationDays("OFFICE_REFRESH_TTL_DAYS", 30, 7, 30)
+	configureOfficeTokenTTLs(accessTTL, refreshTTL)
+	authSameSite := parseSameSiteEnv("AUTH_COOKIE_SAMESITE", http.SameSiteStrictMode)
 
 	app := &app{
-		db:                db,
-		uploadDir:         uploadDir,
-		buildingUploadDir: buildingUploadDir,
-		authRateLimiter:   newIPRateLimiter(10, time.Minute), // 10 auth requests per IP per minute
-		officeJWTSecret:   []byte(officeSecret),
+		db:                 db,
+		uploadDir:          uploadDir,
+		buildingUploadDir:  buildingUploadDir,
+		authRateLimiter:    newIPRateLimiter(10, time.Minute), // 10 auth requests per IP per minute
+		officeTokenKeys:    officeTokenKeys,
+		refreshTokenPepper: []byte(refreshPepper),
+		authCookieSameSite: authSameSite,
 	}
 
 	mux := http.NewServeMux()
@@ -266,6 +290,7 @@ func main() {
 
 	handler := http.Handler(mux)
 	handler = app.authMiddleware(handler)
+	handler = csrfProtectionMiddleware(handler)
 	handler = corsMiddleware(handler)
 	handler = securityHeadersMiddleware(handler)
 	handler = loggingMiddleware(handler)
@@ -315,6 +340,66 @@ func isTrueEnv(name string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func parseEnvDurationMinutes(name string, defaultMinutes, minMinutes, maxMinutes int) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return time.Duration(defaultMinutes) * time.Minute
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Printf("WARNING: %s=%q is invalid, using default=%d", name, value, defaultMinutes)
+		return time.Duration(defaultMinutes) * time.Minute
+	}
+	if parsed < minMinutes {
+		log.Printf("WARNING: %s=%d is below minimum=%d, clamping", name, parsed, minMinutes)
+		parsed = minMinutes
+	}
+	if parsed > maxMinutes {
+		log.Printf("WARNING: %s=%d is above maximum=%d, clamping", name, parsed, maxMinutes)
+		parsed = maxMinutes
+	}
+	return time.Duration(parsed) * time.Minute
+}
+
+func parseEnvDurationDays(name string, defaultDays, minDays, maxDays int) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return time.Duration(defaultDays) * 24 * time.Hour
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Printf("WARNING: %s=%q is invalid, using default=%d", name, value, defaultDays)
+		return time.Duration(defaultDays) * 24 * time.Hour
+	}
+	if parsed < minDays {
+		log.Printf("WARNING: %s=%d is below minimum=%d, clamping", name, parsed, minDays)
+		parsed = minDays
+	}
+	if parsed > maxDays {
+		log.Printf("WARNING: %s=%d is above maximum=%d, clamping", name, parsed, maxDays)
+		parsed = maxDays
+	}
+	return time.Duration(parsed) * 24 * time.Hour
+}
+
+func parseSameSiteEnv(name string, defaultValue http.SameSite) http.SameSite {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	if value == "" {
+		return defaultValue
+	}
+	switch value {
+	case "strict":
+		return http.SameSiteStrictMode
+	case "lax":
+		return http.SameSiteLaxMode
+	case "none":
+		return http.SameSiteNoneMode
+	default:
+		log.Printf("WARNING: %s=%q is invalid (expected strict|lax|none), using default", name, value)
+		return defaultValue
 	}
 }
 

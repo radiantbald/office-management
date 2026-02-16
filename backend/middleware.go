@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -85,12 +87,12 @@ func (a *app) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if len(a.officeJWTSecret) == 0 {
+		if a.officeTokenKeys == nil || !a.officeTokenKeys.CanVerify() {
 			respondError(w, http.StatusServiceUnavailable, "Office token verification is not configured")
 			return
 		}
 
-		atClaims, err := VerifyOfficeAccessToken(officeAccessToken, a.officeJWTSecret)
+		atClaims, err := VerifyOfficeAccessTokenWithKeyManager(officeAccessToken, a.officeTokenKeys)
 		if err != nil {
 			respondError(w, http.StatusUnauthorized, "Invalid or expired Office-Access-Token")
 			return
@@ -133,7 +135,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		}
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Office-Access-Token, Office-Refresh-Token, X-Device-ID, deviceid, devicename, Accept, Cache-Control, Pragma, X-Cookie, wb-apptype, Origin, Referer")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Office-Access-Token, Office-Refresh-Token, X-Device-ID, X-CSRF-Token, deviceid, devicename, Accept, Cache-Control, Pragma, X-Cookie, wb-apptype, Origin, Referer")
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Authorization, Office-Access-Token, Office-Refresh-Token, X-Set-Cookie, Content-Disposition")
 		w.Header().Set("Access-Control-Max-Age", "3600")
 
@@ -144,6 +146,124 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func csrfProtectionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if csrfBypassMethod(r.Method) || !strings.HasPrefix(r.URL.Path, "/api/") || csrfBypassPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Enforce CSRF checks only for cookie-authenticated browser requests.
+		if !hasAuthCookies(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if !hasTrustedOrigin(r) {
+			respondError(w, http.StatusForbidden, "CSRF protection: untrusted origin")
+			return
+		}
+
+		cookie, err := r.Cookie(csrfTokenCookieName)
+		if err != nil || strings.TrimSpace(cookie.Value) == "" {
+			respondError(w, http.StatusForbidden, "CSRF protection: missing csrf cookie")
+			return
+		}
+		headerToken := strings.TrimSpace(r.Header.Get("X-CSRF-Token"))
+		if headerToken == "" {
+			respondError(w, http.StatusForbidden, "CSRF protection: missing csrf header")
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(headerToken), []byte(cookie.Value)) != 1 {
+			respondError(w, http.StatusForbidden, "CSRF protection: invalid csrf token")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func csrfBypassMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
+}
+
+func csrfBypassPath(path string) bool {
+	allowedPrefixes := []string{
+		"/api/health",
+		"/api/v2/auth/",
+	}
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	// Office token issuance is authorized by Bearer token, not cookie identity.
+	return path == "/api/auth/office-token"
+}
+
+func hasAuthCookies(r *http.Request) bool {
+	if c, err := r.Cookie(accessTokenCookieName); err == nil && strings.TrimSpace(c.Value) != "" {
+		return true
+	}
+	if c, err := r.Cookie(refreshTokenCookieName); err == nil && strings.TrimSpace(c.Value) != "" {
+		return true
+	}
+	return false
+}
+
+func hasTrustedOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin != "" {
+		return isAllowedOrigin(origin, r)
+	}
+	referer := strings.TrimSpace(r.Header.Get("Referer"))
+	if referer == "" {
+		return false
+	}
+	parsed, err := url.Parse(referer)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	return isAllowedOrigin(parsed.Scheme+"://"+parsed.Host, r)
+}
+
+func isAllowedOrigin(origin string, r *http.Request) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return false
+	}
+	if origin == requestOrigin(r) {
+		return true
+	}
+	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
+	if allowedOrigins == "" {
+		allowedOrigins = "http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000,http://127.0.0.1:3000"
+	}
+	for _, allowed := range strings.Split(allowedOrigins, ",") {
+		if strings.TrimSpace(allowed) == origin {
+			return true
+		}
+	}
+	return false
+}
+
+func requestOrigin(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
 }
 
 func securityHeadersMiddleware(next http.Handler) http.Handler {

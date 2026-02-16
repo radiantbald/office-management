@@ -64,7 +64,7 @@ npx http-server
 - Nginx
 - Go API
 - Middleware
-- Auth JWT
+- Auth JWT (RS256 + kid, HS256 legacy fallback)
 - PostgreSQL
 - File Storage
 - team.wb.ru
@@ -114,7 +114,7 @@ npx http-server
 - **Frontend**: Vanilla JavaScript, HTML5, CSS3
 - **Backend**: Go 1.21+, net/http, pgx
 - **Database**: PostgreSQL 16 Alpine
-- **Auth**: JWT (HS256) + team.wb.ru API
+- **Auth**: JWT (RS256 + kid, HS256 legacy fallback) + team.wb.ru API
 - **Web Server**: Nginx (production), Go http.FileServer (dev)
 - **Deployment**: Docker & Docker Compose
 - **Visualization**: Mermaid.js 10.9.5

@@ -13,11 +13,25 @@ import (
 	"time"
 )
 
-// Token TTL constants
-const (
-	officeAccessTokenTTL  = 1 * time.Hour      // Access token lives 1 hour
-	officeRefreshTokenTTL = 30 * 24 * time.Hour // Refresh token lives 30 days
+// Token TTL values are configurable at startup from env.
+// Defaults are security-oriented:
+// - access: 10 minutes
+// - refresh: 30 days
+var (
+	officeAccessTokenTTL  = 10 * time.Minute
+	officeRefreshTokenTTL = 30 * 24 * time.Hour
 )
+
+// configureOfficeTokenTTLs updates token TTLs at startup.
+// Non-positive values are ignored and existing values are preserved.
+func configureOfficeTokenTTLs(accessTTL, refreshTTL time.Duration) {
+	if accessTTL > 0 {
+		officeAccessTokenTTL = accessTTL
+	}
+	if refreshTTL > 0 {
+		officeRefreshTokenTTL = refreshTTL
+	}
+}
 
 // TokenResponsibilities holds the IDs of buildings, floors, and coworkings
 // that the user is responsible for (can edit).
@@ -170,8 +184,8 @@ func generateTokenID() string {
 
 // hashTokenID produces HMAC-SHA256(token_id, pepper) so that the raw token_id
 // is never stored in the database.  Even with full DB access an attacker cannot
-// reconstruct the original value.  The pepper is the application-level JWT
-// signing secret (officeJWTSecret).
+// reconstruct the original value. The pepper should be independent from the
+// JWT signing key so it can be rotated separately.
 func hashTokenID(tokenID string, pepper []byte) string {
 	mac := hmac.New(sha256.New, pepper)
 	mac.Write([]byte(tokenID))
