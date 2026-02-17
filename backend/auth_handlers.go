@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -15,6 +18,112 @@ import (
 )
 
 var profileIDPattern = regexp.MustCompile(`^\d+$`)
+
+func shouldRetryUpstreamStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func backoffForAttempt(attempt int) time.Duration {
+	// Lightweight bounded backoff: 150ms, 300ms, 450ms.
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 3 {
+		attempt = 3
+	}
+	return time.Duration(attempt*150) * time.Millisecond
+}
+
+func waitForRetry(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func shouldRetryUpstreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return true
+}
+
+func (a *app) doUpstreamRequest(req *http.Request, allowRetry bool) (*http.Response, error) {
+	client := a.externalHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	maxRetries := 0
+	if allowRetry {
+		maxRetries = a.externalMaxRetries
+		if maxRetries < 0 {
+			maxRetries = 0
+		}
+	}
+
+	upperMethod := strings.ToUpper(strings.TrimSpace(req.Method))
+	switch upperMethod {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		// Retry for transient errors on idempotent methods only.
+	default:
+		maxRetries = 0
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		attemptReq := req.Clone(req.Context())
+		if req.GetBody != nil {
+			bodyCopy, err := req.GetBody()
+			if err != nil {
+				return nil, err
+			}
+			attemptReq.Body = bodyCopy
+		}
+
+		resp, err := client.Do(attemptReq)
+		if err == nil {
+			if attempt < maxRetries && shouldRetryUpstreamStatus(resp.StatusCode) {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				if !waitForRetry(req.Context(), backoffForAttempt(attempt+1)) {
+					return nil, req.Context().Err()
+				}
+				continue
+			}
+			return resp, nil
+		}
+
+		lastErr = err
+		if attempt >= maxRetries || !shouldRetryUpstreamError(err) {
+			break
+		}
+		if !waitForRetry(req.Context(), backoffForAttempt(attempt+1)) {
+			return nil, req.Context().Err()
+		}
+	}
+
+	return nil, lastErr
+}
 
 // Cookie names for HttpOnly token storage.
 const (
@@ -205,8 +314,7 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 		log.Printf("handleAuthUserInfo: No cookies found")
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.doUpstreamRequest(req, true)
 	if err != nil {
 		log.Printf("handleAuthUserInfo: Error making request to team.wb.ru: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to make request")
@@ -391,8 +499,7 @@ func (a *app) fetchWBBandRaw(token, profileID, cookie string, sourceReq *http.Re
 		req.Header.Set("Cookie", cookie)
 	}
 
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.doUpstreamRequest(req, true)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
@@ -492,8 +599,7 @@ func (a *app) handleAuthRequestCode(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Origin", "https://team.wb.ru")
 	req.Header.Set("Referer", "https://team.wb.ru/")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.doUpstreamRequest(req, false)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to make request")
 		return
@@ -556,8 +662,7 @@ func (a *app) handleAuthConfirmCode(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("Cookie", cookie)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.doUpstreamRequest(req, false)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to make request")
 		return
@@ -619,8 +724,7 @@ func (a *app) verifyExternalToken(token string, originalReq *http.Request) (*ver
 		}
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.doUpstreamRequest(req, true)
 	if err != nil {
 		return nil, fmt.Errorf("verifyExternalToken: upstream request failed: %w", err)
 	}

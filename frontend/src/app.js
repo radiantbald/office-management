@@ -1459,8 +1459,10 @@ const initializeAuth = async () => {
       setAuthStatus("");
     }
     refreshDeskBookingOwnership();
-    await fetchResponsibilitiesForUser({ force: true });
     await runAppInit();
+    void fetchResponsibilitiesForUser({ force: true }).catch(() => {
+      setResponsibilitiesMenuVisibility(false);
+    });
     return;
   }
 
@@ -1493,8 +1495,10 @@ const initializeAuth = async () => {
     if (authGate) {
       hideAuthGate();
     }
-    await fetchResponsibilitiesForUser({ force: true });
     await runAppInit();
+    void fetchResponsibilitiesForUser({ force: true }).catch(() => {
+      setResponsibilitiesMenuVisibility(false);
+    });
     return;
   }
 

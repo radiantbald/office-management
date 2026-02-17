@@ -11,6 +11,7 @@ import (
 	"log"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -40,6 +41,8 @@ type app struct {
 	refreshTokenPepper []byte
 	authCookieSameSite http.SameSite
 	authCookieDomain   string
+	externalHTTPClient *http.Client
+	externalMaxRetries int
 }
 
 type building struct {
@@ -250,6 +253,27 @@ func main() {
 	configureOfficeJWTValidation(jwtIssuer, jwtAccessAudience, jwtRefreshAudience, jwtClockSkew)
 	authSameSite := parseSameSiteEnv("AUTH_COOKIE_SAMESITE", http.SameSiteStrictMode)
 	authCookieDomain := parseCookieDomainEnv("AUTH_COOKIE_DOMAIN")
+	externalAuthTimeout := parseEnvDurationSeconds("EXTERNAL_AUTH_TIMEOUT_SECONDS", 6, 2, 20)
+	externalAuthMaxRetries := parseEnvInt("EXTERNAL_AUTH_MAX_RETRIES", 1, 0, 3)
+	slowAPIThreshold := parseEnvDurationMilliseconds("SLOW_API_THRESHOLD_MS", 700, 100, 30000)
+
+	externalTransport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   3 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   3 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: externalAuthTimeout,
+	}
+	externalHTTPClient := &http.Client{
+		Timeout:   externalAuthTimeout,
+		Transport: externalTransport,
+	}
 
 	app := &app{
 		db:                 db,
@@ -260,6 +284,8 @@ func main() {
 		refreshTokenPepper: []byte(refreshPepper),
 		authCookieSameSite: authSameSite,
 		authCookieDomain:   authCookieDomain,
+		externalHTTPClient: externalHTTPClient,
+		externalMaxRetries: externalAuthMaxRetries,
 	}
 
 	mux := http.NewServeMux()
@@ -310,7 +336,7 @@ func main() {
 	handler = csrfProtectionMiddleware(handler)
 	handler = corsMiddleware(handler)
 	handler = securityHeadersMiddleware(handler)
-	handler = loggingMiddleware(handler)
+	handler = loggingMiddleware(handler, slowAPIThreshold)
 
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
@@ -421,6 +447,48 @@ func parseEnvDurationSeconds(name string, defaultSeconds, minSeconds, maxSeconds
 		parsed = maxSeconds
 	}
 	return time.Duration(parsed) * time.Second
+}
+
+func parseEnvDurationMilliseconds(name string, defaultMs, minMs, maxMs int) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return time.Duration(defaultMs) * time.Millisecond
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Printf("WARNING: %s=%q is invalid, using default=%d", name, value, defaultMs)
+		return time.Duration(defaultMs) * time.Millisecond
+	}
+	if parsed < minMs {
+		log.Printf("WARNING: %s=%d is below minimum=%d, clamping", name, parsed, minMs)
+		parsed = minMs
+	}
+	if parsed > maxMs {
+		log.Printf("WARNING: %s=%d is above maximum=%d, clamping", name, parsed, maxMs)
+		parsed = maxMs
+	}
+	return time.Duration(parsed) * time.Millisecond
+}
+
+func parseEnvInt(name string, defaultValue, minValue, maxValue int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Printf("WARNING: %s=%q is invalid, using default=%d", name, value, defaultValue)
+		return defaultValue
+	}
+	if parsed < minValue {
+		log.Printf("WARNING: %s=%d is below minimum=%d, clamping", name, parsed, minValue)
+		parsed = minValue
+	}
+	if parsed > maxValue {
+		log.Printf("WARNING: %s=%d is above maximum=%d, clamping", name, parsed, maxValue)
+		parsed = maxValue
+	}
+	return parsed
 }
 
 func parseSameSiteEnv(name string, defaultValue http.SameSite) http.SameSite {
@@ -5504,12 +5572,23 @@ func respondError(w http.ResponseWriter, status int, message string) {
 	respondJSON(w, status, map[string]string{"error": message})
 }
 
-func loggingMiddleware(next http.Handler) http.Handler {
+func loggingMiddleware(next http.Handler, slowThreshold time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
+		duration := time.Since(start)
+		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, duration.Round(time.Millisecond))
+		if strings.HasPrefix(r.URL.Path, "/api/") && duration >= slowThreshold {
+			log.Printf("SLOW_API method=%s path=%s status=%d duration=%s remote_ip=%s threshold=%s",
+				r.Method,
+				r.URL.Path,
+				rec.status,
+				duration.Round(time.Millisecond),
+				clientIP(r),
+				slowThreshold.Round(time.Millisecond),
+			)
+		}
 	})
 }
 
