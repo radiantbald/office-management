@@ -1175,6 +1175,11 @@ func (a *app) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusUnauthorized, "Session expired")
 		return
 	}
+	roleID, err := getUserRoleByWbUserID(r.Context(), a.db, atClaims.EmployeeID)
+	if err != nil {
+		log.Printf("handleAuthSession: failed to resolve role for %s: %v", atClaims.EmployeeID, err)
+		roleID = roleEmployee
+	}
 
 	// Try to read refresh token exp for proactive rotation info.
 	var refreshExp int64
@@ -1199,7 +1204,7 @@ func (a *app) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		"session": sessionResponse{
 			EmployeeID:       atClaims.EmployeeID,
 			UserName:         atClaims.UserName,
-			Role:             atClaims.Role,
+			Role:             roleID,
 			Responsibilities: atClaims.Responsibilities,
 			AccessExp:        atClaims.Exp,
 			RefreshExp:       refreshExp,

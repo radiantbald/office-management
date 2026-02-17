@@ -723,6 +723,10 @@ const toggleBreadcrumbMenu = (profile) => {
 };
 
 const getRoleIdFromUser = (user) => {
+  const sessionRole = Number(getSessionClaims()?.role);
+  if (Number.isFinite(sessionRole) && (sessionRole === 1 || sessionRole === 2)) {
+    return sessionRole;
+  }
   if (!user) {
     return null;
   }
