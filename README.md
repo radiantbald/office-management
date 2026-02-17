@@ -43,6 +43,41 @@ docker compose up -d --build
 docker compose exec db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
 ```
 
+#### Автодамп БД перед перезапуском сервера (Debian/systemd)
+
+В репозитории есть готовые скрипты:
+
+- `scripts/db_backup.sh` — создаёт дамп в `backend/db_dumps`
+- `scripts/install_shutdown_db_backup.sh` — ставит `systemd` hook перед `shutdown/reboot`
+
+Локальный/обычный compose:
+
+```bash
+bash scripts/db_backup.sh --compose-file ./docker-compose.yml --env-file ./.env
+```
+
+Продовый compose:
+
+```bash
+bash scripts/db_backup.sh --compose-file ./docker-compose.prod.yml --env-file ./.env
+```
+
+Установка автозапуска перед выключением/перезагрузкой:
+
+```bash
+sudo bash scripts/install_shutdown_db_backup.sh \
+  --compose-file /opt/office-management/docker-compose.prod.yml \
+  --env-file /opt/office-management/.env \
+  --dump-dir /opt/office-management/backend/db_dumps
+```
+
+Проверка:
+
+```bash
+sudo systemctl start office-db-backup-before-shutdown.service
+ls -lah backend/db_dumps
+```
+
 #### Порты и сервисы
 
 - `web` — Nginx со статикой и прокси на API
