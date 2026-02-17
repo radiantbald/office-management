@@ -9,6 +9,7 @@ ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/docker-compose.yml}"
 DUMP_DIR="${DUMP_DIR:-$ROOT_DIR/backend/db_dumps}"
 DB_SERVICE="${DB_SERVICE:-db}"
+DUMP_TAG="${DUMP_TAG:-auto}"
 
 log() { echo "[db-backup] $*"; }
 fail() { echo "[db-backup] ERROR: $*" >&2; exit 1; }
@@ -23,6 +24,7 @@ Options:
   --env-file <path>       Env file path (default: ./.env)
   --dump-dir <path>       Output directory (default: ./backend/db_dumps)
   --db-service <name>     DB service name in compose (default: db)
+  --tag <value>           Tag in filename (default: auto)
   -h, --help              Show this help
 EOF
 }
@@ -33,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     --env-file) ENV_FILE="${2:-}"; shift 2 ;;
     --dump-dir) DUMP_DIR="${2:-}"; shift 2 ;;
     --db-service) DB_SERVICE="${2:-}"; shift 2 ;;
+    --tag) DUMP_TAG="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Unknown argument: $1" ;;
   esac
@@ -50,9 +53,10 @@ set +a
 
 [[ -n "${POSTGRES_USER:-}" ]] || fail "POSTGRES_USER is empty in env file"
 [[ -n "${POSTGRES_DB:-}" ]] || fail "POSTGRES_DB is empty in env file"
+[[ -n "${DUMP_TAG:-}" ]] || fail "--tag cannot be empty"
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
-dump_file="$DUMP_DIR/db_dump_${timestamp}.sql"
+dump_file="$DUMP_DIR/db_dump_${DUMP_TAG}_${timestamp}.sql"
 
 log "Creating dump to $dump_file"
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T "$DB_SERVICE" \

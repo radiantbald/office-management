@@ -47,7 +47,7 @@ docker compose exec db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
 
 В репозитории есть готовые скрипты:
 
-- `scripts/db_backup.sh` — создаёт дамп в `backend/db_dumps`
+- `scripts/db_backup.sh` — создаёт дамп в `backend/db_dumps` с именем вида `db_dump_auto_YYYYmmdd_HHMMSS.sql`
 - `scripts/install_shutdown_db_backup.sh` — ставит `systemd` hook перед `shutdown/reboot`
 
 Локальный/обычный compose:
