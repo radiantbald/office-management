@@ -18,3 +18,8 @@ dist/
 
 # Env
 .env
+
+# DB dumps
+backend/db_dumps/*.sql
+backend/db_dumps/*.dump
+backend/db_dumps/*.backup
