@@ -43,12 +43,12 @@ docker compose up -d --build
 docker compose exec db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
 ```
 
-#### Автодамп БД перед перезапуском сервера (Debian/systemd)
+#### Автодамп БД перед остановкой/перезапуском контейнера БД
 
 В репозитории есть готовые скрипты:
 
 - `scripts/db_backup.sh` — создаёт дамп в `backend/db_dumps` с именем вида `db_dump_auto_YYYYmmdd_HHMMSS.sql`
-- `scripts/install_shutdown_db_backup.sh` — ставит `systemd` hook перед `shutdown/reboot`
+- `scripts/db_container_control.sh` — делает дамп и затем выполняет `stop`/`restart` для контейнера БД
 
 Локальный/обычный compose:
 
@@ -62,21 +62,29 @@ bash scripts/db_backup.sh --compose-file ./docker-compose.yml --env-file ./.env
 bash scripts/db_backup.sh --compose-file ./docker-compose.prod.yml --env-file ./.env
 ```
 
-Установка автозапуска перед выключением/перезагрузкой:
+Остановка контейнера БД с автодампом:
 
 ```bash
-sudo bash scripts/install_shutdown_db_backup.sh \
-  --compose-file /opt/office-management/docker-compose.prod.yml \
-  --env-file /opt/office-management/.env \
-  --dump-dir /opt/office-management/backend/db_dumps
+bash scripts/db_container_control.sh \
+  --action stop \
+  --compose-file ./docker-compose.prod.yml \
+  --env-file ./.env \
+  --dump-dir ./backend/db_dumps
 ```
 
-Проверка:
+Перезапуск контейнера БД с автодампом:
 
 ```bash
-sudo systemctl start office-db-backup-before-shutdown.service
-ls -lah backend/db_dumps
+bash scripts/db_container_control.sh \
+  --action restart \
+  --compose-file ./docker-compose.prod.yml \
+  --env-file ./.env \
+  --dump-dir ./backend/db_dumps
 ```
+
+Пример имени файла: `db_dump_auto_before_restart_YYYYmmdd_HHMMSS.sql`.
+
+> Важно: если вы останавливаете/перезапускаете БД напрямую через `docker compose stop db` или `docker compose restart db`, автодамп не сработает. Для автодампа используйте `scripts/db_container_control.sh`.
 
 #### Порты и сервисы
 
