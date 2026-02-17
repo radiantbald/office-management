@@ -41,6 +41,9 @@
               >
                 Мои зоны ответственности
               </button>
+              <button class="breadcrumb-menu-item is-hidden" type="button" data-role="breadcrumb-db-dump">
+                Дамп БД
+              </button>
               <button class="breadcrumb-menu-item is-logout" type="button" data-role="breadcrumb-logout">
                 Выйти
               </button>
@@ -684,6 +687,31 @@
           <button id="adminBookingsCancelAllBtn" class="context-action danger" type="button">
             Отменить все
           </button>
+        </div>
+      </div>
+    </div>
+    <div id="dbDumpModal" class="modal db-dump-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="dbDumpModalTitle">
+        <div class="modal-header">
+          <h2 id="dbDumpModalTitle">Дамп базы данных</h2>
+          <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">
+            ✕
+          </button>
+        </div>
+        <div class="db-dump-body">
+          <div id="dbDumpStatus" class="status" role="status" aria-live="polite"></div>
+          <p class="modal-subtitle">Скачивание создаёт новый дамп на сервере и одновременно отдаёт его вам.</p>
+          <div class="db-dump-actions">
+            <button id="dbDumpDownloadBtn" class="context-action" type="button">Скачать БД</button>
+            <button id="dbDumpUploadBtn" class="context-action" type="button">Загрузить БД</button>
+          </div>
+          <input
+            id="dbDumpUploadInput"
+            class="is-hidden"
+            type="file"
+            accept=".sql,.dump,.backup,.txt,application/sql,text/plain"
+          />
         </div>
       </div>
     </div>

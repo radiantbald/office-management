@@ -1540,6 +1540,22 @@ body.space-editing .space-booking-panel {
   border-color: var(--color-blue-300);
 }
 
+.db-dump-modal .modal-dialog {
+  width: min(560px, 100%);
+}
+
+.db-dump-body {
+  display: grid;
+  gap: 12px;
+}
+
+.db-dump-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .date-picker-footer .bookings-toggle-button:last-child {
   flex: 1 1 100%;
 }

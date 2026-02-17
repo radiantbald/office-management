@@ -28,6 +28,7 @@ import (
 
 const uploadDirName = "uploads"
 const buildingUploadDirName = "buildings"
+const dbDumpDirName = "backend/db_dumps"
 const maxBuildingImageSize = 5 << 20
 const maxBuildingFormSize = maxBuildingImageSize + (1 << 20)
 const defaultBuildingTimezone = "Europe/Moscow"
@@ -36,6 +37,7 @@ type app struct {
 	db                 *sql.DB
 	uploadDir          string
 	buildingUploadDir  string
+	dbDumpDir          string
 	authRateLimiter    *ipRateLimiter
 	officeTokenKeys    *officeTokenKeyManager
 	refreshTokenPepper []byte
@@ -213,6 +215,13 @@ func main() {
 	if err := os.MkdirAll(buildingUploadDir, 0o755); err != nil {
 		log.Fatalf("create upload dir: %v", err)
 	}
+	dbDumpDir, err := filepath.Abs(dbDumpDirName)
+	if err != nil {
+		log.Fatalf("resolve db dump dir: %v", err)
+	}
+	if err := os.MkdirAll(dbDumpDir, 0o755); err != nil {
+		log.Fatalf("create db dump dir: %v", err)
+	}
 
 	officeTokenKeys, err := loadOfficeTokenKeyManagerFromEnv()
 	if err != nil {
@@ -279,6 +288,7 @@ func main() {
 		db:                 db,
 		uploadDir:          uploadDir,
 		buildingUploadDir:  buildingUploadDir,
+		dbDumpDir:          dbDumpDir,
 		authRateLimiter:    newIPRateLimiter(10, time.Minute), // 10 auth requests per IP per minute
 		officeTokenKeys:    officeTokenKeys,
 		refreshTokenPepper: []byte(refreshPepper),
@@ -306,6 +316,8 @@ func main() {
 	mux.HandleFunc("/api/users", app.handleUsers)
 	mux.HandleFunc("/api/users/role", app.handleUserRole)
 	mux.HandleFunc("/api/responsibilities", app.handleResponsibilities)
+	mux.HandleFunc("/api/admin/db-dumps/export", app.handleDatabaseDumpExport)
+	mux.HandleFunc("/api/admin/db-dumps/import", app.handleDatabaseDumpImport)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)

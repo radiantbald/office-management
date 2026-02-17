@@ -202,6 +202,11 @@ const adminBookingsCancelAllBtn = document.getElementById("adminBookingsCancelAl
 const responsibilitiesModal = document.getElementById("responsibilitiesModal");
 const responsibilitiesList = document.getElementById("responsibilitiesList");
 const responsibilitiesEmpty = document.getElementById("responsibilitiesEmpty");
+const dbDumpModal = document.getElementById("dbDumpModal");
+const dbDumpStatus = document.getElementById("dbDumpStatus");
+const dbDumpDownloadBtn = document.getElementById("dbDumpDownloadBtn");
+const dbDumpUploadBtn = document.getElementById("dbDumpUploadBtn");
+const dbDumpUploadInput = document.getElementById("dbDumpUploadInput");
 const meetingSearchModal = document.getElementById("meetingSearchModal");
 const meetingSearchStatus = document.getElementById("meetingSearchStatus");
 const meetingSearchDatePicker = document.getElementById("meetingSearchDatePicker");
@@ -791,6 +796,7 @@ const updateBreadcrumbProfile = (user) => {
     breadcrumbProfiles.forEach((node) => {
       node.classList.add("is-hidden");
     });
+    setDbDumpMenuVisibility(false);
     closeBreadcrumbMenus();
     return;
   }
@@ -837,6 +843,7 @@ const updateBreadcrumbProfile = (user) => {
     }
     node.classList.remove("is-hidden");
   });
+  setDbDumpMenuVisibility(isAdminRole(user));
   applyRoleRestrictions(user);
 };
 
@@ -1590,6 +1597,10 @@ const bookingStatusManager = createStatusManager(spaceBookingStatus);
 const setBookingStatus = (message, tone) => bookingStatusManager.set(message, tone);
 const clearBookingStatus = () => bookingStatusManager.clear();
 
+const dbDumpStatusManager = createStatusManager(dbDumpStatus);
+const setDbDumpStatus = (message, tone) => dbDumpStatusManager.set(message, tone);
+const clearDbDumpStatus = () => dbDumpStatusManager.clear();
+
 let topAlertTimer = null;
 let topAlertClearTimer = null;
 
@@ -1704,6 +1715,18 @@ const setResponsibilitiesMenuVisibility = (isVisible) => {
   }
   breadcrumbProfiles.forEach((profile) => {
     const button = profile.querySelector('[data-role="breadcrumb-responsibilities"]');
+    if (button) {
+      button.classList.toggle("is-hidden", !isVisible);
+    }
+  });
+};
+
+const setDbDumpMenuVisibility = (isVisible) => {
+  if (!breadcrumbProfiles || breadcrumbProfiles.length === 0) {
+    return;
+  }
+  breadcrumbProfiles.forEach((profile) => {
+    const button = profile.querySelector('[data-role="breadcrumb-db-dump"]');
     if (button) {
       button.classList.toggle("is-hidden", !isVisible);
     }
@@ -2248,6 +2271,126 @@ const closeResponsibilitiesModal = () => {
     !(meetingBookingModal && meetingBookingModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
+  }
+};
+
+const openDbDumpModal = () => {
+  if (!dbDumpModal) {
+    return;
+  }
+  dbDumpModal.classList.add("is-open");
+  dbDumpModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  clearDbDumpStatus();
+};
+
+const closeDbDumpModal = () => {
+  if (!dbDumpModal) {
+    return;
+  }
+  dbDumpModal.classList.remove("is-open");
+  dbDumpModal.setAttribute("aria-hidden", "true");
+  clearDbDumpStatus();
+  if (
+    !(buildingModal && buildingModal.classList.contains("is-open")) &&
+    !(spaceModal && spaceModal.classList.contains("is-open")) &&
+    !(deskModal && deskModal.classList.contains("is-open")) &&
+    !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
+    !(floorInfoModal && floorInfoModal.classList.contains("is-open")) &&
+    !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) &&
+    !(adminBookingsModal && adminBookingsModal.classList.contains("is-open")) &&
+    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open")) &&
+    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
+    !(responsibilitiesModal && responsibilitiesModal.classList.contains("is-open"))
+  ) {
+    document.body.classList.remove("modal-open");
+  }
+};
+
+const parseDownloadFileName = (contentDisposition, fallback = "db_dump.sql") => {
+  const header = String(contentDisposition || "").trim();
+  if (!header) {
+    return fallback;
+  }
+  const utf8Match = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]).replace(/[/\\]/g, "_");
+    } catch (_error) {
+      // Ignore malformed URI sequence and continue with fallback patterns.
+    }
+  }
+  const asciiMatch = header.match(/filename\s*=\s*"([^"]+)"/i) || header.match(/filename\s*=\s*([^;]+)/i);
+  if (asciiMatch && asciiMatch[1]) {
+    return asciiMatch[1].trim().replace(/[/\\]/g, "_");
+  }
+  return fallback;
+};
+
+const handleDownloadDbDump = async () => {
+  if (!dbDumpDownloadBtn || !dbDumpUploadBtn) {
+    return;
+  }
+  dbDumpDownloadBtn.disabled = true;
+  dbDumpUploadBtn.disabled = true;
+  setDbDumpStatus("Создаем дамп и готовим скачивание...", "info");
+  try {
+    const response = await fetch("/api/admin/db-dumps/export", {
+      method: "GET",
+      credentials: "include",
+    });
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(errorPayload.error || "Не удалось создать дамп БД.");
+    }
+    const blob = await response.blob();
+    if (!blob || blob.size === 0) {
+      throw new Error("Получен пустой дамп БД.");
+    }
+    const fileName = parseDownloadFileName(
+      response.headers.get("Content-Disposition"),
+      `db_dump_${Date.now()}.sql`
+    );
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
+    setDbDumpStatus("Дамп БД создан, сохранен на сервере и скачан.", "success");
+  } catch (error) {
+    setDbDumpStatus(error.message || "Не удалось скачать дамп БД.", "error");
+  } finally {
+    dbDumpDownloadBtn.disabled = false;
+    dbDumpUploadBtn.disabled = false;
+  }
+};
+
+const handleUploadDbDump = async (file) => {
+  if (!file) {
+    return;
+  }
+  if (!dbDumpDownloadBtn || !dbDumpUploadBtn) {
+    return;
+  }
+  dbDumpDownloadBtn.disabled = true;
+  dbDumpUploadBtn.disabled = true;
+  setDbDumpStatus("Загружаем дамп в базу данных...", "info");
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    await apiRequest("/api/admin/db-dumps/import", {
+      method: "POST",
+      body: formData,
+    });
+    setDbDumpStatus("Дамп БД успешно загружен.", "success");
+  } catch (error) {
+    setDbDumpStatus(error.message || "Не удалось загрузить дамп БД.", "error");
+  } finally {
+    dbDumpDownloadBtn.disabled = false;
+    dbDumpUploadBtn.disabled = false;
   }
 };
 
@@ -11857,6 +12000,34 @@ if (adminBookingsModal) {
   });
 }
 
+if (dbDumpModal) {
+  dbDumpModal.querySelectorAll("[data-modal-close]").forEach((el) => {
+    el.addEventListener("click", () => {
+      closeDbDumpModal();
+    });
+  });
+}
+
+if (dbDumpDownloadBtn) {
+  dbDumpDownloadBtn.addEventListener("click", () => {
+    void handleDownloadDbDump();
+  });
+}
+
+if (dbDumpUploadBtn && dbDumpUploadInput) {
+  dbDumpUploadBtn.addEventListener("click", () => {
+    dbDumpUploadInput.click();
+  });
+  dbDumpUploadInput.addEventListener("change", () => {
+    const [file] = dbDumpUploadInput.files || [];
+    if (!file) {
+      return;
+    }
+    void handleUploadDbDump(file);
+    dbDumpUploadInput.value = "";
+  });
+}
+
 document.addEventListener("keydown", (event) => {
   if (!isSpaceEditing) {
     return;
@@ -12803,6 +12974,7 @@ if (breadcrumbProfiles.length > 0) {
     const responsibilitiesButton = profile.querySelector(
       '[data-role="breadcrumb-responsibilities"]'
     );
+    const dbDumpButton = profile.querySelector('[data-role="breadcrumb-db-dump"]');
     const logoutButton = profile.querySelector('[data-role="breadcrumb-logout"]');
 
     if (trigger) {
@@ -12856,6 +13028,14 @@ if (breadcrumbProfiles.length > 0) {
         event.stopPropagation();
         closeBreadcrumbMenus();
         void openResponsibilitiesModal();
+      });
+    }
+
+    if (dbDumpButton) {
+      dbDumpButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        closeBreadcrumbMenus();
+        openDbDumpModal();
       });
     }
   });
@@ -13138,6 +13318,10 @@ document.addEventListener("keydown", (event) => {
     }
     if (adminBookingsModal && adminBookingsModal.classList.contains("is-open")) {
       closeAdminBookingsModal();
+      return;
+    }
+    if (dbDumpModal && dbDumpModal.classList.contains("is-open")) {
+      closeDbDumpModal();
       return;
     }
     if (spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) {

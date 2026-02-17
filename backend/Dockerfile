@@ -11,8 +11,9 @@ FROM alpine:3.19
 
 WORKDIR /app
 ENV PORT=8080
-RUN adduser -D -u 10001 app && \
-    mkdir -p /app/uploads && \
+RUN apk add --no-cache postgresql-client && \
+    adduser -D -u 10001 app && \
+    mkdir -p /app/uploads /app/backend/db_dumps && \
     chown -R app:app /app
 COPY --from=build /out/api /app/api
 
