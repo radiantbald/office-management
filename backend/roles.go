@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -21,6 +22,8 @@ const (
 )
 
 var errRequesterIdentityRequired = errors.New("requester identity is required")
+
+const adminEmployeeIDsEnvKey = "OFFICE_ADMIN_EMPLOYEE_IDS"
 
 func isValidRole(role int) bool {
 	return role == roleEmployee || role == roleAdmin
@@ -104,29 +107,69 @@ func ensureNotEmployeeRole(w http.ResponseWriter, r *http.Request, queryer rowQu
 }
 
 func getUserRoleByWbUserID(ctx context.Context, queryer rowQueryer, wbUserID string) (int, error) {
-	if queryer == nil || strings.TrimSpace(wbUserID) == "" {
+	normalizedID := strings.TrimSpace(wbUserID)
+	if normalizedID == "" {
+		return roleEmployee, nil
+	}
+	if isAdminEmployeeID(normalizedID) {
+		return roleAdmin, nil
+	}
+	if queryer == nil {
 		return roleEmployee, nil
 	}
 	row := queryer.QueryRowContext(ctx,
-		`SELECT COALESCE(role, $2)
+		`SELECT COALESCE(role, $2),
+		        TRIM(COALESCE(employee_id, ''))
 		   FROM users
 		  WHERE wb_user_id = $1 OR wb_team_profile_id = $1 OR employee_id = $1
 		  ORDER BY (wb_user_id = $1) DESC, (employee_id = $1) DESC
 		  LIMIT 1`,
-		strings.TrimSpace(wbUserID),
+		normalizedID,
 		roleEmployee,
 	)
 	var role int
-	if err := row.Scan(&role); err != nil {
+	var employeeID string
+	if err := row.Scan(&role, &employeeID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return roleEmployee, nil
 		}
 		return roleEmployee, err
 	}
+	if isAdminEmployeeID(employeeID) {
+		return roleAdmin, nil
+	}
 	if !isValidRole(role) {
 		return roleEmployee, nil
 	}
 	return role, nil
+}
+
+func isAdminEmployeeID(employeeID string) bool {
+	employeeID = strings.TrimSpace(employeeID)
+	if employeeID == "" {
+		return false
+	}
+	_, ok := parseAdminEmployeeIDsFromEnv()[employeeID]
+	return ok
+}
+
+func parseAdminEmployeeIDsFromEnv() map[string]struct{} {
+	raw := strings.TrimSpace(os.Getenv(adminEmployeeIDsEnvKey))
+	if raw == "" {
+		return map[string]struct{}{}
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+	adminIDs := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		id := strings.TrimSpace(part)
+		if id == "" {
+			continue
+		}
+		adminIDs[id] = struct{}{}
+	}
+	return adminIDs
 }
 
 func defaultRoleForNewUser(tx *sql.Tx) (int, error) {

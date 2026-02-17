@@ -117,6 +117,7 @@ export DATABASE_URL="postgres://user:pass@localhost:5432/office?sslmode=disable"
 ```
 DATABASE_URL=postgres://user:pass@localhost:5432/office?sslmode=disable
 PORT=8080
+OFFICE_ADMIN_EMPLOYEE_IDS=12345,67890
 ```
 
 ## Аутентификация

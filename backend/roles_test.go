@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestHasPermission(t *testing.T) {
 	t.Parallel()
@@ -46,5 +49,31 @@ func TestHasPermission(t *testing.T) {
 				t.Fatalf("hasPermission(role=%d, perm=%q) = %v, want %v", tc.role, tc.required, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseAdminEmployeeIDsFromEnv(t *testing.T) {
+	t.Setenv(adminEmployeeIDsEnvKey, "12345, 67890;abc\nxyz\t  12345")
+
+	ids := parseAdminEmployeeIDsFromEnv()
+	if len(ids) != 4 {
+		t.Fatalf("parseAdminEmployeeIDsFromEnv() len = %d, want 4", len(ids))
+	}
+	for _, id := range []string{"12345", "67890", "abc", "xyz"} {
+		if _, ok := ids[id]; !ok {
+			t.Fatalf("expected id %q to be present", id)
+		}
+	}
+}
+
+func TestGetUserRoleByWbUserID_AdminFromEnvWithoutDB(t *testing.T) {
+	t.Setenv(adminEmployeeIDsEnvKey, "emp-777")
+
+	role, err := getUserRoleByWbUserID(context.Background(), nil, "emp-777")
+	if err != nil {
+		t.Fatalf("getUserRoleByWbUserID returned error: %v", err)
+	}
+	if role != roleAdmin {
+		t.Fatalf("getUserRoleByWbUserID role = %d, want %d", role, roleAdmin)
 	}
 }
