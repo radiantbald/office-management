@@ -106,6 +106,37 @@ func ensureNotEmployeeRole(w http.ResponseWriter, r *http.Request, queryer rowQu
 	return true
 }
 
+func ensureNotEmployeeRoleFresh(w http.ResponseWriter, r *http.Request, queryer rowQueryer) bool {
+	role, err := resolveRoleFromRequestFresh(r, queryer)
+	if err != nil {
+		respondRoleResolutionError(w, err)
+		return false
+	}
+	if role == roleEmployee {
+		respondError(w, http.StatusForbidden, "Недостаточно прав")
+		return false
+	}
+	return true
+}
+
+func resolveRoleFromRequestFresh(r *http.Request, queryer rowQueryer) (int, error) {
+	if r == nil {
+		return roleEmployee, nil
+	}
+	employeeID, err := extractEmployeeIDFromRequest(r, queryer)
+	if err != nil {
+		return roleEmployee, err
+	}
+	if strings.TrimSpace(employeeID) != "" {
+		return getUserRoleByWbUserID(r.Context(), queryer, employeeID)
+	}
+	wbUserID, _ := extractBookingUser(r)
+	if strings.TrimSpace(wbUserID) == "" {
+		return roleEmployee, errRequesterIdentityRequired
+	}
+	return getUserRoleByWbUserID(r.Context(), queryer, wbUserID)
+}
+
 func getUserRoleByWbUserID(ctx context.Context, queryer rowQueryer, wbUserID string) (int, error) {
 	normalizedID := strings.TrimSpace(wbUserID)
 	if normalizedID == "" {

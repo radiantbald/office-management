@@ -36,7 +36,7 @@ func (a *app) handleDatabaseDumpExport(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-	if !ensureNotEmployeeRole(w, r, a.db) {
+	if !ensureNotEmployeeRoleFresh(w, r, a.db) {
 		return
 	}
 
@@ -99,7 +99,7 @@ func (a *app) handleDatabaseDumpImport(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-	if !ensureNotEmployeeRole(w, r, a.db) {
+	if !ensureNotEmployeeRoleFresh(w, r, a.db) {
 		return
 	}
 	if err := r.ParseMultipartForm(maxDBDumpUploadSize); err != nil {
