@@ -29,7 +29,6 @@ docker compose up --build
    - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
    - `DATABASE_URL` (должен совпадать с Postgres)
    - `WEB_PORT`, `API_PORT` (если меняете внешние порты)
-   - `API_IMAGE`, `WEB_IMAGE` (если используете `docker-compose.prod.yml`)
 
 2) Запускайте в фоне:
 
@@ -57,7 +56,7 @@ docker compose exec db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
 
 Где лежат файлы:
 
-- локально и в проде: `backend/db_dumps`
+- `backend/db_dumps`
 - имя: `db_dump_auto_on_db_stop_YYYYmmdd_HHMMSS.sql`
 
 Параметры в `db` сервисе:
@@ -69,8 +68,8 @@ docker compose exec db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
 Проверка:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
-docker compose -f docker-compose.prod.yml restart db
+docker compose up -d --build
+docker compose restart db
 ls -lah backend/db_dumps | tail -n 20
 ```
 
@@ -86,28 +85,12 @@ ls -lah backend/db_dumps | tail -n 20
 - `db` — Postgres
 - `migrate` — одноразовый контейнер для применения миграций
 
-#### Продовый запуск из образов
-
-1) Заполните `.env` и укажите `API_IMAGE`/`WEB_IMAGE`:
-
-```
-cp env.example .env
-```
-
-2) Запустите:
-
-```
-docker compose -f docker-compose.prod.yml up -d
-```
-
 ### CI/CD (GitHub Actions)
 
 - `CI` — запускает `go test`, `go vet`, и сборку docker-образов.
 - `Publish Docker Images` — публикует образы в GHCR при пуше в `main` или теге `vX.Y.Z`.
 
-После публикации:
-- `API_IMAGE=ghcr.io/<owner>/office-management-api:latest`
-- `WEB_IMAGE=ghcr.io/<owner>/office-management-web:latest`
+После публикации можно использовать образы в отдельных окружениях/скриптах деплоя.
 
 ### 1) Только фронтенд (без API)
 
