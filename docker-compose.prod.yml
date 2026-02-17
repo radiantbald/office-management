@@ -2,14 +2,21 @@ version: "3.9"
 
 services:
   db:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: docker/db/Dockerfile
     restart: unless-stopped
+    stop_grace_period: 2m
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_DUMP_ON_STOP: "true"
+      DB_DUMP_DIR: /db_dumps
+      DB_DUMP_TAG: auto_on_db_stop
     volumes:
       - db_data:/var/lib/postgresql/data
+      - ./backend/db_dumps:/db_dumps
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s

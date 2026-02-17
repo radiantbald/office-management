@@ -43,48 +43,41 @@ docker compose up -d --build
 docker compose exec db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
 ```
 
-#### Автодамп БД перед остановкой/перезапуском контейнера БД
+#### Автодамп БД на событиях остановки контейнера `db`
 
-В репозитории есть готовые скрипты:
+Контейнер Postgres запускается через обёртку `docker/db/entrypoint-with-prestop-backup.sh`.
+Она перехватывает сигналы остановки и создаёт дамп перед завершением процесса БД.
 
-- `scripts/db_backup.sh` — создаёт дамп в `backend/db_dumps` с именем вида `db_dump_auto_YYYYmmdd_HHMMSS.sql`
-- `scripts/db_container_control.sh` — делает дамп и затем выполняет `stop`/`restart` для контейнера БД
+Покрываются стандартные сценарии:
 
-Локальный/обычный compose:
+- `docker compose stop db`
+- `docker compose restart db`
+- `docker compose down`
+- остановка стека при перезапуске docker daemon
 
-```bash
-bash scripts/db_backup.sh --compose-file ./docker-compose.yml --env-file ./.env
-```
+Где лежат файлы:
 
-Продовый compose:
+- локально и в проде: `backend/db_dumps`
+- имя: `db_dump_auto_on_db_stop_YYYYmmdd_HHMMSS.sql`
 
-```bash
-bash scripts/db_backup.sh --compose-file ./docker-compose.prod.yml --env-file ./.env
-```
+Параметры в `db` сервисе:
 
-Остановка контейнера БД с автодампом:
+- `DB_DUMP_ON_STOP=true` — включить/выключить автодамп
+- `DB_DUMP_DIR=/db_dumps` — путь внутри контейнера
+- `DB_DUMP_TAG=auto_on_db_stop` — тег в имени файла
 
-```bash
-bash scripts/db_container_control.sh \
-  --action stop \
-  --compose-file ./docker-compose.prod.yml \
-  --env-file ./.env \
-  --dump-dir ./backend/db_dumps
-```
-
-Перезапуск контейнера БД с автодампом:
+Проверка:
 
 ```bash
-bash scripts/db_container_control.sh \
-  --action restart \
-  --compose-file ./docker-compose.prod.yml \
-  --env-file ./.env \
-  --dump-dir ./backend/db_dumps
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml restart db
+ls -lah backend/db_dumps | tail -n 20
 ```
 
-Пример имени файла: `db_dump_auto_before_restart_YYYYmmdd_HHMMSS.sql`.
+Ограничения:
 
-> Важно: если вы останавливаете/перезапускаете БД напрямую через `docker compose stop db` или `docker compose restart db`, автодамп не сработает. Для автодампа используйте `scripts/db_container_control.sh`.
+- принудительное завершение (`docker kill`, `SIGKILL`, аварийное выключение хоста) не гарантирует создание дампа
+- для больших БД может потребоваться увеличить `stop_grace_period`
 
 #### Порты и сервисы
 
