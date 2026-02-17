@@ -172,14 +172,39 @@ body.space-editing .space-map-card .card-header {
   inset: 0;
   background: var(--bg-app);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 16px;
   padding: 24px;
   z-index: 1000;
 }
 
 .auth-gate.is-hidden {
   display: none;
+}
+
+.auth-boot {
+  width: min(420px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  color: var(--text-muted);
+  animation: authBootFadeIn 0.22s ease-out;
+}
+
+.auth-boot-spinner {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 3px solid rgba(96, 165, 250, 0.25);
+  border-top-color: #3b82f6;
+  animation: authBootSpin 0.9s linear infinite;
+}
+
+.auth-boot-text {
+  margin: 0;
+  font-size: 14px;
 }
 
 .auth-card {
@@ -190,6 +215,7 @@ body.space-editing .space-map-card .card-header {
   box-shadow: 0 20px 40px rgba(15, 23, 42, 0.2);
   display: grid;
   gap: 16px;
+  animation: authBootFadeIn 0.22s ease-out;
 }
 
 .auth-header h2 {
@@ -205,6 +231,23 @@ body.space-editing .space-map-card .card-header {
 .auth-form {
   display: grid;
   gap: 12px;
+}
+
+@keyframes authBootSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes authBootFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 body.auth-locked .app,

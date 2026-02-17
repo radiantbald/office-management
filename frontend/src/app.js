@@ -56,6 +56,9 @@ const imageHint = document.getElementById("imageHint");
 const buildingModal = document.getElementById("buildingModal");
 const headerActions = document.getElementById("headerActions");
 const authGate = document.getElementById("authGate");
+const authBoot = document.getElementById("authBoot");
+const authBootText = document.getElementById("authBootText");
+const authCard = document.getElementById("authCard");
 const authSubtitle = document.getElementById("authSubtitle");
 const authPhoneForm = document.getElementById("authPhoneForm");
 const authPhoneInput = document.getElementById("authPhoneInput");
@@ -573,6 +576,29 @@ const showAuthGate = () => {
   document.body.classList.add("auth-locked");
 };
 
+const showAuthBoot = (message = "Проверяем авторизацию...") => {
+  showAuthGate();
+  if (authBootText) {
+    authBootText.textContent = message;
+  }
+  if (authBoot) {
+    authBoot.classList.remove("is-hidden");
+  }
+  if (authCard) {
+    authCard.classList.add("is-hidden");
+  }
+};
+
+const showAuthLogin = () => {
+  showAuthGate();
+  if (authBoot) {
+    authBoot.classList.add("is-hidden");
+  }
+  if (authCard) {
+    authCard.classList.remove("is-hidden");
+  }
+};
+
 const hideAuthGate = () => {
   if (!authGate) {
     return;
@@ -588,7 +614,7 @@ const requireActiveSession = (message = "Для продолжения авто�
   if (hasActiveSession()) {
     return true;
   }
-  showAuthGate();
+  showAuthLogin();
   setAuthStep("phone");
   setAuthStatus(message, "warning");
   return false;
@@ -1371,6 +1397,7 @@ const runAppInit = async () => {
 };
 
 const initializeAuth = async () => {
+  showAuthBoot();
   const token = getAuthToken();
   const cachedUser = getUserInfo();
   const skipSessionRestore = consumeLogoutRedirectMark();
@@ -1407,7 +1434,8 @@ const initializeAuth = async () => {
   // we need explicit login.
   if (!token && !getSessionClaims()) {
     if (authGate) {
-      showAuthGate();
+      showAuthLogin();
+      setAuthStep("phone");
       return;
     }
     await runAppInit();
@@ -1474,7 +1502,8 @@ const initializeAuth = async () => {
   if (isUnauthorized) {
     clearAuthStorage();
     if (authGate) {
-      showAuthGate();
+      showAuthLogin();
+      setAuthStep("phone");
       setAuthStatus("Авторизуйтесь снова.", "error");
     }
     return;
@@ -12795,7 +12824,7 @@ if (breadcrumbProfiles.length > 0) {
         renderBuildings();
         authSticker = null;
         authTTL = null;
-        showAuthGate();
+        showAuthLogin();
         setAuthStep("phone");
         if (logoutSucceeded) {
           setAuthStatus("Вы вышли из аккаунта.");
