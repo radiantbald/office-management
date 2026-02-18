@@ -461,7 +461,7 @@ let routeNavigationInProgress = false;
 let routeNavigationQueued = false;
 const routePrefetchCache = new Map();
 const routePrefetchInFlight = new Map();
-const API_GET_CACHE_TTL_MS = 60 * 1000;
+const API_GET_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /* setAuthToken → imported from auth.js */
 
@@ -1691,6 +1691,16 @@ const prefetchBuildingRouteData = (buildingId) => {
   void prefetchApiResponse(`/api/buildings/${normalizedId}/floors`);
 };
 
+const prefetchFloorRouteData = ({ buildingId, floorId }) => {
+  prefetchBuildingRouteData(buildingId);
+  const normalizedFloorId = Number(floorId);
+  if (!Number.isFinite(normalizedFloorId)) {
+    return;
+  }
+  void prefetchApiResponse(`/api/floors/${normalizedFloorId}`);
+  void prefetchApiResponse(`/api/floors/${normalizedFloorId}/spaces`);
+};
+
 const prefetchSpaceRouteData = ({ buildingId, spaceId }) => {
   prefetchBuildingRouteData(buildingId);
   const normalizedSpaceId = Number(spaceId);
@@ -2365,7 +2375,7 @@ const renderResponsibilitiesList = (data) => {
     }
     if (floor.buildingId && Number.isFinite(level)) {
       attachRoutePrefetchHandlers(item, () => {
-        prefetchBuildingRouteData(buildingId);
+        prefetchFloorRouteData({ buildingId, floorId: floor.id });
       });
       item.addEventListener("click", () => {
         closeResponsibilitiesModal();
@@ -11104,7 +11114,7 @@ const renderFloors = (floors) => {
     if (currentBuilding) {
       const buildingId = Number(currentBuilding.id);
       attachRoutePrefetchHandlers(card, () => {
-        prefetchBuildingRouteData(buildingId);
+        prefetchFloorRouteData({ buildingId, floorId: floor.id });
       });
       const navigateToFloor = () => {
         clearBuildingStatus();
@@ -11398,16 +11408,16 @@ const loadBuildingPage = async (buildingID) => {
   }
 };
 
-const cancellableFloorSpacesRequest = createCancellableRequest(apiRequest);
-
-const loadFloorSpaces = async (floorID) => {
+const loadFloorSpaces = async (floorID, prefetchedResponse = null) => {
   if (!floorID) {
     renderFloorSpaces([]);
     return;
   }
   try {
-    const spacesResponse = await cancellableFloorSpacesRequest(`/api/floors/${floorID}/spaces`);
-    if (spacesResponse === undefined) return;
+    const spacesResponse =
+      prefetchedResponse === null
+        ? await loadApiResponse(`/api/floors/${floorID}/spaces`)
+        : prefetchedResponse;
     const spaces = Array.isArray(spacesResponse.items) ? spacesResponse.items : [];
     renderFloorSpaces(spaces);
     await syncSpacePolygons(visibleSpaces, { persistMissing: true });
@@ -11478,7 +11488,8 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       floorLevelTag.textContent = `Этаж ${floor.level}`;
     }
 
-    const floorDetails = await apiRequest(`/api/floors/${floor.id}`);
+    const floorSpacesPromise = loadApiResponse(`/api/floors/${floor.id}/spaces`);
+    const floorDetails = await loadApiResponse(`/api/floors/${floor.id}`);
     const planSvg = floorDetails && floorDetails.plan_svg ? floorDetails.plan_svg : "";
     currentFloor = {
       ...floor,
@@ -11491,7 +11502,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       editFloorBtn.classList.toggle("is-hidden", !canManageFloorResources(getUserInfo(), currentFloor));
     }
     renderFloorPlan(planSvg);
-    await loadFloorSpaces(floor.id);
+    await loadFloorSpaces(floor.id, await floorSpacesPromise);
   } catch (error) {
     setFloorStatus(error.message, "error");
   }
@@ -11604,7 +11615,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     if (!floor) {
       throw new Error("Этаж не найден.");
     }
-    const floorDetails = await apiRequest(`/api/floors/${floor.id}`);
+    const floorDetails = await loadApiResponse(`/api/floors/${floor.id}`);
     const building = await loadApiResponse(`/api/buildings/${buildingID}`);
     if (building) {
       currentBuilding = building;
