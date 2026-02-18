@@ -4333,7 +4333,17 @@ const loadMyBookings = async () => {
   }
   const headers = getBookingHeaders();
   bookingState.isMyBookingsLoading = true;
-  renderBookingsList();
+  const shouldKeepRenderedList =
+    bookingState.myBookings.length > 0 && spaceBookingsList.childElementCount > 0;
+  if (shouldKeepRenderedList) {
+    setBookingsListLoading(spaceBookingsList, true);
+    spaceBookingsEmpty.classList.add("is-hidden");
+    if (spaceBookingsCancelAllBtn) {
+      spaceBookingsCancelAllBtn.disabled = true;
+    }
+  } else {
+    renderBookingsList();
+  }
   try {
     const response = await apiRequest("/api/bookings/me", { headers });
     const bookings = Array.isArray(response?.bookings) ? response.bookings : [];
@@ -4342,6 +4352,10 @@ const loadMyBookings = async () => {
     setBookingStatus(error.message, "error");
   } finally {
     bookingState.isMyBookingsLoading = false;
+    setBookingsListLoading(spaceBookingsList, false);
+    if (spaceBookingsCancelAllBtn) {
+      spaceBookingsCancelAllBtn.disabled = false;
+    }
     renderBookingsList();
   }
 };
@@ -4378,10 +4392,20 @@ const renderBookingsSkeleton = (listElement) => {
   }
 };
 
+const setBookingsListLoading = (listElement, loading) => {
+  if (!listElement) {
+    return;
+  }
+  const isLoading = Boolean(loading);
+  listElement.classList.toggle("is-loading-soft", isLoading);
+  listElement.setAttribute("aria-busy", String(isLoading));
+};
+
 const renderBookingsList = () => {
   if (!spaceBookingsList || !spaceBookingsEmpty) {
     return;
   }
+  setBookingsListLoading(spaceBookingsList, false);
   if (bookingState.isMyBookingsLoading) {
     renderBookingsSkeleton(spaceBookingsList);
     spaceBookingsEmpty.classList.add("is-hidden");
@@ -4515,7 +4539,17 @@ const loadMyMeetingBookings = async () => {
   }
   const headers = getBookingHeaders();
   bookingState.isMyMeetingBookingsLoading = true;
-  renderMeetingBookingsList();
+  const shouldKeepRenderedList =
+    bookingState.myMeetingBookings.length > 0 && meetingBookingsList.childElementCount > 0;
+  if (shouldKeepRenderedList) {
+    setBookingsListLoading(meetingBookingsList, true);
+    meetingBookingsEmpty.classList.add("is-hidden");
+    if (spaceBookingsCancelAllBtn) {
+      spaceBookingsCancelAllBtn.disabled = true;
+    }
+  } else {
+    renderMeetingBookingsList();
+  }
   try {
     const response = await apiRequest("/api/meeting-room-bookings/me", { headers });
     const bookings = Array.isArray(response?.bookings) ? response.bookings : [];
@@ -4524,6 +4558,10 @@ const loadMyMeetingBookings = async () => {
     setBookingStatus(error.message, "error");
   } finally {
     bookingState.isMyMeetingBookingsLoading = false;
+    setBookingsListLoading(meetingBookingsList, false);
+    if (spaceBookingsCancelAllBtn) {
+      spaceBookingsCancelAllBtn.disabled = false;
+    }
     renderMeetingBookingsList();
   }
 };
@@ -4559,6 +4597,7 @@ const renderMeetingBookingsList = () => {
   if (!meetingBookingsList || !meetingBookingsEmpty) {
     return;
   }
+  setBookingsListLoading(meetingBookingsList, false);
   if (bookingState.isMyMeetingBookingsLoading) {
     renderBookingsSkeleton(meetingBookingsList);
     meetingBookingsEmpty.classList.add("is-hidden");
@@ -4975,6 +5014,15 @@ const closeBookingsModal = () => {
   if (meetingBookingsSection) {
     meetingBookingsSection.classList.add("is-hidden");
     meetingBookingsSection.setAttribute("aria-hidden", "true");
+  }
+  if (spaceBookingsList) {
+    setBookingsListLoading(spaceBookingsList, false);
+  }
+  if (meetingBookingsList) {
+    setBookingsListLoading(meetingBookingsList, false);
+  }
+  if (spaceBookingsCancelAllBtn) {
+    spaceBookingsCancelAllBtn.disabled = false;
   }
   if (
     !(buildingModal && buildingModal.classList.contains("is-open")) &&
