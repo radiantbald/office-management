@@ -588,6 +588,8 @@ const showAuthGate = () => {
   authGate.classList.remove("is-hidden");
   authGate.setAttribute("aria-hidden", "false");
   document.body.classList.add("auth-locked");
+  // Dismiss the boot-time loading overlay so the auth screen is visible.
+  document.body.classList.remove("app-loading");
 };
 
 const showAuthBoot = (message = "Загрузка...") => {
@@ -620,6 +622,8 @@ const hideAuthGate = () => {
   authGate.classList.add("is-hidden");
   authGate.setAttribute("aria-hidden", "true");
   document.body.classList.remove("auth-locked");
+  // Also dismiss the boot-time loading overlay.
+  document.body.classList.remove("app-loading");
 };
 
 const hasActiveSession = () => Boolean(getSessionClaims());
@@ -1430,12 +1434,18 @@ const fetchAndStoreWBBand = async (accessToken, user) => {
   }
 };
 
+/** Remove the boot-time loading screen once the first meaningful paint is ready. */
+const dismissAppLoader = () => {
+  document.body.classList.remove("app-loading");
+};
+
 const runAppInit = async () => {
   if (appInitialized) {
     return;
   }
   appInitialized = true;
   await init();
+  dismissAppLoader();
 };
 
 const initializeAuth = async () => {
@@ -11580,7 +11590,11 @@ const loadBuildingPage = async (buildingID) => {
   setPageMode("building");
   clearBuildingStatus();
   try {
-    await refreshBuildings({ allowPrefetch: true });
+    // Fetch buildings list and floors in parallel — both only need buildingID.
+    const [, floorsResponse] = await Promise.all([
+      refreshBuildings({ allowPrefetch: true }),
+      loadApiResponse(`/api/buildings/${buildingID}/floors`),
+    ]);
     const building = buildings.find((item) => item.id === buildingID);
     if (!building) {
       currentBuilding = null;
@@ -11603,7 +11617,6 @@ const loadBuildingPage = async (buildingID) => {
       pageTitle.textContent = building.name;
     }
 
-    const floorsResponse = await loadApiResponse(`/api/buildings/${buildingID}/floors`);
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
     if (floorsCount) {
       floorsCount.textContent = `${floors.length}`;
@@ -11691,7 +11704,11 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     currentFloor = null;
   }
   try {
-    await refreshBuildings({ allowPrefetch: true });
+    // Fetch buildings list and floors in parallel — both only need buildingID.
+    const [, floorsResponse] = await Promise.all([
+      refreshBuildings({ allowPrefetch: true }),
+      loadApiResponse(`/api/buildings/${buildingID}/floors`),
+    ]);
     const building = buildings.find((item) => item.id === buildingID);
     if (!building) {
       currentBuilding = null;
@@ -11717,7 +11734,6 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       pageSubtitle.textContent = building.name || "";
     }
 
-    const floorsResponse = await loadApiResponse(`/api/buildings/${buildingID}/floors`);
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
     const floor = floors.find((item) => item.level === floorNumber);
     if (!floor) {
@@ -11878,7 +11894,13 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   }
   setSpaceEditMode(false);
   try {
-    const space = await loadApiResponse(`/api/spaces/${spaceId}`);
+    // Fire all independent requests in parallel — they only need URL params.
+    const spacePromise = loadApiResponse(`/api/spaces/${spaceId}`);
+    const floorsPromise = loadApiResponse(`/api/buildings/${buildingID}/floors`);
+    const buildingPromise = loadApiResponse(`/api/buildings/${buildingID}`);
+
+    // Wait for space first (needed for desks kickoff & kind check).
+    const space = await spacePromise;
     if (!space || !space.id) {
       throw new Error("Пространство не найдено.");
     }
@@ -11892,14 +11914,20 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       // Start desks request immediately; UI rendering can proceed in parallel.
       desksLoadPromise = loadSpaceDesks(space.id, { skipIfUnchanged: hasWarmSpaceState });
     }
-    const floorsResponse = await loadApiResponse(`/api/buildings/${buildingID}/floors`);
+
+    // Wait for floors (need floor.id to fetch floor details).
+    const floorsResponse = await floorsPromise;
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
     const floor = floors.find((item) => item.level === floorNumber) || null;
     if (!floor) {
       throw new Error("Этаж не найден.");
     }
-    const floorDetails = await loadApiResponse(`/api/floors/${floor.id}`);
-    const building = await loadApiResponse(`/api/buildings/${buildingID}`);
+
+    // Floor details depends on floor.id; building is already in flight — await both together.
+    const [floorDetails, building] = await Promise.all([
+      loadApiResponse(`/api/floors/${floor.id}`),
+      buildingPromise,
+    ]);
     if (building) {
       currentBuilding = building;
       if (Array.isArray(buildings)) {

@@ -5,8 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Офисные здания</title>
     <link rel="stylesheet" href="/styles.css" />
+    <style>
+      /* ── App-boot: hide content until JS renders the correct route ── */
+      body.app-loading .app,
+      body.app-loading .app-header {
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .app-loader {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-items: center;
+        background: #f5f6f8;
+      }
+      .app-loader-spinner {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        border: 3px solid rgba(96,165,250,.25);
+        border-top-color: #3b82f6;
+        animation: appLoaderSpin .9s linear infinite;
+      }
+      @keyframes appLoaderSpin { to { transform: rotate(360deg); } }
+      body:not(.app-loading) .app-loader { display: none; }
+    </style>
   </head>
-  <body>
+  <body class="app-loading">
+    <div class="app-loader" aria-hidden="true"><div class="app-loader-spinner"></div></div>
     <header class="app-header">
       <div class="app-header-content">
         <div class="header-copy">
