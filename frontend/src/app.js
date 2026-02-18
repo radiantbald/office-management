@@ -1320,19 +1320,25 @@ const startAutoTokenRefresh = () => {
  */
 const fetchOfficeToken = async (accessToken) => {
   try {
-    if (!accessToken) return;
-    
-    // If we have a valid session, nothing to do
-    if (isOfficeAccessTokenValid()) return;
-    
-    // Try to refresh existing cookie-based session first
+    if (!accessToken) {
+      return { success: false, error: "Отсутствует внешний токен авторизации." };
+    }
+
+    // If we already have a valid session, nothing to do.
+    if (isOfficeAccessTokenValid()) {
+      return { success: true };
+    }
+
+    // Try to refresh existing cookie-based session first.
     const session = getSessionClaims();
     if (session) {
       const refreshed = await refreshAccessToken();
-      if (refreshed) return;
+      if (refreshed && isOfficeAccessTokenValid()) {
+        return { success: true };
+      }
     }
 
-    // Fetch new tokens from scratch
+    // Fetch new tokens from scratch.
     const headers = {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
@@ -1348,11 +1354,27 @@ const fetchOfficeToken = async (accessToken) => {
       credentials: "include",
     });
     const data = await response.json().catch(() => null);
-    if (response.ok && data?.session) {
-      setSessionClaims(data.session);
+    if (!response.ok || !data?.session) {
+      return {
+        success: false,
+        error: data?.error || "Не удалось открыть office-сессию.",
+      };
     }
-  } catch {
-    // Non-critical: Office tokens will be fetched on next login attempt.
+
+    setSessionClaims(data.session);
+    if (isOfficeAccessTokenValid()) {
+      return { success: true };
+    }
+
+    return {
+      success: false,
+      error: "Сервер не подтвердил office-сессию.",
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error?.message || "Не удалось получить office-токен.",
+    };
   }
 };
 
@@ -1456,7 +1478,16 @@ const initializeAuth = async () => {
   // Ensure we have a valid Office Access Token before any API requests.
   // This is a no-op if the stored session is still valid (checked inside).
   if (token) {
-    await fetchOfficeToken(token);
+    const officeTokenResult = await fetchOfficeToken(token);
+    if (!officeTokenResult.success && !getSessionClaims()) {
+      clearAuthStorage();
+      if (authGate) {
+        showAuthLogin();
+        setAuthStep("phone");
+        setAuthStatus(officeTokenResult.error || "Не удалось создать сессию. Авторизуйтесь снова.", "error");
+      }
+      return;
+    }
   }
   
   // Start automatic token refresh checking only for authenticated session.
@@ -12932,13 +12963,22 @@ const handleAuthSuccess = async (token, user) => {
   }
   updateAuthUserBlock(user || getUserInfo());
   refreshDeskBookingOwnership();
+
+  // Obtain office session before making protected API requests.
+  const officeTokenResult = await fetchOfficeToken(token);
+  if (!officeTokenResult.success || !getSessionClaims()) {
+    setSessionClaims(null);
+    if (authGate) {
+      showAuthLogin();
+      setAuthStep("phone");
+      setAuthStatus(officeTokenResult.error || "Не удалось открыть office-сессию.", "error");
+    }
+    return;
+  }
+
   hideAuthGate();
   setAuthStatus("");
-
-  // Obtain the server-signed Office_Token before making any API requests.
-  await fetchOfficeToken(token);
   await bootstrapResponsibilitiesVisibility();
-
   await runAppInit();
 };
 
