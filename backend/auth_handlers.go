@@ -150,15 +150,59 @@ func isSecureContext(r *http.Request) bool {
 	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
+func hostWithoutPort(hostport string) string {
+	hostport = strings.TrimSpace(hostport)
+	if hostport == "" {
+		return ""
+	}
+	// IPv6 literals may already be bracketed in Host header.
+	if strings.HasPrefix(hostport, "[") && strings.Contains(hostport, "]") {
+		host, _, err := net.SplitHostPort(hostport)
+		if err == nil {
+			return strings.Trim(host, "[]")
+		}
+		return strings.Trim(hostport, "[]")
+	}
+	if strings.Count(hostport, ":") == 1 {
+		host, _, err := net.SplitHostPort(hostport)
+		if err == nil {
+			return host
+		}
+	}
+	// For plain hosts (no port) or unparseable values, return as-is.
+	return hostport
+}
+
+// cookieDomainForRequest returns configured cookie domain only when the current
+// request host is compatible with that domain. Otherwise it falls back to
+// host-only cookies to avoid browser rejection of Set-Cookie.
+func (a *app) cookieDomainForRequest(r *http.Request) string {
+	configured := strings.TrimSpace(a.authCookieDomain)
+	if configured == "" {
+		return ""
+	}
+	host := strings.ToLower(hostWithoutPort(r.Host))
+	domain := strings.ToLower(strings.TrimPrefix(configured, "."))
+	if host == "" || domain == "" {
+		return ""
+	}
+	if host == domain || strings.HasSuffix(host, "."+domain) {
+		return domain
+	}
+	log.Printf("cookie domain mismatch: host=%q configured_domain=%q; using host-only cookies", host, domain)
+	return ""
+}
+
 // setTokenCookies writes both access and refresh tokens as HttpOnly cookies.
 func (a *app) setTokenCookies(w http.ResponseWriter, r *http.Request, accessToken, refreshToken string, accessExp, refreshExp int64) {
 	secure := isSecureContext(r)
+	cookieDomain := a.cookieDomainForRequest(r)
 	now := time.Now().UTC().Unix()
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     accessTokenCookieName,
 		Value:    accessToken,
-		Domain:   a.authCookieDomain,
+		Domain:   cookieDomain,
 		Path:     "/api/",
 		HttpOnly: true,
 		Secure:   secure,
@@ -168,7 +212,7 @@ func (a *app) setTokenCookies(w http.ResponseWriter, r *http.Request, accessToke
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshTokenCookieName,
 		Value:    refreshToken,
-		Domain:   a.authCookieDomain,
+		Domain:   cookieDomain,
 		Path:     "/api/auth/",
 		HttpOnly: true,
 		Secure:   secure,
@@ -190,6 +234,7 @@ func newCSRFToken() (string, error) {
 
 func (a *app) setCSRFCookie(w http.ResponseWriter, r *http.Request, maxAge int) {
 	secure := isSecureContext(r)
+	cookieDomain := a.cookieDomainForRequest(r)
 	token, err := newCSRFToken()
 	if err != nil {
 		log.Printf("setCSRFCookie: failed to generate token: %v", err)
@@ -203,7 +248,7 @@ func (a *app) setCSRFCookie(w http.ResponseWriter, r *http.Request, maxAge int) 
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfTokenCookieName,
 		Value:    "",
-		Domain:   a.authCookieDomain,
+		Domain:   cookieDomain,
 		Path:     "/api/",
 		HttpOnly: false,
 		Secure:   secure,
@@ -213,7 +258,7 @@ func (a *app) setCSRFCookie(w http.ResponseWriter, r *http.Request, maxAge int) 
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfTokenCookieName,
 		Value:    token,
-		Domain:   a.authCookieDomain,
+		Domain:   cookieDomain,
 		Path:     "/",
 		HttpOnly: false,
 		Secure:   secure,
@@ -225,10 +270,11 @@ func (a *app) setCSRFCookie(w http.ResponseWriter, r *http.Request, maxAge int) 
 // clearTokenCookies expires both token cookies.
 func (a *app) clearTokenCookies(w http.ResponseWriter, r *http.Request) {
 	secure := isSecureContext(r)
+	cookieDomain := a.cookieDomainForRequest(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     accessTokenCookieName,
 		Value:    "",
-		Domain:   a.authCookieDomain,
+		Domain:   cookieDomain,
 		Path:     "/api/",
 		HttpOnly: true,
 		Secure:   secure,
@@ -238,7 +284,7 @@ func (a *app) clearTokenCookies(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshTokenCookieName,
 		Value:    "",
-		Domain:   a.authCookieDomain,
+		Domain:   cookieDomain,
 		Path:     "/api/auth/",
 		HttpOnly: true,
 		Secure:   secure,
@@ -248,7 +294,7 @@ func (a *app) clearTokenCookies(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfTokenCookieName,
 		Value:    "",
-		Domain:   a.authCookieDomain,
+		Domain:   cookieDomain,
 		Path:     "/api/",
 		HttpOnly: false,
 		Secure:   secure,
@@ -258,7 +304,7 @@ func (a *app) clearTokenCookies(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfTokenCookieName,
 		Value:    "",
-		Domain:   a.authCookieDomain,
+		Domain:   cookieDomain,
 		Path:     "/",
 		HttpOnly: false,
 		Secure:   secure,
