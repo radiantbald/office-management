@@ -11697,7 +11697,8 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     Boolean(previousFloor) &&
     previousFloorBuildingId === Number(buildingID) &&
     Number(previousFloor?.level) === Number(floorNumber) &&
-    Boolean(previousFloor?.plan_svg);
+    Boolean(previousFloor?.plan_svg) &&
+    Boolean(floorPlanCanvas && floorPlanCanvas.firstElementChild);
   if (!hasWarmFloorState) {
     renderFloorPlan("");
     renderFloorSpaces([]);
