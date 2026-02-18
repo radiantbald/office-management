@@ -462,6 +462,7 @@ let routeNavigationQueued = false;
 const routePrefetchCache = new Map();
 const routePrefetchInFlight = new Map();
 const API_GET_CACHE_TTL_MS = 5 * 60 * 1000;
+const floorSpacesRenderFingerprint = new Map();
 
 /* setAuthToken → imported from auth.js */
 
@@ -11408,7 +11409,41 @@ const loadBuildingPage = async (buildingID) => {
   }
 };
 
-const loadFloorSpaces = async (floorID, prefetchedResponse = null) => {
+const toComparableValue = (value) => {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return "";
+  }
+};
+
+const buildFloorSpacesFingerprint = (spaces) => {
+  if (!Array.isArray(spaces) || spaces.length === 0) {
+    return "";
+  }
+  return spaces
+    .map((space) => {
+      const id = toComparableValue(space?.id);
+      const updatedAt = toComparableValue(space?.updated_at ?? space?.updatedAt);
+      const name = toComparableValue(space?.name);
+      const kind = toComparableValue(space?.kind);
+      const color = toComparableValue(space?.color);
+      const points = toComparableValue(space?.points);
+      return [id, updatedAt, name, kind, color, points].join("::");
+    })
+    .join("|");
+};
+
+const loadFloorSpaces = async (floorID, { prefetchedResponse = null, skipIfUnchanged = false } = {}) => {
   if (!floorID) {
     renderFloorSpaces([]);
     return;
@@ -11419,8 +11454,14 @@ const loadFloorSpaces = async (floorID, prefetchedResponse = null) => {
         ? await loadApiResponse(`/api/floors/${floorID}/spaces`)
         : prefetchedResponse;
     const spaces = Array.isArray(spacesResponse.items) ? spacesResponse.items : [];
+    const nextFingerprint = buildFloorSpacesFingerprint(spaces);
+    const prevFingerprint = floorSpacesRenderFingerprint.get(Number(floorID) || 0) || "";
+    if (skipIfUnchanged && nextFingerprint && nextFingerprint === prevFingerprint) {
+      return;
+    }
     renderFloorSpaces(spaces);
     await syncSpacePolygons(visibleSpaces, { persistMissing: true });
+    floorSpacesRenderFingerprint.set(Number(floorID) || 0, nextFingerprint);
   } catch (error) {
     renderFloorSpaces([]);
     setFloorStatus(error.message, "error");
@@ -11430,9 +11471,20 @@ const loadFloorSpaces = async (floorID, prefetchedResponse = null) => {
 const loadFloorPage = async (buildingID, floorNumber) => {
   setPageMode("floor");
   clearFloorStatus();
-  renderFloorPlan("");
-  renderFloorSpaces([]);
-  currentFloor = null;
+  const previousFloor = currentFloor;
+  const previousFloorBuildingId = Number(
+    previousFloor?.building_id ?? previousFloor?.buildingId ?? currentBuilding?.id
+  );
+  const hasWarmFloorState =
+    Boolean(previousFloor) &&
+    previousFloorBuildingId === Number(buildingID) &&
+    Number(previousFloor?.level) === Number(floorNumber) &&
+    Boolean(previousFloor?.plan_svg);
+  if (!hasWarmFloorState) {
+    renderFloorPlan("");
+    renderFloorSpaces([]);
+    currentFloor = null;
+  }
   try {
     await refreshBuildings({ allowPrefetch: true });
     const building = buildings.find((item) => item.id === buildingID);
@@ -11501,8 +11553,14 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     if (editFloorBtn) {
       editFloorBtn.classList.toggle("is-hidden", !canManageFloorResources(getUserInfo(), currentFloor));
     }
-    renderFloorPlan(planSvg);
-    await loadFloorSpaces(floor.id, await floorSpacesPromise);
+    const shouldRerenderPlan = !hasWarmFloorState || planSvg !== String(previousFloor?.plan_svg || "");
+    if (shouldRerenderPlan) {
+      renderFloorPlan(planSvg);
+    }
+    await loadFloorSpaces(floor.id, {
+      prefetchedResponse: await floorSpacesPromise,
+      skipIfUnchanged: hasWarmFloorState,
+    });
   } catch (error) {
     setFloorStatus(error.message, "error");
   }
