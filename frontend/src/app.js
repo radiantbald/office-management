@@ -466,7 +466,6 @@ const floorSpacesRenderFingerprint = new Map();
 const spaceDesksRenderFingerprint = new Map();
 let latestSpaceDesksRequestToken = 0;
 const deskBookingActionsInFlight = new Set();
-let pendingDeskBookingRefreshTimer = null;
 
 /* setAuthToken → imported from auth.js */
 
@@ -5201,18 +5200,12 @@ const handleCancelAllAdminBookings = async () => {
 };
 
 const refreshSpaceAfterDeskBookingMutation = () => {
-  if (pendingDeskBookingRefreshTimer) {
-    clearTimeout(pendingDeskBookingRefreshTimer);
+  if (currentSpace?.id) {
+    void loadSpaceDesks(currentSpace.id);
   }
-  pendingDeskBookingRefreshTimer = setTimeout(() => {
-    pendingDeskBookingRefreshTimer = null;
-    if (currentSpace?.id) {
-      void loadSpaceDesks(currentSpace.id);
-    }
-    if (bookingState.isListOpen) {
-      void loadMyBookings();
-    }
-  }, 120);
+  if (bookingState.isListOpen) {
+    void loadMyBookings();
+  }
 };
 
 const isBookingAlreadyCancelledError = (error) => {
@@ -5226,6 +5219,83 @@ const isBookingAlreadyCancelledError = (error) => {
     message.includes("не найден") ||
     message.includes("не существует")
   );
+};
+
+const markDeskAsFreeLocally = (deskId) => {
+  const desk = findDeskById(deskId);
+  if (!desk) {
+    return;
+  }
+  desk.bookingStatus = "free";
+  desk.bookingUserName = "";
+  desk.bookingUserKey = "";
+  desk.bookingTenantEmployeeID = "";
+  desk.booking = null;
+  if (bookingState.bookingsByDeskId instanceof Map) {
+    bookingState.bookingsByDeskId.delete(String(desk.id));
+  }
+  refreshDeskCollectionsView();
+};
+
+const markDeskAsMyLocally = (deskId) => {
+  const { key, name, employeeId } = getBookingUserInfo();
+  currentDesks.forEach((item) => {
+    if (item?.bookingStatus === "my") {
+      item.bookingStatus = "free";
+      item.bookingUserName = "";
+      item.bookingUserKey = "";
+      item.bookingTenantEmployeeID = "";
+      item.booking = null;
+      if (bookingState.bookingsByDeskId instanceof Map) {
+        bookingState.bookingsByDeskId.delete(String(item.id));
+      }
+    }
+  });
+  const desk = findDeskById(deskId);
+  if (!desk) {
+    refreshDeskCollectionsView();
+    return;
+  }
+  desk.bookingStatus = "my";
+  desk.bookingUserName = formatUserNameInitials(name || key || "Вы");
+  desk.bookingUserKey = key;
+  desk.bookingTenantEmployeeID = employeeId;
+  desk.booking = {
+    is_booked: true,
+    user: {
+      wb_user_id: key,
+      user_name: name || key || "Вы",
+      applier_employee_id: key,
+      tenant_employee_id: employeeId,
+    },
+  };
+  if (!(bookingState.bookingsByDeskId instanceof Map)) {
+    bookingState.bookingsByDeskId = new Map();
+  }
+  bookingState.bookingsByDeskId.set(String(desk.id), {
+    workplace_id: Number(desk.id),
+    applier_employee_id: key,
+    tenant_employee_id: employeeId,
+    user_name: name || key || "Вы",
+  });
+  refreshDeskCollectionsView();
+};
+
+const resolveDeskActionStatus = (desk) => {
+  if (!desk?.id) {
+    return "free";
+  }
+  const status = String(desk.bookingStatus || "free");
+  if (status === "my" || status === "booked") {
+    const hasLiveBookingPayload = Boolean(desk.booking?.is_booked);
+    const hasLiveBookingMapEntry =
+      bookingState.bookingsByDeskId instanceof Map &&
+      bookingState.bookingsByDeskId.has(String(desk.id));
+    if (!hasLiveBookingPayload && !hasLiveBookingMapEntry) {
+      return "free";
+    }
+  }
+  return status;
 };
 
 const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
@@ -5256,6 +5326,9 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
       headers,
       body: JSON.stringify(body),
     });
+    if (!isOther) {
+      markDeskAsMyLocally(deskId);
+    }
     if (isGuest) {
       setBookingStatus("Место забронировано для гостя.", "success");
     } else if (isOther) {
@@ -5398,11 +5471,15 @@ const handleDeskBookingClick = async (desk) => {
   if (!Number.isFinite(deskId)) {
     return;
   }
+  const liveDesk = findDeskById(deskId) || desk;
+  if (!liveDesk) {
+    return;
+  }
   if (deskBookingActionsInFlight.has(String(deskId))) {
     return;
   }
   const headers = getBookingHeaders();
-  const status = desk.bookingStatus || "free";
+  const status = resolveDeskActionStatus(liveDesk);
   try {
     if (status === "my") {
       const confirmed = window.confirm("Отменить выбор этого стола?");
@@ -5419,11 +5496,13 @@ const handleDeskBookingClick = async (desk) => {
             workplace_id: deskId,
           }),
         });
+        markDeskAsFreeLocally(deskId);
         setBookingStatus("Бронирование отменено.", "success");
         refreshSpaceAfterDeskBookingMutation();
         return;
       } catch (error) {
         if (isBookingAlreadyCancelledError(error)) {
+          markDeskAsFreeLocally(deskId);
           setBookingStatus("Бронирование уже было отменено.", "info");
           refreshSpaceAfterDeskBookingMutation();
           return;
@@ -5434,9 +5513,9 @@ const handleDeskBookingClick = async (desk) => {
       }
     }
     if (status === "booked" && canBookForOthers()) {
-      const bookedName = desk.bookingUserName || "сотрудник";
+      const bookedName = liveDesk.bookingUserName || "сотрудник";
       const confirmed = window.confirm(
-        `Отменить бронирование стола "${desk.label || "стол"}" (${bookedName})?`
+        `Отменить бронирование стола "${liveDesk.label || "стол"}" (${bookedName})?`
       );
       if (!confirmed) {
         return;
@@ -5451,11 +5530,13 @@ const handleDeskBookingClick = async (desk) => {
             workplace_id: deskId,
           }),
         });
+        markDeskAsFreeLocally(deskId);
         setBookingStatus("Бронирование отменено.", "success");
         refreshSpaceAfterDeskBookingMutation();
         return;
       } catch (error) {
         if (isBookingAlreadyCancelledError(error)) {
+          markDeskAsFreeLocally(deskId);
           setBookingStatus("Бронирование уже было отменено.", "info");
           refreshSpaceAfterDeskBookingMutation();
           return;
@@ -5469,10 +5550,10 @@ const handleDeskBookingClick = async (desk) => {
       return;
     }
     if (canBookForOthers()) {
-      openBookForChoiceModal(desk);
+      openBookForChoiceModal(liveDesk);
       return;
     }
-    await bookDeskForEmployee(desk);
+    await bookDeskForEmployee(liveDesk);
   } catch (error) {
     setBookingStatus(error.message, "error");
   }
