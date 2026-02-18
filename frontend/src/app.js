@@ -5380,6 +5380,38 @@ const markDeskAsMyLocally = (deskId) => {
   refreshDeskCollectionsView();
 };
 
+const markDeskAsBookedLocally = (deskId, { userName = "Сотрудник", userKey = "" } = {}) => {
+  const normalizedUserName = String(userName || "").trim() || "Сотрудник";
+  const normalizedUserKey = String(userKey || "").trim();
+  const desk = findDeskById(deskId);
+  if (!desk) {
+    refreshDeskCollectionsView();
+    return;
+  }
+  desk.bookingStatus = "booked";
+  desk.bookingUserName = formatUserNameInitials(normalizedUserName);
+  desk.bookingUserKey = normalizedUserKey;
+  desk.bookingTenantEmployeeID = normalizedUserKey;
+  desk.booking = {
+    is_booked: true,
+    user: {
+      applier_employee_id: normalizedUserKey,
+      tenant_employee_id: normalizedUserKey,
+      user_name: normalizedUserName,
+    },
+  };
+  if (!(bookingState.bookingsByDeskId instanceof Map)) {
+    bookingState.bookingsByDeskId = new Map();
+  }
+  bookingState.bookingsByDeskId.set(String(desk.id), {
+    workplace_id: Number(desk.id),
+    applier_employee_id: normalizedUserKey,
+    tenant_employee_id: normalizedUserKey,
+    user_name: normalizedUserName,
+  });
+  refreshDeskCollectionsView();
+};
+
 const resolveDeskActionStatus = (desk) => {
   if (!desk?.id) {
     return "free";
@@ -5427,6 +5459,10 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
     });
     if (!isOther) {
       markDeskAsMyLocally(deskId);
+    } else if (isGuest) {
+      markDeskAsBookedLocally(deskId, { userName: "Гость", userKey: "guest" });
+    } else {
+      markDeskAsBookedLocally(deskId, { userName: "Сотрудник" });
     }
     if (isGuest) {
       notifyDeskBookingCompletion("Место забронировано для гостя.", "success");
@@ -5476,6 +5512,8 @@ const openBookForOtherModal = (desk) => {
   bookForOtherState.selectedEmployeeId = "";
   if (bookForOtherEmployeeField) {
     bookForOtherEmployeeField.value = "";
+    // Re-enable employee picker in case the previous session selected "guest".
+    bookForOtherEmployeeField.disabled = false;
   }
   if (bookForOtherStatus) {
     bookForOtherStatus.textContent = "";
