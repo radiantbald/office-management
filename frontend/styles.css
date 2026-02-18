@@ -980,6 +980,32 @@ body.space-editing .space-booking-panel {
   touch-action: none;
 }
 
+.space-snapshot.is-loading {
+  cursor: progress;
+}
+
+.space-snapshot.is-loading .space-snapshot-canvas {
+  opacity: 0;
+}
+
+.space-snapshot.is-loading::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background:
+    linear-gradient(
+      110deg,
+      rgba(148, 163, 184, 0.12) 8%,
+      rgba(148, 163, 184, 0.28) 18%,
+      rgba(148, 163, 184, 0.12) 33%
+    ),
+    var(--color-gray-100);
+  background-size: 200% 100%, auto;
+  animation: spaceSnapshotShimmer 1.2s linear infinite;
+  pointer-events: none;
+}
+
 .space-snapshot.is-background-hidden {
   background: var(--color-white);
 }
@@ -1229,6 +1255,15 @@ body.space-editing .space-booking-panel {
   to {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+@keyframes spaceSnapshotShimmer {
+  0% {
+    background-position: 200% 0, 0 0;
+  }
+  100% {
+    background-position: -200% 0, 0 0;
   }
 }
 

@@ -6691,6 +6691,15 @@ const applySpaceSnapshotBackgroundState = (hidden) => {
   }
 };
 
+const setSpaceSnapshotLoading = (loading) => {
+  if (!spaceSnapshot) {
+    return;
+  }
+  const isLoading = Boolean(loading);
+  spaceSnapshot.classList.toggle("is-loading", isLoading);
+  spaceSnapshot.setAttribute("aria-busy", String(isLoading));
+};
+
 const ensureSpaceLayers = (svg) => {
   if (!svg) {
     return;
@@ -9661,50 +9670,62 @@ const refreshDeskCollectionsView = () => {
   renderSpaceAttendeesList(currentDesks);
 };
 
-const loadSpaceDesks = async (spaceId, { skipIfUnchanged = false } = {}) => {
-  if (!spaceId) {
-    currentDesks = [];
+const loadSpaceDesks = async (
+  spaceId,
+  { skipIfUnchanged = false, showSnapshotLoading = false } = {}
+) => {
+  if (showSnapshotLoading) {
+    setSpaceSnapshotLoading(true);
+  }
+  try {
+    if (!spaceId) {
+      currentDesks = [];
+      pendingDeskUpdates = new Map();
+      pendingDeskCreates = new Map();
+      pendingDeskDeletes = new Set();
+      setSelectedDesk(null);
+      renderSpaceDesks([]);
+      renderSpaceDeskList([]);
+      renderSpaceAttendeesList([]);
+      return;
+    }
+    const normalizedDate = normalizeBookingDate(bookingState.selectedDate);
+    const dateParam = normalizedDate ? `?date=${encodeURIComponent(normalizedDate)}` : "";
+    const requestToken = ++latestSpaceDesksRequestToken;
+    const response = await loadApiResponse(`/api/spaces/${spaceId}/desks${dateParam}`);
+    if (requestToken !== latestSpaceDesksRequestToken) {
+      return;
+    }
+    const rawDesks = Array.isArray(response?.items) ? response.items : [];
+    const normalized = normalizeDesksForCurrentSpace(rawDesks);
+    normalized.desks.forEach((desk) => {
+      applyDeskBookingPayload(desk);
+    });
+    const fingerprintKey = getSpaceDesksFingerprintKey(spaceId, normalizedDate);
+    const nextFingerprint = buildSpaceDesksFingerprint(normalized.desks);
+    const previousFingerprint = spaceDesksRenderFingerprint.get(fingerprintKey) || "";
+    const shouldSkipRender =
+      skipIfUnchanged &&
+      previousFingerprint !== "" &&
+      nextFingerprint === previousFingerprint &&
+      normalized.updates.length === 0;
+    syncBookingsFromDesks(normalized.desks);
+    currentDesks = normalized.desks;
     pendingDeskUpdates = new Map();
     pendingDeskCreates = new Map();
     pendingDeskDeletes = new Set();
     setSelectedDesk(null);
-    renderSpaceDesks([]);
-    renderSpaceDeskList([]);
-    renderSpaceAttendeesList([]);
-    return;
-  }
-  const normalizedDate = normalizeBookingDate(bookingState.selectedDate);
-  const dateParam = normalizedDate ? `?date=${encodeURIComponent(normalizedDate)}` : "";
-  const requestToken = ++latestSpaceDesksRequestToken;
-  const response = await loadApiResponse(`/api/spaces/${spaceId}/desks${dateParam}`);
-  if (requestToken !== latestSpaceDesksRequestToken) {
-    return;
-  }
-  const rawDesks = Array.isArray(response?.items) ? response.items : [];
-  const normalized = normalizeDesksForCurrentSpace(rawDesks);
-  normalized.desks.forEach((desk) => {
-    applyDeskBookingPayload(desk);
-  });
-  const fingerprintKey = getSpaceDesksFingerprintKey(spaceId, normalizedDate);
-  const nextFingerprint = buildSpaceDesksFingerprint(normalized.desks);
-  const previousFingerprint = spaceDesksRenderFingerprint.get(fingerprintKey) || "";
-  const shouldSkipRender =
-    skipIfUnchanged &&
-    previousFingerprint !== "" &&
-    nextFingerprint === previousFingerprint &&
-    normalized.updates.length === 0;
-  syncBookingsFromDesks(normalized.desks);
-  currentDesks = normalized.desks;
-  pendingDeskUpdates = new Map();
-  pendingDeskCreates = new Map();
-  pendingDeskDeletes = new Set();
-  setSelectedDesk(null);
-  if (!shouldSkipRender) {
-    refreshDeskCollectionsView();
-  }
-  spaceDesksRenderFingerprint.set(fingerprintKey, nextFingerprint);
-  if (normalized.updates.length > 0) {
-    await persistDeskNormalizationUpdates(normalized.updates);
+    if (!shouldSkipRender) {
+      refreshDeskCollectionsView();
+    }
+    spaceDesksRenderFingerprint.set(fingerprintKey, nextFingerprint);
+    if (normalized.updates.length > 0) {
+      await persistDeskNormalizationUpdates(normalized.updates);
+    }
+  } finally {
+    if (showSnapshotLoading) {
+      setSpaceSnapshotLoading(false);
+    }
   }
 };
 
@@ -11828,6 +11849,7 @@ const buildSpaceSnapshotFingerprint = (space, floorPlanMarkup = "") => {
 const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   setPageMode("space");
   clearSpacePageStatus();
+  setSpaceSnapshotLoading(false);
   const initialBookingDate = getBookingDateFromLocation();
   const previousSpace = currentSpace;
   const previousFloorPlan = String(currentFloor?.plan_svg || "");
@@ -11913,7 +11935,10 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     }
     if (space.kind === "coworking") {
       // Start desks request immediately; UI rendering can proceed in parallel.
-      desksLoadPromise = loadSpaceDesks(space.id, { skipIfUnchanged: hasWarmSpaceState });
+      desksLoadPromise = loadSpaceDesks(space.id, {
+        skipIfUnchanged: hasWarmSpaceState,
+        showSnapshotLoading: true,
+      });
     }
 
     // Wait for floors (need floor.id to fetch floor details).
@@ -12031,7 +12056,13 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     if (spaceSnapshot) {
       spaceSnapshot.classList.toggle("can-manage-bookings", canBookForOthers());
     }
-    await (desksLoadPromise || loadSpaceDesks(space.id, { skipIfUnchanged: hasWarmSpaceState }));
+    await (
+      desksLoadPromise ||
+      loadSpaceDesks(space.id, {
+        skipIfUnchanged: hasWarmSpaceState,
+        showSnapshotLoading: true,
+      })
+    );
   } catch (error) {
     setSpacePageStatus(error.message, "error");
     if (spaceSnapshotPlaceholder) {
