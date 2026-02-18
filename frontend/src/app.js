@@ -13677,6 +13677,22 @@ const init = async () => {
   }
 };
 
+const applyInitialRouteMode = () => {
+  if (getSpaceParamsFromPath()) {
+    setPageMode("space");
+    return;
+  }
+  if (getFloorParamsFromPath()) {
+    setPageMode("floor");
+    return;
+  }
+  if (getBuildingIdFromPath() !== null) {
+    setPageMode("building");
+    return;
+  }
+  setPageMode("list");
+};
+
 const rerenderCurrentRoute = async () => {
   if (!appInitialized) {
     return;
@@ -13950,4 +13966,5 @@ document.addEventListener("click", (event) => {
   void navigateTo(`${url.pathname}${url.search}${url.hash}`);
 });
 
+applyInitialRouteMode();
 initializeAuth();
