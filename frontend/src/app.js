@@ -457,6 +457,11 @@ const imagePreloadCache = new Map();
 let authSticker = null;
 let authTTL = null;
 let appInitialized = false;
+let routeNavigationInProgress = false;
+let routeNavigationQueued = false;
+const routePrefetchCache = new Map();
+const routePrefetchInFlight = new Map();
+const ROUTE_PREFETCH_TTL_MS = 8000;
 
 /* setAuthToken → imported from auth.js */
 
@@ -581,7 +586,7 @@ const showAuthGate = () => {
   document.body.classList.add("auth-locked");
 };
 
-const showAuthBoot = (message = "Проверяем авторизацию...") => {
+const showAuthBoot = (message = "Загрузка...") => {
   showAuthGate();
   if (authBootText) {
     authBootText.textContent = message;
@@ -1430,12 +1435,13 @@ const runAppInit = async () => {
 };
 
 const initializeAuth = async () => {
-  showAuthBoot();
   const token = getAuthToken();
   const cachedUser = getUserInfo();
   const skipSessionRestore = consumeLogoutRedirectMark();
   if (cachedUser) {
     updateAuthUserBlock(cachedUser);
+  } else {
+    showAuthBoot("Загрузка...");
   }
 
   // Restore in-memory session from HttpOnly cookies via backend.
@@ -1521,7 +1527,6 @@ const initializeAuth = async () => {
 
   if (authGate) {
     setAuthLoading(true);
-    setAuthStatus("Проверяем авторизацию...");
   }
 
   const userResult = await fetchAuthUserInfo(token);
@@ -1587,6 +1592,89 @@ const shouldBlockEmployeeRequest = (path, options = {}) => {
     return true;
   }
   return false;
+};
+
+const consumePrefetchedApiResponse = (path) => {
+  const entry = routePrefetchCache.get(path);
+  if (!entry) {
+    return null;
+  }
+  if (entry.expiresAt <= Date.now()) {
+    routePrefetchCache.delete(path);
+    return null;
+  }
+  routePrefetchCache.delete(path);
+  return entry.data;
+};
+
+const prefetchApiResponse = (path) => {
+  if (!path) {
+    return Promise.resolve(null);
+  }
+  const cached = routePrefetchCache.get(path);
+  if (cached && cached.expiresAt > Date.now()) {
+    return Promise.resolve(cached.data);
+  }
+  if (routePrefetchInFlight.has(path)) {
+    return routePrefetchInFlight.get(path);
+  }
+  const request = apiRequest(path)
+    .then((data) => {
+      routePrefetchCache.set(path, {
+        data,
+        expiresAt: Date.now() + ROUTE_PREFETCH_TTL_MS,
+      });
+      return data;
+    })
+    .catch(() => null)
+    .finally(() => {
+      routePrefetchInFlight.delete(path);
+    });
+  routePrefetchInFlight.set(path, request);
+  return request;
+};
+
+const loadApiResponse = async (path) => {
+  const prefetched = consumePrefetchedApiResponse(path);
+  if (prefetched !== null) {
+    return prefetched;
+  }
+  return apiRequest(path);
+};
+
+const prefetchBuildingRouteData = (buildingId) => {
+  const normalizedId = Number(buildingId);
+  if (!Number.isFinite(normalizedId)) {
+    return;
+  }
+  void prefetchApiResponse("/api/buildings");
+  void prefetchApiResponse(`/api/buildings/${normalizedId}/floors`);
+};
+
+const prefetchSpaceRouteData = ({ buildingId, spaceId }) => {
+  prefetchBuildingRouteData(buildingId);
+  const normalizedSpaceId = Number(spaceId);
+  if (Number.isFinite(normalizedSpaceId)) {
+    void prefetchApiResponse(`/api/spaces/${normalizedSpaceId}`);
+  }
+};
+
+const attachRoutePrefetchHandlers = (element, prefetchFn) => {
+  if (!element || typeof prefetchFn !== "function") {
+    return;
+  }
+  const triggerPrefetch = () => {
+    prefetchFn();
+  };
+  element.addEventListener("pointerenter", triggerPrefetch, { passive: true });
+  element.addEventListener("focus", triggerPrefetch, { passive: true });
+  element.addEventListener(
+    "touchstart",
+    () => {
+      prefetchFn();
+    },
+    { passive: true, once: true }
+  );
 };
 
 const apiRequest = async (path, options = {}) => {
@@ -2188,6 +2276,7 @@ const renderResponsibilitiesList = (data) => {
   };
 
   appendSection("Здания", data.buildings, (building) => {
+    const buildingId = Number(building?.id);
     const title = getBuildingLabel(building);
     const buildingAddress = typeof building?.address === "string" ? building.address.trim() : "";
     const item = document.createElement("div");
@@ -2202,14 +2291,18 @@ const renderResponsibilitiesList = (data) => {
       meta.textContent = buildingAddress;
       item.appendChild(meta);
     }
+    attachRoutePrefetchHandlers(item, () => {
+      prefetchBuildingRouteData(buildingId);
+    });
     item.addEventListener("click", () => {
       closeResponsibilitiesModal();
-      window.location.assign(`/buildings/${encodeURIComponent(building.id)}`);
+      void navigateTo(`/buildings/${encodeURIComponent(building.id)}`);
     });
     return item;
   });
 
   appendSection("Этажи", data.floors, (floor) => {
+    const buildingId = Number(floor?.buildingId);
     const buildingName = typeof floor?.buildingName === "string" ? floor.buildingName.trim() : "";
     const level = Number(floor?.level);
     const floorLabel = Number.isFinite(level) ? `Этаж ${level}` : getFloorLabel(floor);
@@ -2226,9 +2319,12 @@ const renderResponsibilitiesList = (data) => {
       item.appendChild(meta);
     }
     if (floor.buildingId && Number.isFinite(level)) {
+      attachRoutePrefetchHandlers(item, () => {
+        prefetchBuildingRouteData(buildingId);
+      });
       item.addEventListener("click", () => {
         closeResponsibilitiesModal();
-        window.location.assign(
+        void navigateTo(
           `/buildings/${encodeURIComponent(floor.buildingId)}/floors/${encodeURIComponent(floor.level)}`
         );
       });
@@ -2237,6 +2333,8 @@ const renderResponsibilitiesList = (data) => {
   });
 
   appendSection("Коворкинги", data.coworkings, (space) => {
+    const buildingId = Number(space?.buildingId);
+    const spaceId = Number(space?.id);
     const buildingName = typeof space?.buildingName === "string" ? space.buildingName.trim() : "";
     const floorLevel = Number(space?.floorLevel);
     const floorLabel = Number.isFinite(floorLevel) ? `Этаж ${floorLevel}` : getFloorLabel(space);
@@ -2257,9 +2355,12 @@ const renderResponsibilitiesList = (data) => {
       item.appendChild(meta);
     }
     if (space.buildingId && Number.isFinite(floorLevel) && space.id) {
+      attachRoutePrefetchHandlers(item, () => {
+        prefetchSpaceRouteData({ buildingId, spaceId });
+      });
       item.addEventListener("click", () => {
         closeResponsibilitiesModal();
-        window.location.assign(
+        void navigateTo(
           `/buildings/${encodeURIComponent(space.buildingId)}/floors/${encodeURIComponent(
             space.floorLevel
           )}/spaces/${encodeURIComponent(space.id)}`
@@ -4235,10 +4336,14 @@ const renderBookingsList = () => {
       void handleCancelBooking(booking);
     });
 
+    const bookingSpaceId = Number(booking?.space_id);
+    const bookingBuildingId = Number(booking?.building_id);
+    attachRoutePrefetchHandlers(item, () => {
+      prefetchSpaceRouteData({ buildingId: bookingBuildingId, spaceId: bookingSpaceId });
+    });
+
     item.addEventListener("click", () => {
       const normalizedDate = normalizeBookingDate(booking?.date);
-      const bookingSpaceId = Number(booking?.space_id);
-      const bookingBuildingId = Number(booking?.building_id);
       const bookingFloorLevel = Number(booking?.floor_level);
       if (
         Number.isFinite(bookingSpaceId) &&
@@ -4249,7 +4354,7 @@ const renderBookingsList = () => {
         const query = isValidBookingDate(normalizedDate)
           ? `?date=${encodeURIComponent(normalizedDate)}`
           : "";
-        window.location.assign(
+        void navigateTo(
           `/buildings/${encodeURIComponent(bookingBuildingId)}/floors/${encodeURIComponent(
             bookingFloorLevel
           )}/spaces/${encodeURIComponent(bookingSpaceId)}${query}`
@@ -7041,14 +7146,14 @@ const selectSpaceFromList = (space) => {
     const buildingId = currentBuilding?.id;
     const floorLevel = currentFloor?.level;
     if (buildingId && Number.isFinite(floorLevel)) {
-      window.location.assign(
+      void navigateTo(
         `/buildings/${encodeURIComponent(buildingId)}/floors/${encodeURIComponent(
           floorLevel
         )}/spaces/${encodeURIComponent(space.id)}`
       );
       return;
     }
-    window.location.assign(`/buildings/${encodeURIComponent(buildingId || "")}`);
+    void navigateTo(`/buildings/${encodeURIComponent(buildingId || "")}`);
     return;
   }
   if (!lassoState.spacesLayer) {
@@ -7162,6 +7267,15 @@ const renderFloorSpacesList = (spaces) => {
     }
     if (space.kind === "meeting" && capacityTag) {
       selectButton.appendChild(capacityTag);
+    }
+
+    if (space.kind === "coworking" && space.id) {
+      attachRoutePrefetchHandlers(selectButton, () => {
+        prefetchSpaceRouteData({
+          buildingId: currentBuilding?.id,
+          spaceId: space.id,
+        });
+      });
     }
 
     const canEdit = canManageSpaceResources(getUserInfo(), space);
@@ -7820,14 +7934,14 @@ const selectSpacePolygon = (polygon, { showHandles = true } = {}) => {
     const buildingId = currentBuilding?.id;
     const floorLevel = currentFloor?.level;
     if (buildingId && Number.isFinite(floorLevel)) {
-      window.location.assign(
+      void navigateTo(
         `/buildings/${encodeURIComponent(buildingId)}/floors/${encodeURIComponent(
           floorLevel
         )}/spaces/${encodeURIComponent(spaceId)}`
       );
       return;
     }
-    window.location.assign(`/buildings/${encodeURIComponent(buildingId || "")}`);
+    void navigateTo(`/buildings/${encodeURIComponent(buildingId || "")}`);
     return;
   }
   clearSpaceSelection();
@@ -10726,6 +10840,8 @@ const renderBuildings = () => {
     emptyState.style.display = buildings.length === 0 ? "block" : "none";
   }
   buildings.forEach((building) => {
+    const buildingId = Number(building?.id);
+    const buildingTargetId = Number.isFinite(buildingId) ? buildingId : building?.id;
     const tile = document.createElement("button");
     tile.type = "button";
     tile.className = "building-tile";
@@ -10733,12 +10849,15 @@ const renderBuildings = () => {
     const name = document.createElement("strong");
     name.textContent = building.name;
     tile.append(name);
+    attachRoutePrefetchHandlers(tile, () => {
+      prefetchBuildingRouteData(buildingId);
+    });
     tile.addEventListener("click", () => {
       if (!requireActiveSession("Сессия завершена. Войдите снова, чтобы открыть здание.")) {
         return;
       }
       clearStatus();
-      window.location.assign(`/buildings/${encodeURIComponent(building.id)}`);
+      void navigateTo(`/buildings/${encodeURIComponent(buildingTargetId || "")}`);
     });
     buildingsGrid.appendChild(tile);
   });
@@ -10938,9 +11057,13 @@ const renderFloors = (floors) => {
 
     card.append(header, meta);
     if (currentBuilding) {
+      const buildingId = Number(currentBuilding.id);
+      attachRoutePrefetchHandlers(card, () => {
+        prefetchBuildingRouteData(buildingId);
+      });
       const navigateToFloor = () => {
         clearBuildingStatus();
-        window.location.assign(
+        void navigateTo(
           `/buildings/${encodeURIComponent(currentBuilding.id)}/floors/${encodeURIComponent(
             floor.level
           )}`
@@ -11068,7 +11191,7 @@ const deleteCurrentBuilding = async () => {
   try {
     await apiRequest(`/api/buildings/${targetId}`, { method: "DELETE" });
     closeModal();
-    window.location.assign("/buildings");
+    await navigateTo("/buildings");
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
@@ -11078,8 +11201,8 @@ const deleteCurrentBuilding = async () => {
   }
 };
 
-const refreshBuildings = async () => {
-  const data = await apiRequest("/api/buildings");
+const refreshBuildings = async ({ allowPrefetch = false } = {}) => {
+  const data = allowPrefetch ? await loadApiResponse("/api/buildings") : await apiRequest("/api/buildings");
   buildings = Array.isArray(data.items) ? data.items : [];
   buildings.forEach((building) => preloadBuildingImage(building));
 };
@@ -11196,7 +11319,7 @@ const loadBuildingPage = async (buildingID) => {
   setPageMode("building");
   clearBuildingStatus();
   try {
-    await refreshBuildings();
+    await refreshBuildings({ allowPrefetch: true });
     const building = buildings.find((item) => item.id === buildingID);
     if (!building) {
       currentBuilding = null;
@@ -11219,7 +11342,7 @@ const loadBuildingPage = async (buildingID) => {
       pageTitle.textContent = building.name;
     }
 
-    const floorsResponse = await apiRequest(`/api/buildings/${buildingID}/floors`);
+    const floorsResponse = await loadApiResponse(`/api/buildings/${buildingID}/floors`);
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
     if (floorsCount) {
       floorsCount.textContent = `${floors.length}`;
@@ -11256,7 +11379,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
   renderFloorSpaces([]);
   currentFloor = null;
   try {
-    await refreshBuildings();
+    await refreshBuildings({ allowPrefetch: true });
     const building = buildings.find((item) => item.id === buildingID);
     if (!building) {
       currentBuilding = null;
@@ -11282,7 +11405,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       pageSubtitle.textContent = building.name || "";
     }
 
-    const floorsResponse = await apiRequest(`/api/buildings/${buildingID}/floors`);
+    const floorsResponse = await loadApiResponse(`/api/buildings/${buildingID}/floors`);
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
     const floor = floors.find((item) => item.level === floorNumber);
     if (!floor) {
@@ -11415,7 +11538,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     spaceAttendeesEmpty.classList.add("is-hidden");
   }
   try {
-    const space = await apiRequest(`/api/spaces/${spaceId}`);
+    const space = await loadApiResponse(`/api/spaces/${spaceId}`);
     if (!space || !space.id) {
       throw new Error("Пространство не найдено.");
     }
@@ -11423,14 +11546,14 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     if (initialBookingDate) {
       setBookingSelectedDate(initialBookingDate, { reloadDesks: false });
     }
-    const floorsResponse = await apiRequest(`/api/buildings/${buildingID}/floors`);
+    const floorsResponse = await loadApiResponse(`/api/buildings/${buildingID}/floors`);
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
     const floor = floors.find((item) => item.level === floorNumber) || null;
     if (!floor) {
       throw new Error("Этаж не найден.");
     }
     const floorDetails = await apiRequest(`/api/floors/${floor.id}`);
-    const building = await apiRequest(`/api/buildings/${buildingID}`);
+    const building = await loadApiResponse(`/api/buildings/${buildingID}`);
     if (building) {
       currentBuilding = building;
       if (Array.isArray(buildings)) {
@@ -13197,11 +13320,49 @@ const init = async () => {
   }
   setPageMode("list");
   try {
-    await refreshBuildings();
+    await refreshBuildings({ allowPrefetch: true });
     renderBuildings();
   } catch (error) {
     setStatus(error.message, "error");
   }
+};
+
+const rerenderCurrentRoute = async () => {
+  if (!appInitialized) {
+    return;
+  }
+  if (routeNavigationInProgress) {
+    routeNavigationQueued = true;
+    return;
+  }
+  routeNavigationInProgress = true;
+  try {
+    do {
+      routeNavigationQueued = false;
+      await init();
+    } while (routeNavigationQueued);
+  } finally {
+    routeNavigationInProgress = false;
+  }
+};
+
+const navigateTo = async (targetPath, { replace = false } = {}) => {
+  const nextUrl = new URL(targetPath, window.location.origin);
+  if (nextUrl.origin !== window.location.origin) {
+    window.location.assign(nextUrl.toString());
+    return;
+  }
+  const nextPath = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
+  const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (nextPath === currentPath) {
+    return;
+  }
+  if (replace) {
+    window.history.replaceState(null, "", nextPath);
+  } else {
+    window.history.pushState(null, "", nextPath);
+  }
+  await rerenderCurrentRoute();
 };
 
 /** Delegated modal-close handler: maps each .modal element to its close function */
@@ -13404,5 +13565,39 @@ if (topAlert) {
     updateTopAlertHeight();
   });
 }
+
+window.addEventListener("popstate", () => {
+  void rerenderCurrentRoute();
+});
+
+document.addEventListener("click", (event) => {
+  if (event.defaultPrevented) {
+    return;
+  }
+  if (event instanceof MouseEvent && event.button !== 0) {
+    return;
+  }
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+    return;
+  }
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
+  const link = target.closest("a[href]");
+  if (!link || link.target === "_blank" || link.hasAttribute("download")) {
+    return;
+  }
+  const href = link.getAttribute("href");
+  if (!href || href.startsWith("#")) {
+    return;
+  }
+  const url = new URL(href, window.location.origin);
+  if (url.origin !== window.location.origin || !url.pathname.startsWith("/buildings")) {
+    return;
+  }
+  event.preventDefault();
+  void navigateTo(`${url.pathname}${url.search}${url.hash}`);
+});
 
 initializeAuth();

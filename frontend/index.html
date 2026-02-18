@@ -6,7 +6,7 @@
     <title>Офисные здания</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body class="auth-locked">
+  <body>
     <header class="app-header">
       <div class="app-header-content">
         <div class="header-copy">
@@ -63,10 +63,10 @@
 
     <div id="topAlert" class="top-alert" role="status" aria-live="polite"></div>
 
-    <div id="authGate" class="auth-gate" aria-hidden="false">
+    <div id="authGate" class="auth-gate is-hidden" aria-hidden="true">
       <div id="authBoot" class="auth-boot" aria-live="polite">
         <div class="auth-boot-spinner" aria-hidden="true"></div>
-        <p id="authBootText" class="auth-boot-text">Проверяем авторизацию...</p>
+        <p id="authBootText" class="auth-boot-text">Загрузка...</p>
       </div>
       <div id="authCard" class="auth-card is-hidden">
         <div class="auth-header">
