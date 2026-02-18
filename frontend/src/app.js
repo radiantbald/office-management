@@ -461,7 +461,7 @@ let routeNavigationInProgress = false;
 let routeNavigationQueued = false;
 const routePrefetchCache = new Map();
 const routePrefetchInFlight = new Map();
-const ROUTE_PREFETCH_TTL_MS = 8000;
+const API_GET_CACHE_TTL_MS = 60 * 1000;
 
 /* setAuthToken → imported from auth.js */
 
@@ -1594,52 +1594,92 @@ const shouldBlockEmployeeRequest = (path, options = {}) => {
   return false;
 };
 
-const consumePrefetchedApiResponse = (path) => {
-  const entry = routePrefetchCache.get(path);
-  if (!entry) {
+const isMutationMethod = (method) => !["GET", "HEAD", "OPTIONS", "TRACE"].includes(String(method || "").toUpperCase());
+
+const normalizeApiCacheKey = (path) => String(path || "").trim();
+
+const isApiCacheEntryFresh = (entry) =>
+  Boolean(entry && Number.isFinite(entry.expiresAt) && entry.expiresAt > Date.now());
+
+const getCachedApiResponse = (path) => {
+  const cacheKey = normalizeApiCacheKey(path);
+  if (!cacheKey) {
     return null;
   }
-  if (entry.expiresAt <= Date.now()) {
-    routePrefetchCache.delete(path);
+  const entry = routePrefetchCache.get(cacheKey);
+  if (!isApiCacheEntryFresh(entry)) {
+    if (entry) {
+      routePrefetchCache.delete(cacheKey);
+    }
     return null;
   }
-  routePrefetchCache.delete(path);
   return entry.data;
 };
 
+const setCachedApiResponse = (path, data) => {
+  const cacheKey = normalizeApiCacheKey(path);
+  if (!cacheKey) {
+    return;
+  }
+  routePrefetchCache.set(cacheKey, {
+    data,
+    expiresAt: Date.now() + API_GET_CACHE_TTL_MS,
+  });
+};
+
+const clearApiResponseCache = () => {
+  routePrefetchCache.clear();
+  routePrefetchInFlight.clear();
+};
+
+const consumePrefetchedApiResponse = (path) => {
+  return getCachedApiResponse(path);
+};
+
 const prefetchApiResponse = (path) => {
-  if (!path) {
+  const cacheKey = normalizeApiCacheKey(path);
+  if (!cacheKey) {
     return Promise.resolve(null);
   }
-  const cached = routePrefetchCache.get(path);
-  if (cached && cached.expiresAt > Date.now()) {
-    return Promise.resolve(cached.data);
+  const cachedData = getCachedApiResponse(cacheKey);
+  if (cachedData !== null) {
+    return Promise.resolve(cachedData);
   }
-  if (routePrefetchInFlight.has(path)) {
-    return routePrefetchInFlight.get(path);
+  if (routePrefetchInFlight.has(cacheKey)) {
+    return routePrefetchInFlight.get(cacheKey);
   }
-  const request = apiRequest(path)
+  const request = apiRequest(cacheKey)
     .then((data) => {
-      routePrefetchCache.set(path, {
-        data,
-        expiresAt: Date.now() + ROUTE_PREFETCH_TTL_MS,
-      });
+      setCachedApiResponse(cacheKey, data);
       return data;
     })
     .catch(() => null)
     .finally(() => {
-      routePrefetchInFlight.delete(path);
+      routePrefetchInFlight.delete(cacheKey);
     });
-  routePrefetchInFlight.set(path, request);
+  routePrefetchInFlight.set(cacheKey, request);
   return request;
 };
 
 const loadApiResponse = async (path) => {
-  const prefetched = consumePrefetchedApiResponse(path);
+  const cacheKey = normalizeApiCacheKey(path);
+  const prefetched = consumePrefetchedApiResponse(cacheKey);
   if (prefetched !== null) {
     return prefetched;
   }
-  return apiRequest(path);
+  if (routePrefetchInFlight.has(cacheKey)) {
+    return routePrefetchInFlight.get(cacheKey);
+  }
+  const request = apiRequest(cacheKey)
+    .then((data) => {
+      setCachedApiResponse(cacheKey, data);
+      return data;
+    })
+    .finally(() => {
+      routePrefetchInFlight.delete(cacheKey);
+    });
+  routePrefetchInFlight.set(cacheKey, request);
+  return request;
 };
 
 const prefetchBuildingRouteData = (buildingId) => {
@@ -1680,6 +1720,11 @@ const attachRoutePrefetchHandlers = (element, prefetchFn) => {
 const apiRequest = async (path, options = {}) => {
   if (shouldBlockEmployeeRequest(path, options)) {
     throw new Error("Недостаточно прав для выполнения действия.");
+  }
+  const method = String(options?.method || "GET").toUpperCase();
+  if (isMutationMethod(method)) {
+    // Mutations may affect many dependent entities, so invalidate read cache.
+    clearApiResponseCache();
   }
   return makeApiRequest(path, options);
 };
