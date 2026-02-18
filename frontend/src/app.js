@@ -11527,6 +11527,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   setPageMode("space");
   clearSpacePageStatus();
   const initialBookingDate = getBookingDateFromLocation();
+  let desksLoadPromise = null;
   if (spaceSnapshotCanvas) {
     spaceSnapshotCanvas.replaceChildren();
   }
@@ -11590,6 +11591,12 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     currentSpace = space;
     if (initialBookingDate) {
       setBookingSelectedDate(initialBookingDate, { reloadDesks: false });
+    } else {
+      ensureBookingDate({ reloadDesks: false });
+    }
+    if (space.kind === "coworking") {
+      // Start desks request immediately; UI rendering can proceed in parallel.
+      desksLoadPromise = loadSpaceDesks(space.id);
     }
     const floorsResponse = await loadApiResponse(`/api/buildings/${buildingID}/floors`);
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
@@ -11696,8 +11703,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     if (spaceSnapshot) {
       spaceSnapshot.classList.toggle("can-manage-bookings", canBookForOthers());
     }
-    ensureBookingDate({ reloadDesks: false });
-    await loadSpaceDesks(space.id);
+    await (desksLoadPromise || loadSpaceDesks(space.id));
   } catch (error) {
     setSpacePageStatus(error.message, "error");
     if (spaceSnapshotPlaceholder) {
