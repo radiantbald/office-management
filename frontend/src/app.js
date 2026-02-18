@@ -9674,6 +9674,7 @@ const loadSpaceDesks = async (
   spaceId,
   { skipIfUnchanged = false, showSnapshotLoading = false } = {}
 ) => {
+  let shouldHideSnapshotLoadingInFinally = Boolean(showSnapshotLoading);
   if (showSnapshotLoading) {
     setSpaceSnapshotLoading(true);
   }
@@ -9709,6 +9710,11 @@ const loadSpaceDesks = async (
       previousFingerprint !== "" &&
       nextFingerprint === previousFingerprint &&
       normalized.updates.length === 0;
+    if (showSnapshotLoading) {
+      // Hide loading before applying fresh desks to avoid shimmer over rendered data.
+      setSpaceSnapshotLoading(false);
+      shouldHideSnapshotLoadingInFinally = false;
+    }
     syncBookingsFromDesks(normalized.desks);
     currentDesks = normalized.desks;
     pendingDeskUpdates = new Map();
@@ -9723,7 +9729,7 @@ const loadSpaceDesks = async (
       await persistDeskNormalizationUpdates(normalized.updates);
     }
   } finally {
-    if (showSnapshotLoading) {
+    if (shouldHideSnapshotLoadingInFinally) {
       setSpaceSnapshotLoading(false);
     }
   }
