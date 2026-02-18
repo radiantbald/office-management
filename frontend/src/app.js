@@ -1802,6 +1802,10 @@ const clearSpacePageStatus = () => spacePageStatusManager.clear();
 const bookingStatusManager = createStatusManager(spaceBookingStatus);
 const setBookingStatus = (message, tone) => bookingStatusManager.set(message, tone);
 const clearBookingStatus = () => bookingStatusManager.clear();
+const notifyDeskBookingCompletion = (message, tone = "success") => {
+  setBookingStatus(message, tone);
+  showTopAlert(message, tone);
+};
 
 const dbDumpStatusManager = createStatusManager(dbDumpStatus);
 const setDbDumpStatus = (message, tone) => dbDumpStatusManager.set(message, tone);
@@ -4195,12 +4199,15 @@ const updateDeskBookingIndicators = (desks = []) => {
     }
     group.classList.toggle("is-booked", desk.bookingStatus === "booked");
     group.classList.toggle("is-my-booking", desk.bookingStatus === "my");
+    group.classList.toggle("is-loading", deskBookingActionsInFlight.has(deskId));
     let title = group.querySelector("title");
     if (!title) {
       title = document.createElementNS(svgNamespace, "title");
       group.insertBefore(title, group.firstChild);
     }
-    title.textContent = getDeskBookingTitle(desk);
+    title.textContent = deskBookingActionsInFlight.has(deskId)
+      ? "Обновляем бронирование..."
+      : getDeskBookingTitle(desk);
     const label = group.querySelector(".space-desk-label");
     if (label) {
       setDeskLabelContent(label, desk);
@@ -5401,7 +5408,7 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
   if (deskBookingActionsInFlight.has(String(deskId))) {
     return;
   }
-  deskBookingActionsInFlight.add(String(deskId));
+  setDeskBookingInFlight(deskId, true);
   const headers = getBookingHeaders();
   try {
     const body = {
@@ -5422,17 +5429,17 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
       markDeskAsMyLocally(deskId);
     }
     if (isGuest) {
-      setBookingStatus("Место забронировано для гостя.", "success");
+      notifyDeskBookingCompletion("Место забронировано для гостя.", "success");
     } else if (isOther) {
-      setBookingStatus("Место забронировано для сотрудника.", "success");
+      notifyDeskBookingCompletion("Место забронировано для сотрудника.", "success");
     } else {
-      setBookingStatus("Место успешно забронировано.", "success");
+      notifyDeskBookingCompletion("Место успешно забронировано.", "success");
     }
     refreshSpaceAfterDeskBookingMutation();
   } catch (error) {
-    setBookingStatus(error.message, "error");
+    notifyDeskBookingCompletion(error.message, "error");
   } finally {
-    deskBookingActionsInFlight.delete(String(deskId));
+    setDeskBookingInFlight(deskId, false);
   }
 };
 
@@ -5578,7 +5585,7 @@ const handleDeskBookingClick = async (desk) => {
       if (!confirmed) {
         return;
       }
-      deskBookingActionsInFlight.add(String(deskId));
+      setDeskBookingInFlight(deskId, true);
       try {
         await apiRequest("/api/bookings", {
           method: "DELETE",
@@ -5589,19 +5596,19 @@ const handleDeskBookingClick = async (desk) => {
           }),
         });
         markDeskAsFreeLocally(deskId);
-        setBookingStatus("Бронирование отменено.", "success");
+        notifyDeskBookingCompletion("Бронирование отменено.", "success");
         refreshSpaceAfterDeskBookingMutation();
         return;
       } catch (error) {
         if (isBookingAlreadyCancelledError(error)) {
           markDeskAsFreeLocally(deskId);
-          setBookingStatus("Бронирование уже было отменено.", "info");
+          notifyDeskBookingCompletion("Бронирование уже было отменено.", "info");
           refreshSpaceAfterDeskBookingMutation();
           return;
         }
         throw error;
       } finally {
-        deskBookingActionsInFlight.delete(String(deskId));
+        setDeskBookingInFlight(deskId, false);
       }
     }
     if (status === "booked" && canBookForOthers()) {
@@ -5612,7 +5619,7 @@ const handleDeskBookingClick = async (desk) => {
       if (!confirmed) {
         return;
       }
-      deskBookingActionsInFlight.add(String(deskId));
+      setDeskBookingInFlight(deskId, true);
       try {
         await apiRequest("/api/bookings", {
           method: "DELETE",
@@ -5623,19 +5630,19 @@ const handleDeskBookingClick = async (desk) => {
           }),
         });
         markDeskAsFreeLocally(deskId);
-        setBookingStatus("Бронирование отменено.", "success");
+        notifyDeskBookingCompletion("Бронирование отменено.", "success");
         refreshSpaceAfterDeskBookingMutation();
         return;
       } catch (error) {
         if (isBookingAlreadyCancelledError(error)) {
           markDeskAsFreeLocally(deskId);
-          setBookingStatus("Бронирование уже было отменено.", "info");
+          notifyDeskBookingCompletion("Бронирование уже было отменено.", "info");
           refreshSpaceAfterDeskBookingMutation();
           return;
         }
         throw error;
       } finally {
-        deskBookingActionsInFlight.delete(String(deskId));
+        setDeskBookingInFlight(deskId, false);
       }
     }
     if (status !== "free") {
@@ -5647,7 +5654,7 @@ const handleDeskBookingClick = async (desk) => {
     }
     await bookDeskForEmployee(liveDesk);
   } catch (error) {
-    setBookingStatus(error.message, "error");
+    notifyDeskBookingCompletion(error.message, "error");
   }
 };
 
@@ -9471,10 +9478,13 @@ const renderSpaceDesks = (desks = []) => {
     }
     const deskMetrics = getDeskMetrics(svg, desk);
     const rotation = getDeskRotation(desk);
+    const deskId = String(desk.id);
+    const isDeskActionLoading = deskBookingActionsInFlight.has(deskId);
     const group = document.createElementNS(svgNamespace, "g");
     group.classList.add("space-desk");
-    group.setAttribute("data-desk-id", String(desk.id));
+    group.setAttribute("data-desk-id", deskId);
     group.classList.toggle("is-selected", isDeskSelected(desk.id));
+    group.classList.toggle("is-loading", isDeskActionLoading);
     if (desk.bookingStatus === "booked") {
       group.classList.add("is-booked");
     } else if (desk.bookingStatus === "my") {
@@ -9500,8 +9510,23 @@ const renderSpaceDesks = (desks = []) => {
     label.setAttribute("dominant-baseline", "middle");
     label.setAttribute("transform", `rotate(${-rotation} ${desk.x} ${desk.y})`);
 
+    const dotsY = desk.y + Math.min(18, Math.max(10, deskMetrics.height * 0.2));
+    const loadingDots = document.createElementNS(svgNamespace, "g");
+    loadingDots.classList.add("space-desk-loading-dots");
+    loadingDots.setAttribute("transform", `rotate(${-rotation} ${desk.x} ${desk.y})`);
+    [-8, 0, 8].forEach((offset, index) => {
+      const dot = document.createElementNS(svgNamespace, "circle");
+      dot.classList.add("space-desk-loading-dot", `dot-${index + 1}`);
+      dot.setAttribute("cx", String(desk.x + offset));
+      dot.setAttribute("cy", String(dotsY));
+      dot.setAttribute("r", "2.5");
+      loadingDots.appendChild(dot);
+    });
+
     const title = document.createElementNS(svgNamespace, "title");
-    if (desk.bookingStatus === "booked") {
+    if (isDeskActionLoading) {
+      title.textContent = "Обновляем бронирование...";
+    } else if (desk.bookingStatus === "booked") {
       title.textContent = `Занято: ${desk.bookingUserName || "сотрудник"}`;
     } else if (desk.bookingStatus === "my") {
       title.textContent = "Ваше место";
@@ -9512,6 +9537,7 @@ const renderSpaceDesks = (desks = []) => {
     group.appendChild(title);
     rotator.appendChild(shape);
     rotator.appendChild(label);
+    rotator.appendChild(loadingDots);
     rotator.setAttribute("transform", `rotate(${rotation} ${desk.x} ${desk.y})`);
     if (isSpaceEditing && hasSingleSelection && isDeskSelected(desk.id)) {
       const handles = document.createElementNS(svgNamespace, "g");
@@ -9750,6 +9776,21 @@ const refreshDeskCollectionsView = () => {
   }
   renderSpaceDeskList(currentDesks);
   renderSpaceAttendeesList(currentDesks);
+};
+
+const setDeskBookingInFlight = (deskId, inFlight) => {
+  const normalizedDeskId = String(Number(deskId));
+  if (!normalizedDeskId || normalizedDeskId === "NaN") {
+    return;
+  }
+  if (inFlight) {
+    deskBookingActionsInFlight.add(normalizedDeskId);
+  } else {
+    deskBookingActionsInFlight.delete(normalizedDeskId);
+  }
+  if (!updateDeskBookingIndicators(currentDesks)) {
+    renderSpaceDesks(currentDesks);
+  }
 };
 
 const loadSpaceDesks = async (

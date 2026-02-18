@@ -1233,6 +1233,37 @@ body.space-editing .space-booking-panel {
   opacity: 0.7;
 }
 
+.space-desk.is-loading {
+  cursor: progress !important;
+}
+
+.space-desk.is-loading .space-desk-label {
+  opacity: 0;
+}
+
+.space-desk-loading-dots {
+  display: none;
+  pointer-events: none;
+}
+
+.space-desk.is-loading .space-desk-loading-dots {
+  display: block;
+}
+
+.space-desk-loading-dot {
+  fill: rgba(255, 255, 255, 0.95);
+  opacity: 0.35;
+  animation: deskLoadingDotPulse 1s ease-in-out infinite;
+}
+
+.space-desk-loading-dot.dot-2 {
+  animation-delay: 0.16s;
+}
+
+.space-desk-loading-dot.dot-3 {
+  animation-delay: 0.32s;
+}
+
 .space-snapshot.is-booking .space-desk:not(.is-booked):hover {
   transform: scale(1.1);
   filter: drop-shadow(0 4px 12px rgba(53, 122, 189, 0.4));
@@ -1260,6 +1291,18 @@ body.space-editing .space-booking-panel {
   to {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+@keyframes deskLoadingDotPulse {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
   }
 }
 
