@@ -982,10 +982,12 @@ body.space-editing .space-booking-panel {
 
 .space-snapshot.is-loading {
   cursor: progress;
+  pointer-events: none;
 }
 
 .space-snapshot.is-loading .space-snapshot-canvas {
-  opacity: 0;
+  opacity: 1;
+  filter: saturate(0.85) brightness(0.96);
 }
 
 .space-snapshot.is-loading::before {
@@ -993,17 +995,24 @@ body.space-editing .space-booking-panel {
   position: absolute;
   inset: 0;
   z-index: 3;
-  background:
-    linear-gradient(
-      110deg,
-      rgba(148, 163, 184, 0.12) 8%,
-      rgba(148, 163, 184, 0.28) 18%,
-      rgba(148, 163, 184, 0.12) 33%
-    ),
-    var(--color-gray-100);
-  background-size: 200% 100%, auto;
+  background: linear-gradient(
+    110deg,
+    rgba(255, 255, 255, 0.04) 8%,
+    rgba(255, 255, 255, 0.22) 18%,
+    rgba(255, 255, 255, 0.04) 33%
+  );
+  background-size: 220% 100%;
   animation: spaceSnapshotShimmer 1.2s linear infinite;
   pointer-events: none;
+}
+
+.space-snapshot.is-loading .space-desk-shape {
+  fill: rgba(148, 163, 184, 0.12);
+  stroke: rgba(71, 85, 105, 0.55);
+}
+
+.space-snapshot.is-loading .space-desk-label {
+  fill: rgba(51, 65, 85, 0.75);
 }
 
 .space-snapshot.is-background-hidden {
