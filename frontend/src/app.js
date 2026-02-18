@@ -9510,7 +9510,7 @@ const renderSpaceDesks = (desks = []) => {
     label.setAttribute("dominant-baseline", "middle");
     label.setAttribute("transform", `rotate(${-rotation} ${desk.x} ${desk.y})`);
 
-    const dotsY = desk.y + Math.min(18, Math.max(10, deskMetrics.height * 0.2));
+    const dotsY = desk.y;
     const loadingDots = document.createElementNS(svgNamespace, "g");
     loadingDots.classList.add("space-desk-loading-dots");
     loadingDots.setAttribute("transform", `rotate(${-rotation} ${desk.x} ${desk.y})`);
