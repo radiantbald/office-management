@@ -2986,7 +2986,7 @@ const setBookingSelectedDate = (date, options = {}) => {
   }
   renderDatePicker();
   if (reloadDesks && currentSpace?.id) {
-    void loadSpaceDesks(currentSpace.id);
+    void loadSpaceDesks(currentSpace.id, { showSnapshotLoading: true });
   }
 };
 
