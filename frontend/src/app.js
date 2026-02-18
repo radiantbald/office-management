@@ -465,6 +465,8 @@ const API_GET_CACHE_TTL_MS = 5 * 60 * 1000;
 const floorSpacesRenderFingerprint = new Map();
 const spaceDesksRenderFingerprint = new Map();
 let latestSpaceDesksRequestToken = 0;
+const deskBookingActionsInFlight = new Set();
+let pendingDeskBookingRefreshTimer = null;
 
 /* setAuthToken → imported from auth.js */
 
@@ -5243,35 +5245,123 @@ const applyOptimisticDeskBookingState = (deskId, { status = "free", userName = "
   refreshDeskCollectionsView();
 };
 
+const getDeskBookingSnapshot = (desk) => {
+  if (!desk) {
+    return null;
+  }
+  return {
+    bookingStatus: desk.bookingStatus || "free",
+    bookingUserName: desk.bookingUserName || "",
+    bookingUserKey: desk.bookingUserKey || "",
+    bookingTenantEmployeeID: desk.bookingTenantEmployeeID || "",
+    booking: desk.booking
+      ? {
+          is_booked: Boolean(desk.booking.is_booked),
+          user: desk.booking.user ? { ...desk.booking.user } : null,
+        }
+      : null,
+  };
+};
+
+const restoreDeskBookingSnapshot = (deskId, snapshot) => {
+  const desk = findDeskById(deskId);
+  if (!desk) {
+    return;
+  }
+  if (!snapshot) {
+    applyOptimisticDeskBookingState(deskId, { status: "free" });
+    return;
+  }
+  desk.bookingStatus = snapshot.bookingStatus || "free";
+  desk.bookingUserName = snapshot.bookingUserName || "";
+  desk.bookingUserKey = snapshot.bookingUserKey || "";
+  desk.bookingTenantEmployeeID = snapshot.bookingTenantEmployeeID || "";
+  desk.booking = snapshot.booking
+    ? {
+        is_booked: Boolean(snapshot.booking.is_booked),
+        user: snapshot.booking.user ? { ...snapshot.booking.user } : null,
+      }
+    : null;
+  if (!(bookingState.bookingsByDeskId instanceof Map)) {
+    bookingState.bookingsByDeskId = new Map();
+  }
+  if (desk.bookingStatus === "free") {
+    bookingState.bookingsByDeskId.delete(String(desk.id));
+  } else {
+    bookingState.bookingsByDeskId.set(String(desk.id), {
+      workplace_id: Number(desk.id),
+      applier_employee_id: desk.bookingUserKey || "",
+      tenant_employee_id: desk.bookingTenantEmployeeID || "",
+      user_name: desk.bookingUserName || "",
+    });
+  }
+  refreshDeskCollectionsView();
+};
+
 const refreshSpaceAfterDeskBookingMutation = () => {
-  if (currentSpace?.id) {
-    void loadSpaceDesks(currentSpace.id);
+  if (pendingDeskBookingRefreshTimer) {
+    clearTimeout(pendingDeskBookingRefreshTimer);
   }
-  if (bookingState.isListOpen) {
-    void loadMyBookings();
-  }
+  pendingDeskBookingRefreshTimer = setTimeout(() => {
+    pendingDeskBookingRefreshTimer = null;
+    if (currentSpace?.id) {
+      void loadSpaceDesks(currentSpace.id);
+    }
+    if (bookingState.isListOpen) {
+      void loadMyBookings();
+    }
+  }, 120);
 };
 
 const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
   if (!bookingState.selectedDate) {
     ensureBookingDate();
   }
+  const deskId = Number(desk?.id);
+  if (!Number.isFinite(deskId)) {
+    return;
+  }
+  if (deskBookingActionsInFlight.has(String(deskId))) {
+    return;
+  }
+  deskBookingActionsInFlight.add(String(deskId));
   const headers = getBookingHeaders();
+  const previousSnapshot = getDeskBookingSnapshot(findDeskById(deskId));
   try {
     const body = {
       date: bookingState.selectedDate,
-      workplace_id: Number(desk.id),
+      workplace_id: deskId,
     };
     if (targetEmployeeId != null && targetEmployeeId !== "") {
       body.target_employee_id = String(targetEmployeeId);
+    }
+    const isGuest = targetEmployeeId === "0";
+    const isOther = targetEmployeeId != null && targetEmployeeId !== "";
+    if (!isOther) {
+      const { key, name, employeeId } = getBookingUserInfo();
+      applyOptimisticDeskBookingState(deskId, {
+        status: "my",
+        userName: name || key || "Вы",
+        userKey: key,
+        tenantEmployeeId: employeeId,
+      });
+    } else if (isGuest) {
+      applyOptimisticDeskBookingState(deskId, {
+        status: "booked",
+        userName: "Гость",
+      });
+    } else {
+      applyOptimisticDeskBookingState(deskId, {
+        status: "booked",
+        userName: "Сотрудник",
+        userKey: String(targetEmployeeId || ""),
+      });
     }
     await apiRequest("/api/bookings", {
       method: "POST",
       headers,
       body: JSON.stringify(body),
     });
-    const isGuest = targetEmployeeId === "0";
-    const isOther = targetEmployeeId != null && targetEmployeeId !== "";
     if (isGuest) {
       setBookingStatus("Место забронировано для гостя.", "success");
     } else if (isOther) {
@@ -5279,32 +5369,12 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
     } else {
       setBookingStatus("Место успешно забронировано.", "success");
     }
-    const targetDeskId = Number(desk?.id);
-    if (Number.isFinite(targetDeskId)) {
-      if (!isOther) {
-        const { key, name, employeeId } = getBookingUserInfo();
-        applyOptimisticDeskBookingState(targetDeskId, {
-          status: "my",
-          userName: name || key || "Вы",
-          userKey: key,
-          tenantEmployeeId: employeeId,
-        });
-      } else if (isGuest) {
-        applyOptimisticDeskBookingState(targetDeskId, {
-          status: "booked",
-          userName: "Гость",
-        });
-      } else {
-        applyOptimisticDeskBookingState(targetDeskId, {
-          status: "booked",
-          userName: "Сотрудник",
-          userKey: String(targetEmployeeId || ""),
-        });
-      }
-    }
     refreshSpaceAfterDeskBookingMutation();
   } catch (error) {
+    restoreDeskBookingSnapshot(deskId, previousSnapshot);
     setBookingStatus(error.message, "error");
+  } finally {
+    deskBookingActionsInFlight.delete(String(deskId));
   }
 };
 
@@ -5431,6 +5501,13 @@ const handleDeskBookingClick = async (desk) => {
   if (!bookingState.selectedDate) {
     ensureBookingDate();
   }
+  const deskId = Number(desk?.id);
+  if (!Number.isFinite(deskId)) {
+    return;
+  }
+  if (deskBookingActionsInFlight.has(String(deskId))) {
+    return;
+  }
   const headers = getBookingHeaders();
   const status = desk.bookingStatus || "free";
   try {
@@ -5439,18 +5516,27 @@ const handleDeskBookingClick = async (desk) => {
       if (!confirmed) {
         return;
       }
-      await apiRequest("/api/bookings", {
-        method: "DELETE",
-        headers,
-        body: JSON.stringify({
-          date: bookingState.selectedDate,
-          workplace_id: Number(desk.id),
-        }),
-      });
-      setBookingStatus("Бронирование отменено.", "success");
-      applyOptimisticDeskBookingState(desk.id, { status: "free" });
-      refreshSpaceAfterDeskBookingMutation();
-      return;
+      deskBookingActionsInFlight.add(String(deskId));
+      const previousSnapshot = getDeskBookingSnapshot(findDeskById(deskId));
+      applyOptimisticDeskBookingState(deskId, { status: "free" });
+      try {
+        await apiRequest("/api/bookings", {
+          method: "DELETE",
+          headers,
+          body: JSON.stringify({
+            date: bookingState.selectedDate,
+            workplace_id: deskId,
+          }),
+        });
+        setBookingStatus("Бронирование отменено.", "success");
+        refreshSpaceAfterDeskBookingMutation();
+        return;
+      } catch (error) {
+        restoreDeskBookingSnapshot(deskId, previousSnapshot);
+        throw error;
+      } finally {
+        deskBookingActionsInFlight.delete(String(deskId));
+      }
     }
     if (status === "booked" && canBookForOthers()) {
       const bookedName = desk.bookingUserName || "сотрудник";
@@ -5460,18 +5546,27 @@ const handleDeskBookingClick = async (desk) => {
       if (!confirmed) {
         return;
       }
-      await apiRequest("/api/bookings", {
-        method: "DELETE",
-        headers,
-        body: JSON.stringify({
-          date: bookingState.selectedDate,
-          workplace_id: Number(desk.id),
-        }),
-      });
-      setBookingStatus("Бронирование отменено.", "success");
-      applyOptimisticDeskBookingState(desk.id, { status: "free" });
-      refreshSpaceAfterDeskBookingMutation();
-      return;
+      deskBookingActionsInFlight.add(String(deskId));
+      const previousSnapshot = getDeskBookingSnapshot(findDeskById(deskId));
+      applyOptimisticDeskBookingState(deskId, { status: "free" });
+      try {
+        await apiRequest("/api/bookings", {
+          method: "DELETE",
+          headers,
+          body: JSON.stringify({
+            date: bookingState.selectedDate,
+            workplace_id: deskId,
+          }),
+        });
+        setBookingStatus("Бронирование отменено.", "success");
+        refreshSpaceAfterDeskBookingMutation();
+        return;
+      } catch (error) {
+        restoreDeskBookingSnapshot(deskId, previousSnapshot);
+        throw error;
+      } finally {
+        deskBookingActionsInFlight.delete(String(deskId));
+      }
     }
     if (status !== "free") {
       return;
