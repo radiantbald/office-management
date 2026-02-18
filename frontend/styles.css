@@ -1435,6 +1435,50 @@ body.space-editing .space-booking-panel {
   transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
+.space-booking-item-skeleton {
+  cursor: default;
+  pointer-events: none;
+}
+
+.space-booking-item-skeleton:hover {
+  border-color: var(--border-default);
+  box-shadow: none;
+  background: var(--color-slate-50);
+}
+
+.space-booking-skeleton-line,
+.space-booking-skeleton-action {
+  border-radius: 8px;
+  background: linear-gradient(
+    110deg,
+    rgba(148, 163, 184, 0.12) 8%,
+    rgba(148, 163, 184, 0.26) 18%,
+    rgba(148, 163, 184, 0.12) 33%
+  );
+  background-size: 220% 100%;
+  animation: bookingsModalShimmer 1.2s linear infinite;
+}
+
+.space-booking-skeleton-line {
+  height: 12px;
+  width: 280px;
+}
+
+.space-booking-skeleton-line.is-title {
+  height: 18px;
+  width: 220px;
+}
+
+.space-booking-skeleton-line.is-accent {
+  width: 100px;
+}
+
+.space-booking-skeleton-action {
+  width: 88px;
+  height: 32px;
+  border-radius: 999px;
+}
+
 .space-booking-item:hover {
   border-color: var(--color-blue-300);
   box-shadow: 0 8px 18px rgba(59, 130, 246, 0.12);
@@ -1481,6 +1525,15 @@ body.space-editing .space-booking-panel {
 
 .space-booking-cancel:hover {
   background: var(--color-red-200);
+}
+
+@keyframes bookingsModalShimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 .admin-bookings-modal .modal-dialog {

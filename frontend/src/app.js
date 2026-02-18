@@ -310,6 +310,8 @@ const bookingState = {
   myBookings: [],
   myMeetingBookings: [],
   isLoading: false,
+  isMyBookingsLoading: false,
+  isMyMeetingBookingsLoading: false,
   isListOpen: false,
   activeBookingsTab: "coworking",
   longPressTimer: null,
@@ -4330,18 +4332,62 @@ const loadMyBookings = async () => {
     return;
   }
   const headers = getBookingHeaders();
+  bookingState.isMyBookingsLoading = true;
+  renderBookingsList();
   try {
     const response = await apiRequest("/api/bookings/me", { headers });
     const bookings = Array.isArray(response?.bookings) ? response.bookings : [];
     bookingState.myBookings = bookings;
-    renderBookingsList();
   } catch (error) {
     setBookingStatus(error.message, "error");
+  } finally {
+    bookingState.isMyBookingsLoading = false;
+    renderBookingsList();
+  }
+};
+
+const renderBookingsSkeleton = (listElement) => {
+  if (!listElement) {
+    return;
+  }
+  listElement.replaceChildren();
+  for (let index = 0; index < 6; index += 1) {
+    const item = document.createElement("div");
+    item.className = "space-booking-item space-booking-item-skeleton";
+
+    const info = document.createElement("div");
+    info.className = "space-booking-info";
+
+    const titleLine = document.createElement("div");
+    titleLine.className = "space-booking-skeleton-line is-title";
+    const metaLine = document.createElement("div");
+    metaLine.className = "space-booking-skeleton-line";
+    const accentLine = document.createElement("div");
+    accentLine.className = "space-booking-skeleton-line is-accent";
+
+    info.appendChild(titleLine);
+    info.appendChild(metaLine);
+    info.appendChild(accentLine);
+
+    const action = document.createElement("div");
+    action.className = "space-booking-skeleton-action";
+
+    item.appendChild(info);
+    item.appendChild(action);
+    listElement.appendChild(item);
   }
 };
 
 const renderBookingsList = () => {
   if (!spaceBookingsList || !spaceBookingsEmpty) {
+    return;
+  }
+  if (bookingState.isMyBookingsLoading) {
+    renderBookingsSkeleton(spaceBookingsList);
+    spaceBookingsEmpty.classList.add("is-hidden");
+    if (spaceBookingsCancelAllBtn) {
+      spaceBookingsCancelAllBtn.classList.add("is-hidden");
+    }
     return;
   }
   spaceBookingsList.replaceChildren();
@@ -4468,13 +4514,17 @@ const loadMyMeetingBookings = async () => {
     return;
   }
   const headers = getBookingHeaders();
+  bookingState.isMyMeetingBookingsLoading = true;
+  renderMeetingBookingsList();
   try {
     const response = await apiRequest("/api/meeting-room-bookings/me", { headers });
     const bookings = Array.isArray(response?.bookings) ? response.bookings : [];
     bookingState.myMeetingBookings = bookings;
-    renderMeetingBookingsList();
   } catch (error) {
     setBookingStatus(error.message, "error");
+  } finally {
+    bookingState.isMyMeetingBookingsLoading = false;
+    renderMeetingBookingsList();
   }
 };
 
@@ -4507,6 +4557,14 @@ const formatMeetingBookingWeekday = (raw) => {
 
 const renderMeetingBookingsList = () => {
   if (!meetingBookingsList || !meetingBookingsEmpty) {
+    return;
+  }
+  if (bookingState.isMyMeetingBookingsLoading) {
+    renderBookingsSkeleton(meetingBookingsList);
+    meetingBookingsEmpty.classList.add("is-hidden");
+    if (spaceBookingsCancelAllBtn) {
+      spaceBookingsCancelAllBtn.classList.add("is-hidden");
+    }
     return;
   }
   meetingBookingsList.replaceChildren();
@@ -11887,6 +11945,8 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     bookingState.bookingsByDeskId = new Map();
     bookingState.myBookings = [];
     bookingState.myMeetingBookings = [];
+    bookingState.isMyBookingsLoading = false;
+    bookingState.isMyMeetingBookingsLoading = false;
     bookingState.isListOpen = false;
     bookingState.activeBookingsTab = "coworking";
     bookingState.adminBookings = [];
