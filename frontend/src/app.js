@@ -11412,6 +11412,9 @@ const setPageMode = (mode) => {
   if (editFloorBtn) {
     editFloorBtn.classList.add("is-hidden");
   }
+  if (editSpaceBtn) {
+    editSpaceBtn.classList.add("is-hidden");
+  }
   if (pageTitle) {
     pageTitle.textContent = "Офисные здания";
   }
