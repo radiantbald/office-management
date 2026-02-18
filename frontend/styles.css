@@ -1006,13 +1006,9 @@ body.space-editing .space-booking-panel {
   pointer-events: none;
 }
 
-.space-snapshot.is-loading .space-desk-shape {
-  fill: rgba(148, 163, 184, 0.12);
-  stroke: rgba(71, 85, 105, 0.55);
-}
-
-.space-snapshot.is-loading .space-desk-label {
-  fill: rgba(51, 65, 85, 0.75);
+.space-snapshot.is-loading .space-desk,
+.space-snapshot.is-loading .desk-selection-overlay {
+  opacity: 0;
 }
 
 .space-snapshot.is-background-hidden {
