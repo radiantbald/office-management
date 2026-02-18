@@ -5313,6 +5313,19 @@ const refreshSpaceAfterDeskBookingMutation = () => {
   }, 120);
 };
 
+const isBookingAlreadyCancelledError = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  if (!message) {
+    return false;
+  }
+  return (
+    message.includes("404") ||
+    message.includes("not found") ||
+    message.includes("не найден") ||
+    message.includes("не существует")
+  );
+};
+
 const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
   if (!bookingState.selectedDate) {
     ensureBookingDate();
@@ -5579,6 +5592,11 @@ const handleDeskBookingClick = async (desk) => {
         refreshSpaceAfterDeskBookingMutation();
         return;
       } catch (error) {
+        if (isBookingAlreadyCancelledError(error)) {
+          setBookingStatus("Бронирование уже было отменено.", "info");
+          refreshSpaceAfterDeskBookingMutation();
+          return;
+        }
         restoreDeskBookingSnapshot(deskId, previousSnapshot);
         throw error;
       } finally {
@@ -5609,6 +5627,11 @@ const handleDeskBookingClick = async (desk) => {
         refreshSpaceAfterDeskBookingMutation();
         return;
       } catch (error) {
+        if (isBookingAlreadyCancelledError(error)) {
+          setBookingStatus("Бронирование уже было отменено.", "info");
+          refreshSpaceAfterDeskBookingMutation();
+          return;
+        }
         restoreDeskBookingSnapshot(deskId, previousSnapshot);
         throw error;
       } finally {
