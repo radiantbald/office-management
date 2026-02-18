@@ -5324,9 +5324,22 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
   if (deskBookingActionsInFlight.has(String(deskId))) {
     return;
   }
-  deskBookingActionsInFlight.add(String(deskId));
   const headers = getBookingHeaders();
-  const previousSnapshot = getDeskBookingSnapshot(findDeskById(deskId));
+  const previousSnapshots = new Map();
+  const rememberSnapshot = (id) => {
+    if (!Number.isFinite(Number(id))) {
+      return;
+    }
+    const key = String(id);
+    if (!previousSnapshots.has(key)) {
+      previousSnapshots.set(key, getDeskBookingSnapshot(findDeskById(id)));
+    }
+  };
+  const rollbackAll = () => {
+    previousSnapshots.forEach((snapshot, key) => {
+      restoreDeskBookingSnapshot(Number(key), snapshot);
+    });
+  };
   try {
     const body = {
       date: bookingState.selectedDate,
@@ -5337,8 +5350,24 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
     }
     const isGuest = targetEmployeeId === "0";
     const isOther = targetEmployeeId != null && targetEmployeeId !== "";
+    const previousMyDeskIds = !isOther
+      ? currentDesks
+          .map((item) => Number(item?.id))
+          .filter((id) => Number.isFinite(id) && id !== deskId)
+          .filter((id) => {
+            const candidate = findDeskById(id);
+            return candidate?.bookingStatus === "my";
+          })
+      : [];
+    const desksToLock = [deskId];
+    desksToLock.push(...previousMyDeskIds);
+    desksToLock.forEach((id) => deskBookingActionsInFlight.add(String(id)));
+    desksToLock.forEach((id) => rememberSnapshot(id));
     if (!isOther) {
       const { key, name, employeeId } = getBookingUserInfo();
+      previousMyDeskIds.forEach((id) => {
+        applyOptimisticDeskBookingState(id, { status: "free" });
+      });
       applyOptimisticDeskBookingState(deskId, {
         status: "my",
         userName: name || key || "Вы",
@@ -5362,6 +5391,22 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
       headers,
       body: JSON.stringify(body),
     });
+    if (!isOther) {
+      for (const staleDeskId of previousMyDeskIds) {
+        try {
+          await apiRequest("/api/bookings", {
+            method: "DELETE",
+            headers,
+            body: JSON.stringify({
+              date: bookingState.selectedDate,
+              workplace_id: staleDeskId,
+            }),
+          });
+        } catch (error) {
+          // Ignore and let background sync reconcile the final state from backend.
+        }
+      }
+    }
     if (isGuest) {
       setBookingStatus("Место забронировано для гостя.", "success");
     } else if (isOther) {
@@ -5371,10 +5416,12 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
     }
     refreshSpaceAfterDeskBookingMutation();
   } catch (error) {
-    restoreDeskBookingSnapshot(deskId, previousSnapshot);
+    rollbackAll();
     setBookingStatus(error.message, "error");
   } finally {
-    deskBookingActionsInFlight.delete(String(deskId));
+    previousSnapshots.forEach((_, key) => {
+      deskBookingActionsInFlight.delete(String(key));
+    });
   }
 };
 
