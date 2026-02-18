@@ -5200,104 +5200,6 @@ const handleCancelAllAdminBookings = async () => {
   }
 };
 
-const applyOptimisticDeskBookingState = (deskId, { status = "free", userName = "", userKey = "", tenantEmployeeId = "" } = {}) => {
-  const desk = findDeskById(deskId);
-  if (!desk) {
-    return;
-  }
-  const normalizedStatus = status === "my" || status === "booked" ? status : "free";
-  const normalizedName = String(userName || "").trim();
-  const normalizedKey = String(userKey || "").trim();
-  const normalizedTenantId = String(tenantEmployeeId || "").trim();
-  if (normalizedStatus === "free") {
-    desk.bookingStatus = "free";
-    desk.bookingUserName = "";
-    desk.bookingUserKey = "";
-    desk.bookingTenantEmployeeID = "";
-    desk.booking = null;
-    if (bookingState.bookingsByDeskId instanceof Map) {
-      bookingState.bookingsByDeskId.delete(String(desk.id));
-    }
-  } else {
-    desk.bookingStatus = normalizedStatus;
-    desk.bookingUserName = formatUserNameInitials(normalizedName || normalizedKey || "Сотрудник");
-    desk.bookingUserKey = normalizedKey;
-    desk.bookingTenantEmployeeID = normalizedTenantId;
-    desk.booking = {
-      is_booked: true,
-      user: {
-        wb_user_id: normalizedKey,
-        user_name: normalizedName || normalizedKey || "Сотрудник",
-        applier_employee_id: normalizedKey,
-        tenant_employee_id: normalizedTenantId,
-      },
-    };
-    if (!(bookingState.bookingsByDeskId instanceof Map)) {
-      bookingState.bookingsByDeskId = new Map();
-    }
-    bookingState.bookingsByDeskId.set(String(desk.id), {
-      workplace_id: Number(desk.id),
-      applier_employee_id: normalizedKey,
-      tenant_employee_id: normalizedTenantId,
-      user_name: normalizedName || normalizedKey || "Сотрудник",
-    });
-  }
-  refreshDeskCollectionsView();
-};
-
-const getDeskBookingSnapshot = (desk) => {
-  if (!desk) {
-    return null;
-  }
-  return {
-    bookingStatus: desk.bookingStatus || "free",
-    bookingUserName: desk.bookingUserName || "",
-    bookingUserKey: desk.bookingUserKey || "",
-    bookingTenantEmployeeID: desk.bookingTenantEmployeeID || "",
-    booking: desk.booking
-      ? {
-          is_booked: Boolean(desk.booking.is_booked),
-          user: desk.booking.user ? { ...desk.booking.user } : null,
-        }
-      : null,
-  };
-};
-
-const restoreDeskBookingSnapshot = (deskId, snapshot) => {
-  const desk = findDeskById(deskId);
-  if (!desk) {
-    return;
-  }
-  if (!snapshot) {
-    applyOptimisticDeskBookingState(deskId, { status: "free" });
-    return;
-  }
-  desk.bookingStatus = snapshot.bookingStatus || "free";
-  desk.bookingUserName = snapshot.bookingUserName || "";
-  desk.bookingUserKey = snapshot.bookingUserKey || "";
-  desk.bookingTenantEmployeeID = snapshot.bookingTenantEmployeeID || "";
-  desk.booking = snapshot.booking
-    ? {
-        is_booked: Boolean(snapshot.booking.is_booked),
-        user: snapshot.booking.user ? { ...snapshot.booking.user } : null,
-      }
-    : null;
-  if (!(bookingState.bookingsByDeskId instanceof Map)) {
-    bookingState.bookingsByDeskId = new Map();
-  }
-  if (desk.bookingStatus === "free") {
-    bookingState.bookingsByDeskId.delete(String(desk.id));
-  } else {
-    bookingState.bookingsByDeskId.set(String(desk.id), {
-      workplace_id: Number(desk.id),
-      applier_employee_id: desk.bookingUserKey || "",
-      tenant_employee_id: desk.bookingTenantEmployeeID || "",
-      user_name: desk.bookingUserName || "",
-    });
-  }
-  refreshDeskCollectionsView();
-};
-
 const refreshSpaceAfterDeskBookingMutation = () => {
   if (pendingDeskBookingRefreshTimer) {
     clearTimeout(pendingDeskBookingRefreshTimer);
@@ -5337,22 +5239,8 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
   if (deskBookingActionsInFlight.has(String(deskId))) {
     return;
   }
+  deskBookingActionsInFlight.add(String(deskId));
   const headers = getBookingHeaders();
-  const previousSnapshots = new Map();
-  const rememberSnapshot = (id) => {
-    if (!Number.isFinite(Number(id))) {
-      return;
-    }
-    const key = String(id);
-    if (!previousSnapshots.has(key)) {
-      previousSnapshots.set(key, getDeskBookingSnapshot(findDeskById(id)));
-    }
-  };
-  const rollbackAll = () => {
-    previousSnapshots.forEach((snapshot, key) => {
-      restoreDeskBookingSnapshot(Number(key), snapshot);
-    });
-  };
   try {
     const body = {
       date: bookingState.selectedDate,
@@ -5363,63 +5251,11 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
     }
     const isGuest = targetEmployeeId === "0";
     const isOther = targetEmployeeId != null && targetEmployeeId !== "";
-    const previousMyDeskIds = !isOther
-      ? currentDesks
-          .map((item) => Number(item?.id))
-          .filter((id) => Number.isFinite(id) && id !== deskId)
-          .filter((id) => {
-            const candidate = findDeskById(id);
-            return candidate?.bookingStatus === "my";
-          })
-      : [];
-    const desksToLock = [deskId];
-    desksToLock.push(...previousMyDeskIds);
-    desksToLock.forEach((id) => deskBookingActionsInFlight.add(String(id)));
-    desksToLock.forEach((id) => rememberSnapshot(id));
-    if (!isOther) {
-      const { key, name, employeeId } = getBookingUserInfo();
-      previousMyDeskIds.forEach((id) => {
-        applyOptimisticDeskBookingState(id, { status: "free" });
-      });
-      applyOptimisticDeskBookingState(deskId, {
-        status: "my",
-        userName: name || key || "Вы",
-        userKey: key,
-        tenantEmployeeId: employeeId,
-      });
-    } else if (isGuest) {
-      applyOptimisticDeskBookingState(deskId, {
-        status: "booked",
-        userName: "Гость",
-      });
-    } else {
-      applyOptimisticDeskBookingState(deskId, {
-        status: "booked",
-        userName: "Сотрудник",
-        userKey: String(targetEmployeeId || ""),
-      });
-    }
     await apiRequest("/api/bookings", {
       method: "POST",
       headers,
       body: JSON.stringify(body),
     });
-    if (!isOther) {
-      for (const staleDeskId of previousMyDeskIds) {
-        try {
-          await apiRequest("/api/bookings", {
-            method: "DELETE",
-            headers,
-            body: JSON.stringify({
-              date: bookingState.selectedDate,
-              workplace_id: staleDeskId,
-            }),
-          });
-        } catch (error) {
-          // Ignore and let background sync reconcile the final state from backend.
-        }
-      }
-    }
     if (isGuest) {
       setBookingStatus("Место забронировано для гостя.", "success");
     } else if (isOther) {
@@ -5429,12 +5265,9 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
     }
     refreshSpaceAfterDeskBookingMutation();
   } catch (error) {
-    rollbackAll();
     setBookingStatus(error.message, "error");
   } finally {
-    previousSnapshots.forEach((_, key) => {
-      deskBookingActionsInFlight.delete(String(key));
-    });
+    deskBookingActionsInFlight.delete(String(deskId));
   }
 };
 
@@ -5577,8 +5410,6 @@ const handleDeskBookingClick = async (desk) => {
         return;
       }
       deskBookingActionsInFlight.add(String(deskId));
-      const previousSnapshot = getDeskBookingSnapshot(findDeskById(deskId));
-      applyOptimisticDeskBookingState(deskId, { status: "free" });
       try {
         await apiRequest("/api/bookings", {
           method: "DELETE",
@@ -5597,7 +5428,6 @@ const handleDeskBookingClick = async (desk) => {
           refreshSpaceAfterDeskBookingMutation();
           return;
         }
-        restoreDeskBookingSnapshot(deskId, previousSnapshot);
         throw error;
       } finally {
         deskBookingActionsInFlight.delete(String(deskId));
@@ -5612,8 +5442,6 @@ const handleDeskBookingClick = async (desk) => {
         return;
       }
       deskBookingActionsInFlight.add(String(deskId));
-      const previousSnapshot = getDeskBookingSnapshot(findDeskById(deskId));
-      applyOptimisticDeskBookingState(deskId, { status: "free" });
       try {
         await apiRequest("/api/bookings", {
           method: "DELETE",
@@ -5632,7 +5460,6 @@ const handleDeskBookingClick = async (desk) => {
           refreshSpaceAfterDeskBookingMutation();
           return;
         }
-        restoreDeskBookingSnapshot(deskId, previousSnapshot);
         throw error;
       } finally {
         deskBookingActionsInFlight.delete(String(deskId));
