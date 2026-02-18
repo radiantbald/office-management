@@ -4332,16 +4332,13 @@ const loadMyBookings = async () => {
     return;
   }
   const headers = getBookingHeaders();
-  bookingState.isMyBookingsLoading = true;
   const shouldKeepRenderedList =
     bookingState.myBookings.length > 0 && spaceBookingsList.childElementCount > 0;
-  if (shouldKeepRenderedList) {
-    setBookingsListLoading(spaceBookingsList, true);
-    spaceBookingsEmpty.classList.add("is-hidden");
-    if (spaceBookingsCancelAllBtn) {
-      spaceBookingsCancelAllBtn.disabled = true;
-    }
-  } else {
+  const previousFingerprint = shouldKeepRenderedList
+    ? JSON.stringify(bookingState.myBookings)
+    : "";
+  bookingState.isMyBookingsLoading = true;
+  if (!shouldKeepRenderedList) {
     renderBookingsList();
   }
   try {
@@ -4352,11 +4349,12 @@ const loadMyBookings = async () => {
     setBookingStatus(error.message, "error");
   } finally {
     bookingState.isMyBookingsLoading = false;
-    setBookingsListLoading(spaceBookingsList, false);
-    if (spaceBookingsCancelAllBtn) {
-      spaceBookingsCancelAllBtn.disabled = false;
+    if (
+      !shouldKeepRenderedList ||
+      previousFingerprint !== JSON.stringify(bookingState.myBookings)
+    ) {
+      renderBookingsList();
     }
-    renderBookingsList();
   }
 };
 
@@ -4392,20 +4390,10 @@ const renderBookingsSkeleton = (listElement) => {
   }
 };
 
-const setBookingsListLoading = (listElement, loading) => {
-  if (!listElement) {
-    return;
-  }
-  const isLoading = Boolean(loading);
-  listElement.classList.toggle("is-loading-soft", isLoading);
-  listElement.setAttribute("aria-busy", String(isLoading));
-};
-
 const renderBookingsList = () => {
   if (!spaceBookingsList || !spaceBookingsEmpty) {
     return;
   }
-  setBookingsListLoading(spaceBookingsList, false);
   if (bookingState.isMyBookingsLoading) {
     renderBookingsSkeleton(spaceBookingsList);
     spaceBookingsEmpty.classList.add("is-hidden");
@@ -4538,16 +4526,13 @@ const loadMyMeetingBookings = async () => {
     return;
   }
   const headers = getBookingHeaders();
-  bookingState.isMyMeetingBookingsLoading = true;
   const shouldKeepRenderedList =
     bookingState.myMeetingBookings.length > 0 && meetingBookingsList.childElementCount > 0;
-  if (shouldKeepRenderedList) {
-    setBookingsListLoading(meetingBookingsList, true);
-    meetingBookingsEmpty.classList.add("is-hidden");
-    if (spaceBookingsCancelAllBtn) {
-      spaceBookingsCancelAllBtn.disabled = true;
-    }
-  } else {
+  const previousFingerprint = shouldKeepRenderedList
+    ? JSON.stringify(bookingState.myMeetingBookings)
+    : "";
+  bookingState.isMyMeetingBookingsLoading = true;
+  if (!shouldKeepRenderedList) {
     renderMeetingBookingsList();
   }
   try {
@@ -4558,11 +4543,12 @@ const loadMyMeetingBookings = async () => {
     setBookingStatus(error.message, "error");
   } finally {
     bookingState.isMyMeetingBookingsLoading = false;
-    setBookingsListLoading(meetingBookingsList, false);
-    if (spaceBookingsCancelAllBtn) {
-      spaceBookingsCancelAllBtn.disabled = false;
+    if (
+      !shouldKeepRenderedList ||
+      previousFingerprint !== JSON.stringify(bookingState.myMeetingBookings)
+    ) {
+      renderMeetingBookingsList();
     }
-    renderMeetingBookingsList();
   }
 };
 
@@ -4597,7 +4583,6 @@ const renderMeetingBookingsList = () => {
   if (!meetingBookingsList || !meetingBookingsEmpty) {
     return;
   }
-  setBookingsListLoading(meetingBookingsList, false);
   if (bookingState.isMyMeetingBookingsLoading) {
     renderBookingsSkeleton(meetingBookingsList);
     meetingBookingsEmpty.classList.add("is-hidden");
@@ -5014,15 +4999,6 @@ const closeBookingsModal = () => {
   if (meetingBookingsSection) {
     meetingBookingsSection.classList.add("is-hidden");
     meetingBookingsSection.setAttribute("aria-hidden", "true");
-  }
-  if (spaceBookingsList) {
-    setBookingsListLoading(spaceBookingsList, false);
-  }
-  if (meetingBookingsList) {
-    setBookingsListLoading(meetingBookingsList, false);
-  }
-  if (spaceBookingsCancelAllBtn) {
-    spaceBookingsCancelAllBtn.disabled = false;
   }
   if (
     !(buildingModal && buildingModal.classList.contains("is-open")) &&

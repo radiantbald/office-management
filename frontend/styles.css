@@ -1420,32 +1420,6 @@ body.space-editing .space-booking-panel {
   overflow-y: auto;
   padding-right: 4px;
   max-height: 280px;
-  position: relative;
-}
-
-.space-bookings-list.is-loading-soft {
-  pointer-events: none;
-}
-
-.space-bookings-list.is-loading-soft::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 10px;
-  background: linear-gradient(
-    110deg,
-    rgba(255, 255, 255, 0.06) 8%,
-    rgba(255, 255, 255, 0.24) 18%,
-    rgba(255, 255, 255, 0.06) 33%
-  );
-  background-size: 220% 100%;
-  animation: bookingsModalShimmer 1.2s linear infinite;
-  pointer-events: none;
-}
-
-.space-bookings-list.is-loading-soft .space-booking-item {
-  opacity: 0.62;
-  transition: opacity 0.18s ease;
 }
 
 .space-booking-item {
