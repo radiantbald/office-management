@@ -8956,6 +8956,119 @@ const getRotatedDeskHalfExtents = (width, height, rotationDeg = 0) => {
   };
 };
 
+/**
+ * Check if two oriented (rotated) rectangles overlap using the Separating Axis Theorem (SAT).
+ * Each rect is { cx, cy, hw, hh, rotation } where hw/hh are half-width/half-height
+ * and rotation is in degrees.
+ */
+const doOBBsOverlap = (a, b) => {
+  const aRad = (a.rotation * Math.PI) / 180;
+  const bRad = (b.rotation * Math.PI) / 180;
+
+  // Local axes for rectangle A
+  const axA = Math.cos(aRad);
+  const ayA = Math.sin(aRad);
+  const bxA = -Math.sin(aRad);
+  const byA = Math.cos(aRad);
+
+  // Local axes for rectangle B
+  const axB = Math.cos(bRad);
+  const ayB = Math.sin(bRad);
+  const bxB = -Math.sin(bRad);
+  const byB = Math.cos(bRad);
+
+  // Vector from center A to center B
+  const dx = b.cx - a.cx;
+  const dy = b.cy - a.cy;
+
+  // We test 4 separating axes: 2 from A's edges, 2 from B's edges.
+  // For each axis, project the distance and half-extents and check for gap.
+  const axes = [
+    { x: axA, y: ayA }, // A's local X axis (width direction)
+    { x: bxA, y: byA }, // A's local Y axis (height direction)
+    { x: axB, y: ayB }, // B's local X axis
+    { x: bxB, y: byB }, // B's local Y axis
+  ];
+
+  for (const axis of axes) {
+    // Project center-to-center distance onto axis
+    const dist = Math.abs(dx * axis.x + dy * axis.y);
+
+    // Project half-extents of A onto axis
+    const projA =
+      a.hw * Math.abs(axA * axis.x + ayA * axis.y) +
+      a.hh * Math.abs(bxA * axis.x + byA * axis.y);
+
+    // Project half-extents of B onto axis
+    const projB =
+      b.hw * Math.abs(axB * axis.x + ayB * axis.y) +
+      b.hh * Math.abs(bxB * axis.x + byB * axis.y);
+
+    if (dist >= projA + projB) {
+      return false; // Found a separating axis → no overlap
+    }
+  }
+
+  return true; // No separating axis found → overlap
+};
+
+/**
+ * Constrain desk movement so it never overlaps other desks.
+ * Uses axis decomposition so the desk can slide smoothly along edges:
+ * when the diagonal from→to is blocked, X and Y are resolved independently.
+ * Both orderings (X-then-Y and Y-then-X) are tried; the one that reaches
+ * closer to the target wins.
+ */
+const constrainDeskMovement = (fromX, fromY, toX, toY, width, height, rotationDeg, excludeDeskId) => {
+  const isFree = (x, y) => isDeskAreaFree(x, y, width, height, excludeDeskId, rotationDeg);
+
+  // Fast path: target is free — no collision at all
+  if (isFree(toX, toY)) {
+    return { x: toX, y: toY };
+  }
+
+  // If current position already overlaps (shouldn't happen, but be safe), allow move
+  if (!isFree(fromX, fromY)) {
+    return { x: toX, y: toY };
+  }
+
+  // Binary search helper: finds max t in [0,1] where testFn(t) returns true
+  const bsearch = (testFn) => {
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 10; i++) {
+      const mid = (lo + hi) / 2;
+      if (testFn(mid)) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
+  };
+
+  const dx = toX - fromX;
+  const dy = toY - fromY;
+
+  // Option A: slide X first (at current Y), then resolve Y
+  const tXa = bsearch((t) => isFree(fromX + dx * t, fromY));
+  const xA = fromX + dx * tXa;
+  const tYa = bsearch((t) => isFree(xA, fromY + dy * t));
+  const yA = fromY + dy * tYa;
+
+  // Option B: slide Y first (at current X), then resolve X
+  const tYb = bsearch((t) => isFree(fromX, fromY + dy * t));
+  const yB = fromY + dy * tYb;
+  const tXb = bsearch((t) => isFree(fromX + dx * t, yB));
+  const xB = fromX + dx * tXb;
+
+  // Pick whichever result gets closer to the target
+  const distA = (xA - toX) ** 2 + (yA - toY) ** 2;
+  const distB = (xB - toX) ** 2 + (yB - toY) ** 2;
+
+  return distA <= distB ? { x: xA, y: yA } : { x: xB, y: yB };
+};
+
 const getDeskMetrics = (svg, desk) => {
   const viewBox = parseViewBox(svg);
   const rect = svg ? svg.getBoundingClientRect() : null;
@@ -8991,61 +9104,135 @@ const getDeskSnapTolerance = (metrics) => {
   };
 };
 
-const getDeskSnapLines = (deskId) => {
-  const xLines = [];
-  const yLines = [];
-  currentDesks.forEach((desk) => {
-    if (!desk || String(desk.id) === String(deskId)) {
-      return;
-    }
-    const dimensions = getDeskDimensions(desk);
-    const halfWidth = dimensions.width / 2;
-    const halfHeight = dimensions.height / 2;
-    xLines.push(desk.x, desk.x - halfWidth, desk.x + halfWidth);
-    yLines.push(desk.y, desk.y - halfHeight, desk.y + halfHeight);
-  });
-  return { xLines, yLines };
-};
-
+/**
+ * Snap desk center to magnetic lines aligned with each nearby desk's rotated axes.
+ * For each other desk, computes snap lines along its local width/height axes
+ * (through its center and edges), then checks if the dragged desk's center or
+ * projected edges align with those lines.  Picks the smallest correction, and
+ * optionally combines a second perpendicular correction for corner alignment.
+ */
 const snapDeskCenter = (rawX, rawY, desk, metrics) => {
   const tolerance = getDeskSnapTolerance(metrics);
-  const { xLines, yLines } = getDeskSnapLines(desk.id);
-  if (xLines.length === 0 && yLines.length === 0) {
+  const snapTol = Math.max(tolerance.x, tolerance.y);
+
+  if (currentDesks.length <= 1) {
     return { x: rawX, y: rawY };
   }
+
   const dimensions = getDeskDimensions(desk);
-  const halfWidth = dimensions.width / 2;
-  const halfHeight = dimensions.height / 2;
-  let nextX = rawX;
-  let nextY = rawY;
-  let bestDx = tolerance.x + 1;
-  let bestDy = tolerance.y + 1;
-  const xCandidates = [0, halfWidth, -halfWidth];
-  const yCandidates = [0, halfHeight, -halfHeight];
+  const dragRotation = getDeskRotation(desk);
+  const dragHW = dimensions.width / 2;
+  const dragHH = dimensions.height / 2;
 
-  xLines.forEach((line) => {
-    xCandidates.forEach((offset) => {
-      const candidate = line - offset;
-      const delta = Math.abs(candidate - rawX);
-      if (delta <= tolerance.x && delta < bestDx) {
-        bestDx = delta;
-        nextX = candidate;
-      }
+  // Collect all snap correction candidates.
+  // Each: { dx, dy, dist, dirX, dirY }
+  //   dx/dy  – correction vector in global coords
+  //   dist   – perpendicular distance (lower = closer to the snap line)
+  //   dirX/dirY – unit direction of the correction (perpendicular to the snap line)
+  const candidates = [];
+
+  currentDesks.forEach((other) => {
+    if (!other || String(other.id) === String(desk.id)) {
+      return;
+    }
+    if (!Number.isFinite(other?.x) || !Number.isFinite(other?.y)) {
+      return;
+    }
+
+    const otherDim = getDeskDimensions(other);
+    const otherRot = getDeskRotation(other);
+    const otherHW = otherDim.width / 2;
+    const otherHH = otherDim.height / 2;
+    const rad = (otherRot * Math.PI) / 180;
+    const cosR = Math.cos(rad);
+    const sinR = Math.sin(rad);
+
+    // Transform dragged desk center into other desk's local frame
+    const dxG = rawX - other.x;
+    const dyG = rawY - other.y;
+    const localX = dxG * cosR + dyG * sinR;
+    const localY = -dxG * sinR + dyG * cosR;
+
+    // Projected half-extents of dragged desk onto other desk's local axes
+    const relRad = ((dragRotation - otherRot) * Math.PI) / 180;
+    const cosRel = Math.abs(Math.cos(relRad));
+    const sinRel = Math.abs(Math.sin(relRad));
+    const projHW = dragHW * cosRel + dragHH * sinRel;
+    const projHH = dragHW * sinRel + dragHH * cosRel;
+
+    // --- Snap along other's u-axis (width direction) ---
+    // Correction moves the dragged desk along u = (cosR, sinR)
+    // Snap lines at: other center, other left edge, other right edge
+    const uLines = [0, -otherHW, otherHW];
+    // Dragged offsets along u: center, projected left edge, projected right edge
+    const uOffsets = [0, -projHW, projHW];
+
+    uLines.forEach((linePos) => {
+      uOffsets.forEach((offset) => {
+        const target = linePos - offset;
+        const delta = Math.abs(localX - target);
+        if (delta <= snapTol) {
+          const correction = target - localX;
+          candidates.push({
+            dx: correction * cosR,
+            dy: correction * sinR,
+            dist: delta,
+            dirX: cosR,
+            dirY: sinR,
+          });
+        }
+      });
+    });
+
+    // --- Snap along other's v-axis (height direction) ---
+    // Correction moves the dragged desk along v = (-sinR, cosR)
+    const vLines = [0, -otherHH, otherHH];
+    const vOffsets = [0, -projHH, projHH];
+
+    vLines.forEach((linePos) => {
+      vOffsets.forEach((offset) => {
+        const target = linePos - offset;
+        const delta = Math.abs(localY - target);
+        if (delta <= snapTol) {
+          const correction = target - localY;
+          candidates.push({
+            dx: correction * (-sinR),
+            dy: correction * cosR,
+            dist: delta,
+            dirX: -sinR,
+            dirY: cosR,
+          });
+        }
+      });
     });
   });
 
-  yLines.forEach((line) => {
-    yCandidates.forEach((offset) => {
-      const candidate = line - offset;
-      const delta = Math.abs(candidate - rawY);
-      if (delta <= tolerance.y && delta < bestDy) {
-        bestDy = delta;
-        nextY = candidate;
-      }
-    });
-  });
+  if (candidates.length === 0) {
+    return { x: rawX, y: rawY };
+  }
 
-  return { x: nextX, y: nextY };
+  // Sort by distance (smallest first)
+  candidates.sort((a, b) => a.dist - b.dist);
+
+  // Apply the best (closest) correction
+  const best = candidates[0];
+  let resultX = rawX + best.dx;
+  let resultY = rawY + best.dy;
+
+  // Try to combine with a second correction whose direction is perpendicular
+  // to the first one (enables snapping on two axes simultaneously for corner alignment).
+  for (let i = 1; i < candidates.length; i++) {
+    const second = candidates[i];
+    const dot = Math.abs(best.dirX * second.dirX + best.dirY * second.dirY);
+    if (dot < 0.15) {
+      // Nearly perpendicular — safe to combine
+      resultX += second.dx;
+      resultY += second.dy;
+      break;
+    }
+  }
+
+  return { x: resultX, y: resultY };
 };
 
 const snapRotation = (rotationDeg) => {
@@ -10024,11 +10211,6 @@ const normalizeDeskSizeForBounds = (width, height, bounds) => {
 };
 
 const isDeskAreaFree = (x, y, width, height, excludeDeskId = null, rotationDeg = 0) => {
-  const { halfWidth, halfHeight } = getRotatedDeskHalfExtents(width, height, rotationDeg);
-  const left = x - halfWidth;
-  const right = x + halfWidth;
-  const top = y - halfHeight;
-  const bottom = y + halfHeight;
   const shouldExclude = (deskId) => {
     if (!excludeDeskId) {
       return false;
@@ -10037,6 +10219,13 @@ const isDeskAreaFree = (x, y, width, height, excludeDeskId = null, rotationDeg =
       return excludeDeskId.has(String(deskId));
     }
     return String(deskId) === String(excludeDeskId);
+  };
+  const candidateOBB = {
+    cx: x,
+    cy: y,
+    hw: width / 2,
+    hh: height / 2,
+    rotation: rotationDeg,
   };
   return !currentDesks.some((desk) => {
     if (shouldExclude(desk?.id)) {
@@ -10047,17 +10236,14 @@ const isDeskAreaFree = (x, y, width, height, excludeDeskId = null, rotationDeg =
     }
     const dimensions = getDeskDimensions(desk);
     const deskRotation = getDeskRotation(desk);
-    const extents = getRotatedDeskHalfExtents(
-      dimensions.width,
-      dimensions.height,
-      deskRotation
-    );
-    const deskLeft = desk.x - extents.halfWidth;
-    const deskRight = desk.x + extents.halfWidth;
-    const deskTop = desk.y - extents.halfHeight;
-    const deskBottom = desk.y + extents.halfHeight;
-    const overlaps = left < deskRight && right > deskLeft && top < deskBottom && bottom > deskTop;
-    return overlaps;
+    const existingOBB = {
+      cx: desk.x,
+      cy: desk.y,
+      hw: dimensions.width / 2,
+      hh: dimensions.height / 2,
+      rotation: deskRotation,
+    };
+    return doOBBsOverlap(candidateOBB, existingOBB);
   });
 };
 
@@ -10815,9 +11001,21 @@ const handleDeskPointerMove = (event) => {
   const rawY = point.y - deskEditState.offsetY;
   const snapped = snapDeskCenter(rawX, rawY, desk, metrics);
   const clamped = clampDeskPosition(snapped.x, snapped.y, metrics, getDeskRotation(desk));
-  updateDeskPositionLocal(deskEditState.draggingDeskId, clamped.x, clamped.y);
+  const deskDimensions = getDeskDimensions(desk);
+  const deskRotation = getDeskRotation(desk);
+  const constrained = constrainDeskMovement(
+    desk.x,
+    desk.y,
+    clamped.x,
+    clamped.y,
+    deskDimensions.width,
+    deskDimensions.height,
+    deskRotation,
+    String(desk.id)
+  );
+  updateDeskPositionLocal(deskEditState.draggingDeskId, constrained.x, constrained.y);
   const moved =
-    Math.abs(clamped.x - deskEditState.startX) > 0.5 || Math.abs(clamped.y - deskEditState.startY) > 0.5;
+    Math.abs(constrained.x - deskEditState.startX) > 0.5 || Math.abs(constrained.y - deskEditState.startY) > 0.5;
   deskEditState.hasMoved = deskEditState.hasMoved || moved;
 };
 
