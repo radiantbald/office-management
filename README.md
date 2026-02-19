@@ -42,6 +42,23 @@ docker compose up -d --build
 docker compose exec db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
 ```
 
+4) Если перед Docker стоит внешний `nginx` на ВМ, включите готовый конфиг
+   `deploy/nginx-vm.conf`, иначе возможна ошибка `413 Request Entity Too Large`.
+
+Пример применения на ВМ:
+
+```bash
+sudo cp deploy/nginx-vm.conf /etc/nginx/conf.d/office-management.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Проверка:
+
+```bash
+sudo nginx -T | grep -n "client_max_body_size"
+```
+
 #### Автодамп БД на событиях остановки контейнера `db`
 
 Контейнер Postgres запускается через обёртку `docker/db/entrypoint-with-prestop-backup.sh`.
