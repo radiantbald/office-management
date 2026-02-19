@@ -13684,8 +13684,10 @@ if (floorPlanPreview && floorPlanCanvas) {
     }
     event.preventDefault();
     const rect = getFloorPlanPreviewRect();
-    floorPlanState.wheelCursorX = event.clientX - rect.left;
-    floorPlanState.wheelCursorY = event.clientY - rect.top;
+    const canvasOffsetX = floorPlanPreview.clientLeft + floorPlanCanvas.offsetLeft;
+    const canvasOffsetY = floorPlanPreview.clientTop + floorPlanCanvas.offsetTop;
+    floorPlanState.wheelCursorX = event.clientX - rect.left - canvasOffsetX;
+    floorPlanState.wheelCursorY = event.clientY - rect.top - canvasOffsetY;
     // Accumulate wheel input and apply zoom at most once per frame.
     floorPlanState.wheelDeltaY += event.deltaY;
     if (floorPlanState.wheelFrameId !== null) {
