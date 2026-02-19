@@ -397,6 +397,7 @@ const spaceEditState = {
   lastHandleClickIndex: null,
 };
 let floorPlanDirty = false;
+let floorPlanRasterBlobUrl = null;
 let floorPlanModalRequested = false;
 const addSpaceBtnLabel = addSpaceBtn
   ? addSpaceBtn.dataset.label || addSpaceBtn.getAttribute("aria-label") || addSpaceBtn.textContent
@@ -6735,6 +6736,8 @@ const floorPlanState = {
   translateX: 0,
   translateY: 0,
   isDragging: false,
+  isMoving: false,
+  movingTimerId: null,
   dragStartX: 0,
   dragStartY: 0,
   dragOriginX: 0,
@@ -6744,6 +6747,10 @@ const floorPlanState = {
   pendingSelectStartX: 0,
   pendingSelectStartY: 0,
   pendingSelectTimerId: null,
+  wheelDeltaY: 0,
+  wheelCursorX: 0,
+  wheelCursorY: 0,
+  wheelFrameId: null,
 };
 
 const spaceSnapshotState = {
@@ -6759,6 +6766,10 @@ const spaceSnapshotState = {
   pendingPointerId: null,
   pendingStartX: 0,
   pendingStartY: 0,
+  wheelDeltaY: 0,
+  wheelCursorX: 0,
+  wheelCursorY: 0,
+  wheelFrameId: null,
 };
 
 const clearPendingSelect = () => {
@@ -6770,17 +6781,91 @@ const clearPendingSelect = () => {
   }
 };
 
+// Mark floor plan as actively navigating — suppresses tooltip hit-testing
+// during pan/zoom.  After 150 ms of inactivity tooltips are re-enabled.
+const movingSettleMs = 150;
+
+const markFloorPlanFastTransform = () => {
+  floorPlanState.isMoving = true;
+  if (floorPlanState.movingTimerId !== null) {
+    clearTimeout(floorPlanState.movingTimerId);
+  }
+  floorPlanState.movingTimerId = window.setTimeout(() => {
+    floorPlanState.movingTimerId = null;
+    floorPlanState.isMoving = false;
+  }, movingSettleMs);
+};
+
+const markSpaceSnapshotFastTransform = () => {};
+
+const floorPlanWheelZoomSensitivity = 0.006;
+
+const flushFloorPlanWheelZoom = (minScale, maxScale) => {
+  floorPlanState.wheelFrameId = null;
+  const deltaY = floorPlanState.wheelDeltaY;
+  floorPlanState.wheelDeltaY = 0;
+  if (!deltaY) {
+    return;
+  }
+  const zoomFactor = Math.exp(-deltaY * floorPlanWheelZoomSensitivity);
+  const nextScale = clamp(floorPlanState.scale * zoomFactor, minScale, maxScale);
+  if (nextScale === floorPlanState.scale) {
+    return;
+  }
+  const cursorX = floorPlanState.wheelCursorX;
+  const cursorY = floorPlanState.wheelCursorY;
+  const offsetX = (cursorX - floorPlanState.translateX) / floorPlanState.scale;
+  const offsetY = (cursorY - floorPlanState.translateY) / floorPlanState.scale;
+  floorPlanState.scale = nextScale;
+  floorPlanState.translateX = cursorX - offsetX * nextScale;
+  floorPlanState.translateY = cursorY - offsetY * nextScale;
+  markFloorPlanFastTransform();
+  applyFloorPlanTransform();
+  if (spaceTooltipState.polygon) {
+    hideSpaceTooltip();
+  }
+};
+
+const flushSpaceSnapshotWheelZoom = (minScale, maxScale) => {
+  spaceSnapshotState.wheelFrameId = null;
+  const deltaY = spaceSnapshotState.wheelDeltaY;
+  spaceSnapshotState.wheelDeltaY = 0;
+  if (!deltaY) {
+    return;
+  }
+  const zoomFactor = Math.exp(-deltaY * 0.004);
+  const nextScale = clamp(spaceSnapshotState.scale * zoomFactor, minScale, maxScale);
+  if (nextScale === spaceSnapshotState.scale) {
+    return;
+  }
+  const cursorX = spaceSnapshotState.wheelCursorX;
+  const cursorY = spaceSnapshotState.wheelCursorY;
+  const offsetX = (cursorX - spaceSnapshotState.translateX) / spaceSnapshotState.scale;
+  const offsetY = (cursorY - spaceSnapshotState.translateY) / spaceSnapshotState.scale;
+  spaceSnapshotState.scale = nextScale;
+  spaceSnapshotState.translateX = cursorX - offsetX * nextScale;
+  spaceSnapshotState.translateY = cursorY - offsetY * nextScale;
+  markSpaceSnapshotFastTransform();
+  applySpaceSnapshotTransform();
+};
+
 const applyFloorPlanTransform = () => {
   if (!floorPlanCanvas) {
     return;
   }
-  floorPlanCanvas.style.transform = `translate(${floorPlanState.translateX}px, ${floorPlanState.translateY}px) scale(${floorPlanState.scale})`;
+  const { translateX: tx, translateY: ty, scale: s } = floorPlanState;
+  floorPlanCanvas.style.transform = `translate3d(${tx}px, ${ty}px, 0) scale(${s})`;
 };
 
 const resetFloorPlanTransform = () => {
   floorPlanState.scale = 1;
   floorPlanState.translateX = 0;
   floorPlanState.translateY = 0;
+  floorPlanState.wheelDeltaY = 0;
+  if (floorPlanState.wheelFrameId !== null) {
+    cancelAnimationFrame(floorPlanState.wheelFrameId);
+    floorPlanState.wheelFrameId = null;
+  }
   applyFloorPlanTransform();
 };
 
@@ -6788,13 +6873,19 @@ const applySpaceSnapshotTransform = () => {
   if (!spaceSnapshotCanvas) {
     return;
   }
-  spaceSnapshotCanvas.style.transform = `translate(${spaceSnapshotState.translateX}px, ${spaceSnapshotState.translateY}px) scale(${spaceSnapshotState.scale})`;
+  const { translateX: tx, translateY: ty, scale: s } = spaceSnapshotState;
+  spaceSnapshotCanvas.style.transform = `translate3d(${tx}px, ${ty}px, 0) scale(${s})`;
 };
 
 const resetSpaceSnapshotTransform = () => {
   spaceSnapshotState.scale = 1;
   spaceSnapshotState.translateX = 0;
   spaceSnapshotState.translateY = 0;
+  spaceSnapshotState.wheelDeltaY = 0;
+  if (spaceSnapshotState.wheelFrameId !== null) {
+    cancelAnimationFrame(spaceSnapshotState.wheelFrameId);
+    spaceSnapshotState.wheelFrameId = null;
+  }
   spaceSnapshotState.isDragging = false;
   spaceSnapshotState.dragPointerId = null;
   spaceSnapshotState.pendingPointerId = null;
@@ -8360,7 +8451,7 @@ const getEdgeSnapTolerance = () => {
   return Math.min(Math.max(scaled, 4), 24);
 };
 
-const findSpacePolygonFromEvent = (event) => {
+const findSpacePolygonFromEvent = (event, { allowHitTestFallback = true } = {}) => {
   const target = event.target;
   if (target instanceof SVGElement) {
     const polygonTarget =
@@ -8381,7 +8472,7 @@ const findSpacePolygonFromEvent = (event) => {
       return polygonInPath;
     }
   }
-  if (typeof event.clientX === "number" && typeof event.clientY === "number") {
+  if (allowHitTestFallback && typeof event.clientX === "number" && typeof event.clientY === "number") {
     const hit = document.elementFromPoint(event.clientX, event.clientY);
     if (hit instanceof SVGElement) {
       const polygonHit =
@@ -8497,7 +8588,7 @@ const updateSpaceTooltipPosition = (polygon) => {
 };
 
 const updateSpaceTooltipFromEvent = (event) => {
-  const polygon = findSpacePolygonFromEvent(event);
+  const polygon = findSpacePolygonFromEvent(event, { allowHitTestFallback: false });
   if (!polygon) {
     hideSpaceTooltip();
     return;
@@ -11195,6 +11286,11 @@ const renderFloorPlan = (svgMarkup) => {
   hasFloorPlan = Boolean(svgMarkup);
   updateFloorPlanActionLabel();
   updateFloorPlanSpacesVisibility();
+  // Release previous blob URL to free memory.
+  if (floorPlanRasterBlobUrl) {
+    URL.revokeObjectURL(floorPlanRasterBlobUrl);
+    floorPlanRasterBlobUrl = null;
+  }
   floorPlanCanvas.replaceChildren();
   if (!svgMarkup) {
     floorPlanPreview.classList.add("is-hidden");
@@ -11224,6 +11320,54 @@ const renderFloorPlan = (svgMarkup) => {
     svg.setAttribute("width", "100%");
     svg.setAttribute("height", "100%");
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+
+    // ── Performance: move heavy raster <image> out of SVG to a native <img>.
+    // Native <img> composites on the GPU (like a photo viewer), while SVG
+    // <image> goes through the slow SVG rendering pipeline on every frame.
+    const embeddedImage = svg.querySelector("image[href^='data:']")
+      || svg.querySelector("image[xlink\\:href^='data:']");
+    if (embeddedImage) {
+      const imgSrc =
+        embeddedImage.getAttribute("href") || embeddedImage.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+      if (imgSrc) {
+        embeddedImage.remove();
+        // Convert data: URL to a Blob URL — browser keeps decoded pixels in memory
+        // instead of re-parsing the multi-MB base64 string on every composite.
+        let effectiveSrc = imgSrc;
+        try {
+          const commaIdx = imgSrc.indexOf(",");
+          if (commaIdx > 0) {
+            const meta = imgSrc.substring(0, commaIdx); // e.g. "data:image/jpeg;base64"
+            const mimeMatch = meta.match(/data:([^;,]+)/);
+            const mime = mimeMatch ? mimeMatch[1] : "image/png";
+            const b64 = imgSrc.substring(commaIdx + 1);
+            const bin = atob(b64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) {
+              bytes[i] = bin.charCodeAt(i);
+            }
+            const blob = new Blob([bytes], { type: mime });
+            floorPlanRasterBlobUrl = URL.createObjectURL(blob);
+            effectiveSrc = floorPlanRasterBlobUrl;
+          }
+        } catch {
+          // Fallback to the original data URL if conversion fails.
+          effectiveSrc = imgSrc;
+        }
+        const nativeImg = document.createElement("img");
+        nativeImg.className = "floor-plan-raster";
+        nativeImg.src = effectiveSrc;
+        nativeImg.draggable = false;
+        nativeImg.alt = "";
+        // Insert the native image before the SVG so SVG overlay sits on top.
+        floorPlanCanvas.insertBefore(nativeImg, svg);
+        // Make the SVG background transparent so the native image shows through.
+        svg.style.position = "absolute";
+        svg.style.inset = "0";
+        svg.style.background = "transparent";
+      }
+    }
+
     ensureSpaceLayers(svg);
     bindSpaceInteractions(svg);
   }
@@ -11723,27 +11867,18 @@ const readFileAsDataUrl = (file) =>
     reader.readAsDataURL(file);
   });
 
-const getImageSize = (dataUrl) =>
+const loadImageFromDataUrl = (dataUrl) =>
   new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth || img.width, height: img.naturalHeight || img.height });
+    img.onload = () => resolve(img);
     img.onerror = () => reject(new Error("Не удалось загрузить изображение."));
     img.src = dataUrl;
   });
 
-const buildSvgWithImage = (dataUrl, width, height) => {
-  const safeDataUrl = dataUrl.replace(/"/g, "&quot;");
-  const safeWidth = Number.isFinite(width) && width > 0 ? width : 1;
-  const safeHeight = Number.isFinite(height) && height > 0 ? height : 1;
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" ` +
-    `xmlns:xlink="http://www.w3.org/1999/xlink" ` +
-    `width="${safeWidth}" height="${safeHeight}" viewBox="0 0 ${safeWidth} ${safeHeight}" ` +
-    `preserveAspectRatio="xMidYMid meet">` +
-    `<image x="0" y="0" width="${safeWidth}" height="${safeHeight}" href="${safeDataUrl}" xlink:href="${safeDataUrl}" />` +
-    `</svg>`
-  );
-};
+const maxFloorPlanUploadBytes = 50 * 1024 * 1024;
+const pdfJsWorkerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const maxFloorPlanRasterDimension = 5000;
+const maxFloorPlanRasterPixels = 18_000_000;
 
 const normalizeSvgMarkup = (markup) => {
   if (!markup) {
@@ -11758,23 +11893,123 @@ const normalizeSvgMarkup = (markup) => {
   return markup;
 };
 
+const getUtf8ByteLength = (value) => new TextEncoder().encode(String(value || "")).length;
+
+const fitImageToRasterBudget = (rawWidth, rawHeight) => {
+  const width = Math.max(1, Math.round(rawWidth || 1));
+  const height = Math.max(1, Math.round(rawHeight || 1));
+  let scale = 1;
+  const maxSide = Math.max(width, height);
+  if (maxSide > maxFloorPlanRasterDimension) {
+    scale = Math.min(scale, maxFloorPlanRasterDimension / maxSide);
+  }
+  const pixels = width * height;
+  if (pixels > maxFloorPlanRasterPixels) {
+    scale = Math.min(scale, Math.sqrt(maxFloorPlanRasterPixels / pixels));
+  }
+  if (scale >= 1) {
+    return { width, height };
+  }
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+};
+
+const ensureFloorPlanPayloadSize = (svgMarkup) => {
+  if (getUtf8ByteLength(svgMarkup) > maxFloorPlanUploadBytes) {
+    throw new Error("Размер готовой SVG-схемы превышает 50 МБ.");
+  }
+};
+
+const getPdfJsLib = () => {
+  if (!window.pdfjsLib || typeof window.pdfjsLib.getDocument !== "function") {
+    throw new Error("PDF-конвертер временно недоступен. Перезагрузите страницу и попробуйте снова.");
+  }
+  if (window.pdfjsLib.GlobalWorkerOptions) {
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = pdfJsWorkerSrc;
+  }
+  return window.pdfjsLib;
+};
+
+const buildSvgWithImage = (dataUrl, width, height) => {
+  const safeDataUrl = dataUrl.replace(/"/g, "&quot;");
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 1;
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : 1;
+  const svgMarkup =
+    `<svg xmlns="http://www.w3.org/2000/svg" ` +
+    `xmlns:xlink="http://www.w3.org/1999/xlink" ` +
+    `width="${safeWidth}" height="${safeHeight}" viewBox="0 0 ${safeWidth} ${safeHeight}" ` +
+    `preserveAspectRatio="xMidYMid meet">` +
+    `<image x="0" y="0" width="${safeWidth}" height="${safeHeight}" ` +
+    `image-rendering="optimizeQuality" href="${safeDataUrl}" xlink:href="${safeDataUrl}" />` +
+    `</svg>`;
+  ensureFloorPlanPayloadSize(svgMarkup);
+  return svgMarkup;
+};
+
+const rasterFileToSvgMarkup = async (file) => {
+  const dataUrl = await readFileAsDataUrl(file);
+  const image = await loadImageFromDataUrl(dataUrl);
+  const width = Math.max(1, Math.round(image.naturalWidth || image.width || 1));
+  const height = Math.max(1, Math.round(image.naturalHeight || image.height || 1));
+  return buildSvgWithImage(dataUrl, width, height);
+};
+
+const pdfFileToSvgMarkup = async (file) => {
+  const pdfLib = getPdfJsLib();
+  const pdfData = new Uint8Array(await file.arrayBuffer());
+  const loadingTask = pdfLib.getDocument({ data: pdfData });
+  const pdfDocument = await loadingTask.promise;
+  try {
+    const page = await pdfDocument.getPage(1);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const fittedSize = fitImageToRasterBudget(baseViewport.width, baseViewport.height);
+    const scale = Math.max(0.1, fittedSize.width / Math.max(1, baseViewport.width));
+    const viewport = page.getViewport({ scale });
+    const width = Math.max(1, Math.round(viewport.width));
+    const height = Math.max(1, Math.round(viewport.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) {
+      throw new Error("Не удалось подготовить PDF для обработки.");
+    }
+    await page.render({ canvasContext: context, viewport, background: "#ffffff" }).promise;
+    const imageDataUrl = canvas.toDataURL("image/png");
+    return buildSvgWithImage(imageDataUrl, width, height);
+  } finally {
+    await pdfDocument.destroy();
+  }
+};
+
 const fileToSvgMarkup = async (file) => {
   if (!file) {
     throw new Error("Файл не выбран.");
   }
-  const isSvgFile =
-    file.type === "image/svg+xml" || (file.name && file.name.toLowerCase().endsWith(".svg"));
+  if (file.size > maxFloorPlanUploadBytes) {
+    throw new Error("Размер исходного файла не должен превышать 50 МБ.");
+  }
+  const lowerName = String(file.name || "").toLowerCase();
+  const isSvgFile = file.type === "image/svg+xml" || lowerName.endsWith(".svg");
+  const isPdfFile = file.type === "application/pdf" || lowerName.endsWith(".pdf");
   if (isSvgFile) {
     const raw = await readFileAsText(file);
     const normalized = normalizeSvgMarkup(raw.trim());
     if (!normalized) {
       throw new Error("Не удалось прочитать SVG.");
     }
+    ensureFloorPlanPayloadSize(normalized);
     return normalized;
   }
-  const dataUrl = await readFileAsDataUrl(file);
-  const { width, height } = await getImageSize(dataUrl);
-  return buildSvgWithImage(dataUrl, width, height);
+  if (isPdfFile) {
+    return pdfFileToSvgMarkup(file);
+  }
+  if (file.type.startsWith("image/")) {
+    return rasterFileToSvgMarkup(file);
+  }
+  throw new Error("Поддерживаются только SVG, PNG/JPG и PDF.");
 };
 
 const loadBuildingPage = async (buildingID) => {
@@ -12859,7 +13094,7 @@ if (uploadFloorPlanBtn) {
       return;
     }
     if (!floorPlanFile || !floorPlanFile.files || !floorPlanFile.files[0]) {
-      setFloorStatus("Выберите изображение с планом.", "error");
+      setFloorStatus("Выберите SVG, PNG/JPG или PDF-файл с планом.", "error");
       return;
     }
     clearFloorStatus();
@@ -13313,26 +13548,23 @@ const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
 if (spaceSnapshot && spaceSnapshotCanvas) {
   const minScale = 0.5;
-  const maxScale = 4;
+  const maxScale = 10;
   spaceSnapshot.addEventListener("wheel", (event) => {
     if (!spaceSnapshotCanvas.firstElementChild) {
       return;
     }
     event.preventDefault();
     const rect = spaceSnapshot.getBoundingClientRect();
-    const cursorX = event.clientX - rect.left;
-    const cursorY = event.clientY - rect.top;
-    const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9;
-    const nextScale = clamp(spaceSnapshotState.scale * zoomFactor, minScale, maxScale);
-    if (nextScale === spaceSnapshotState.scale) {
+    spaceSnapshotState.wheelCursorX = event.clientX - rect.left;
+    spaceSnapshotState.wheelCursorY = event.clientY - rect.top;
+    // Accumulate wheel input and apply zoom at most once per frame.
+    spaceSnapshotState.wheelDeltaY += event.deltaY;
+    if (spaceSnapshotState.wheelFrameId !== null) {
       return;
     }
-    const offsetX = (cursorX - spaceSnapshotState.translateX) / spaceSnapshotState.scale;
-    const offsetY = (cursorY - spaceSnapshotState.translateY) / spaceSnapshotState.scale;
-    spaceSnapshotState.scale = nextScale;
-    spaceSnapshotState.translateX = cursorX - offsetX * nextScale;
-    spaceSnapshotState.translateY = cursorY - offsetY * nextScale;
-    applySpaceSnapshotTransform();
+    spaceSnapshotState.wheelFrameId = requestAnimationFrame(() => {
+      flushSpaceSnapshotWheelZoom(minScale, maxScale);
+    });
   });
 
   spaceSnapshot.addEventListener("pointerdown", (event) => {
@@ -13386,6 +13618,7 @@ if (spaceSnapshot && spaceSnapshotCanvas) {
       spaceSnapshotState.dragOriginX + (event.clientX - spaceSnapshotState.dragStartX);
     spaceSnapshotState.translateY =
       spaceSnapshotState.dragOriginY + (event.clientY - spaceSnapshotState.dragStartY);
+    markSpaceSnapshotFastTransform();
     applySpaceSnapshotTransform();
   });
 
@@ -13408,6 +13641,8 @@ if (spaceSnapshot && spaceSnapshotCanvas) {
     spaceSnapshotState.isDragging = false;
     spaceSnapshotState.dragPointerId = null;
     spaceSnapshotState.pendingPointerId = null;
+    markSpaceSnapshotFastTransform();
+    applySpaceSnapshotTransform();
   };
 
   spaceSnapshot.addEventListener("pointerup", endSnapshotDrag);
@@ -13416,29 +13651,35 @@ if (spaceSnapshot && spaceSnapshotCanvas) {
 
 if (floorPlanPreview && floorPlanCanvas) {
   const minScale = 0.5;
-  const maxScale = 4;
+  const maxScale = 10;
+  let floorPlanPreviewRect = null;
+  const getFloorPlanPreviewRect = () => {
+    if (!floorPlanPreviewRect) {
+      floorPlanPreviewRect = floorPlanPreview.getBoundingClientRect();
+    }
+    return floorPlanPreviewRect;
+  };
+  // Invalidate cached rect on resize/scroll (infrequent).
+  const invalidateFloorPlanRect = () => { floorPlanPreviewRect = null; };
+  window.addEventListener("resize", invalidateFloorPlanRect);
+  window.addEventListener("scroll", invalidateFloorPlanRect, true);
+
   floorPlanPreview.addEventListener("wheel", (event) => {
     if (!floorPlanCanvas.firstElementChild) {
       return;
     }
     event.preventDefault();
-    const rect = floorPlanPreview.getBoundingClientRect();
-    const cursorX = event.clientX - rect.left;
-    const cursorY = event.clientY - rect.top;
-    const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9;
-    const nextScale = clamp(floorPlanState.scale * zoomFactor, minScale, maxScale);
-    if (nextScale === floorPlanState.scale) {
+    const rect = getFloorPlanPreviewRect();
+    floorPlanState.wheelCursorX = event.clientX - rect.left;
+    floorPlanState.wheelCursorY = event.clientY - rect.top;
+    // Accumulate wheel input and apply zoom at most once per frame.
+    floorPlanState.wheelDeltaY += event.deltaY;
+    if (floorPlanState.wheelFrameId !== null) {
       return;
     }
-    const offsetX = (cursorX - floorPlanState.translateX) / floorPlanState.scale;
-    const offsetY = (cursorY - floorPlanState.translateY) / floorPlanState.scale;
-    floorPlanState.scale = nextScale;
-    floorPlanState.translateX = cursorX - offsetX * nextScale;
-    floorPlanState.translateY = cursorY - offsetY * nextScale;
-    applyFloorPlanTransform();
-    if (!floorPlanState.isDragging && spaceTooltipState.polygon) {
-      updateSpaceTooltipPosition(spaceTooltipState.polygon);
-    }
+    floorPlanState.wheelFrameId = requestAnimationFrame(() => {
+      flushFloorPlanWheelZoom(minScale, maxScale);
+    });
   });
 
   floorPlanPreview.addEventListener("pointerdown", (event) => {
@@ -13449,6 +13690,7 @@ if (floorPlanPreview && floorPlanCanvas) {
       return;
     }
     hideSpaceTooltip();
+    event.preventDefault();
     if (lassoState.active) {
       event.preventDefault();
       const point = getSvgPoint(event);
@@ -13493,7 +13735,12 @@ if (floorPlanPreview && floorPlanCanvas) {
   });
 
   floorPlanPreview.addEventListener("pointermove", (event) => {
-    if (!floorPlanState.isDragging && !spaceEditState.isDragging && !lassoState.active) {
+    if (
+      !floorPlanState.isMoving &&
+      !floorPlanState.isDragging &&
+      !spaceEditState.isDragging &&
+      !lassoState.active
+    ) {
       updateSpaceTooltipFromEvent(event);
     } else if (spaceTooltipState.polygon) {
       hideSpaceTooltip();
@@ -13552,6 +13799,7 @@ if (floorPlanPreview && floorPlanCanvas) {
     }
     floorPlanState.translateX = floorPlanState.dragOriginX + (event.clientX - floorPlanState.dragStartX);
     floorPlanState.translateY = floorPlanState.dragOriginY + (event.clientY - floorPlanState.dragStartY);
+    markFloorPlanFastTransform();
     applyFloorPlanTransform();
   });
 
@@ -13653,6 +13901,8 @@ if (floorPlanPreview && floorPlanCanvas) {
       spaceEditState.polygonDragStartPoint = null;
       spaceEditState.polygonDragStartPoints = [];
     }
+    markFloorPlanFastTransform();
+    applyFloorPlanTransform();
   };
 
   floorPlanPreview.addEventListener("pointerup", stopDragging);

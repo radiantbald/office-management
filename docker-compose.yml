@@ -2,8 +2,6 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-office}
       POSTGRES_USER: ${POSTGRES_USER:-office}
@@ -24,8 +22,6 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgres://office:office@db:5432/office?sslmode=disable}
       PORT: ${PORT:-8080}
@@ -62,8 +58,6 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: "no"
-    env_file:
-      - .env
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgres://office:office@db:5432/office?sslmode=disable}
       MIGRATE_ONLY: "true"

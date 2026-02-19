@@ -31,6 +31,7 @@ const buildingUploadDirName = "buildings"
 const dbDumpDirName = "backend/db_dumps"
 const maxBuildingImageSize = 5 << 20
 const maxBuildingFormSize = maxBuildingImageSize + (1 << 20)
+const maxFloorPlanJSONSize = 50 << 20
 const defaultBuildingTimezone = "Europe/Moscow"
 
 type app struct {
@@ -2753,7 +2754,7 @@ func (a *app) handleFloors(w http.ResponseWriter, r *http.Request) {
 		Level      int    `json:"level"`
 		PlanSVG    string `json:"plan_svg"`
 	}
-	if err := decodeJSON(r, &payload); err != nil {
+	if err := decodeJSONWithLimit(r, &payload, maxFloorPlanJSONSize); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -2812,7 +2813,7 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 				PlanSVG               *string `json:"plan_svg"`
 				ResponsibleEmployeeID *string `json:"responsible_employee_id"`
 			}
-			if err := decodeJSON(r, &payload); err != nil {
+			if err := decodeJSONWithLimit(r, &payload, maxFloorPlanJSONSize); err != nil {
 				respondError(w, http.StatusBadRequest, err.Error())
 				return
 			}
@@ -5211,7 +5212,11 @@ func parseIDFromPath(path, prefix string) (int64, string, error) {
 
 func decodeJSON(r *http.Request, dst any) error {
 	// Limit request body to 1 MB to prevent memory exhaustion attacks.
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	return decodeJSONWithLimit(r, dst, 1<<20)
+}
+
+func decodeJSONWithLimit(r *http.Request, dst any, maxBytes int64) error {
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maxBytes))
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}

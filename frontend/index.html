@@ -383,9 +383,9 @@
         <div id="floorPlanModalBody">
           <div class="floor-actions-section">
             <label class="field">
-              <span id="floorPlanActionLabel">План этажа (изображение)</span>
-              <input id="floorPlanFile" type="file" accept="image/*" />
-              <span class="hint">Файл будет преобразован в SVG и сохранен.</span>
+              <span id="floorPlanActionLabel">План этажа (SVG, PNG/JPG, PDF)</span>
+              <input id="floorPlanFile" type="file" accept=".svg,.png,.jpg,.jpeg,.pdf,image/*,application/pdf" />
+              <span class="hint">Файл будет преобразован в SVG и сохранен. Лимит: 50 МБ.</span>
             </label>
             <button id="uploadFloorPlanBtn" class="primary" type="button">Загрузить план</button>
           </div>
@@ -877,6 +877,7 @@
       </div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="/imagetracer.js"></script>
     <script type="module" src="/src/main.js"></script>
   </body>
