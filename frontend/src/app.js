@@ -12116,6 +12116,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
   setPageMode("floor");
   clearFloorStatus();
   const previousFloor = currentFloor;
+  const previousFloorPlan = String(previousFloor?.plan_svg || "");
   const previousFloorBuildingId = Number(
     previousFloor?.building_id ?? previousFloor?.buildingId ?? currentBuilding?.id
   );
@@ -12190,7 +12191,14 @@ const loadFloorPage = async (buildingID, floorNumber) => {
 
     const floorSpacesPromise = loadApiResponse(`/api/floors/${floor.id}/spaces`);
     const floorDetails = await loadApiResponse(`/api/floors/${floor.id}`);
-    const planSvg = floorDetails && floorDetails.plan_svg ? floorDetails.plan_svg : "";
+    // Some API responses can omit `plan_svg` for constrained contexts; keep warm state instead
+    // of wiping the map and snapshot on route transitions.
+    const planSvg =
+      typeof floorDetails?.plan_svg === "string"
+        ? floorDetails.plan_svg
+        : typeof floor?.plan_svg === "string"
+          ? floor.plan_svg
+          : previousFloorPlan;
     currentFloor = {
       ...floor,
       plan_svg: planSvg,
@@ -12372,9 +12380,15 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
         }
       }
     }
+    const resolvedFloorPlanSvg =
+      typeof floorDetails?.plan_svg === "string"
+        ? floorDetails.plan_svg
+        : typeof floor?.plan_svg === "string"
+          ? floor.plan_svg
+          : previousFloorPlan;
     currentFloor = {
       ...floor,
-      plan_svg: floorDetails?.plan_svg || floor?.plan_svg || "",
+      plan_svg: resolvedFloorPlanSvg,
       responsible_employee_id:
         floorDetails?.responsible_employee_id || floor?.responsible_employee_id || "",
     };
@@ -12454,7 +12468,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       spaceBookingPanel.classList.remove("is-hidden");
       spaceBookingPanel.setAttribute("aria-hidden", "false");
     }
-    const floorPlanMarkup = floorDetails?.plan_svg || "";
+    const floorPlanMarkup = resolvedFloorPlanSvg;
     const previousSnapshotFingerprint = buildSpaceSnapshotFingerprint(previousSpace, previousFloorPlan);
     const nextSnapshotFingerprint = buildSpaceSnapshotFingerprint(space, floorPlanMarkup);
     if (!hasWarmSpaceState || previousSnapshotFingerprint !== nextSnapshotFingerprint) {
