@@ -409,8 +409,15 @@ func (a *app) handleAuthUserInfo(w http.ResponseWriter, r *http.Request) {
 			}
 			roleID, err := getUserRoleByWbUserID(r.Context(), a.db, wbUserID)
 			if err != nil {
-				log.Printf("handleAuthUserInfo: failed to resolve role: %v", err)
+				// Fallback: try existing access token cookie to preserve role
+				// on transient DB errors instead of silently degrading to employee.
 				roleID = roleEmployee
+				if ac, cookieErr := r.Cookie(accessTokenCookieName); cookieErr == nil && ac.Value != "" {
+					if oldAT, verifyErr := VerifyOfficeAccessTokenWithKeyManager(ac.Value, a.officeTokenKeys); verifyErr == nil && isValidRole(oldAT.Role) {
+						roleID = oldAT.Role
+					}
+				}
+				log.Printf("handleAuthUserInfo: DB role lookup failed for %s: %v; using fallback role %d", wbUserID, err, roleID)
 			}
 
 			response := map[string]any{
@@ -887,8 +894,15 @@ func (a *app) handleAuthOfficeToken(w http.ResponseWriter, r *http.Request) {
 
 	roleID, err := getUserRoleByWbUserID(r.Context(), a.db, employeeID)
 	if err != nil {
-		log.Printf("handleAuthOfficeToken: failed to resolve role for %s: %v", employeeID, err)
+		// On transient DB error, try the previous access token cookie to
+		// preserve the role across token re-issuance.
 		roleID = roleEmployee
+		if ac, cookieErr := r.Cookie(accessTokenCookieName); cookieErr == nil && ac.Value != "" {
+			if oldAT, verifyErr := VerifyOfficeAccessTokenWithKeyManager(ac.Value, a.officeTokenKeys); verifyErr == nil && isValidRole(oldAT.Role) {
+				roleID = oldAT.Role
+			}
+		}
+		log.Printf("handleAuthOfficeToken: DB role lookup failed for %s: %v; using fallback role %d", employeeID, err, roleID)
 	}
 
 	// Create access token
@@ -1085,8 +1099,15 @@ func (a *app) handleAuthRefreshToken(w http.ResponseWriter, r *http.Request) {
 	// 4b. Resolve current role & user name from DB.
 	roleID, err := getUserRoleByWbUserID(r.Context(), a.db, refreshClaims.EmployeeID)
 	if err != nil {
-		log.Printf("handleAuthRefreshToken: failed to resolve role for %s: %v", refreshClaims.EmployeeID, err)
+		// Transient DB error — fall back to the role from the previous access
+		// token (if available) to avoid silently downgrading admin → employee.
 		roleID = roleEmployee
+		if ac, cookieErr := r.Cookie(accessTokenCookieName); cookieErr == nil && ac.Value != "" {
+			if oldAT, verifyErr := VerifyOfficeAccessTokenWithKeyManager(ac.Value, a.officeTokenKeys); verifyErr == nil && isValidRole(oldAT.Role) {
+				roleID = oldAT.Role
+			}
+		}
+		log.Printf("handleAuthRefreshToken: DB role lookup failed for %s: %v; using fallback role %d", refreshClaims.EmployeeID, err, roleID)
 	}
 	userName, err := getUserNameByEmployeeID(r.Context(), a.db, refreshClaims.EmployeeID)
 	if err != nil {
@@ -1223,8 +1244,13 @@ func (a *app) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 	}
 	roleID, err := getUserRoleByWbUserID(r.Context(), a.db, atClaims.EmployeeID)
 	if err != nil {
-		log.Printf("handleAuthSession: failed to resolve role for %s: %v", atClaims.EmployeeID, err)
-		roleID = roleEmployee
+		// Fallback to the role baked into the cryptographically verified JWT
+		// instead of silently degrading to employee on a transient DB error.
+		log.Printf("handleAuthSession: DB role lookup failed for %s: %v; using token role %d", atClaims.EmployeeID, err, atClaims.Role)
+		roleID = atClaims.Role
+		if !isValidRole(roleID) {
+			roleID = roleEmployee
+		}
 	}
 
 	// Try to read refresh token exp for proactive rotation info.
@@ -1235,9 +1261,10 @@ func (a *app) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Migration path: if a legacy session exists without CSRF cookie,
-	// mint one so the next unsafe request can pass double-submit validation.
-	if _, err := r.Cookie(csrfTokenCookieName); err != nil {
+	// Always refresh the CSRF cookie so it stays in sync with the session.
+	// Previously we only set it when missing, which caused stale / mismatched
+	// CSRF tokens that blocked subsequent unsafe requests (e.g. logout POST).
+	{
 		now := time.Now().UTC().Unix()
 		maxAge := int(atClaims.Exp - now)
 		if refreshExp > now {

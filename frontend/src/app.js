@@ -14237,14 +14237,18 @@ if (breadcrumbProfiles.length > 0) {
         setAuthStep("phone");
         if (logoutSucceeded) {
           setAuthStatus("Вы вышли из аккаунта.");
-          markLogoutRedirect();
-          window.location.assign("/buildings");
-          return;
+        } else {
+          setAuthStatus(
+            "Сессию на сервере завершить не удалось. Выполнен локальный выход.",
+            "warning"
+          );
         }
-        setAuthStatus(
-          "Сессию на сервере завершить не удалось. Выполнен локальный выход, попробуйте снова.",
-          "warning"
-        );
+        // Always redirect — even when the backend logout failed (e.g. CSRF
+        // mismatch), we must set the skip-flag and navigate away.  Otherwise
+        // a page refresh would restore the session from still-valid HttpOnly
+        // cookies and the user would never see the login screen.
+        markLogoutRedirect();
+        window.location.assign("/buildings");
       });
     }
 
