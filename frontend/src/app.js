@@ -5541,13 +5541,33 @@ const closeBookForOtherModal = () => {
   document.body.classList.remove("modal-open");
 };
 
+const bookForOtherOptionsCache = { loaded: false, options: [] };
+
 const populateBookForOtherOptions = async () => {
   if (!bookForOtherEmployeeField) {
     return;
   }
-  const buildingId = currentBuilding?.id || 0;
-  const options = await fetchCoworkingResponsibleOptions(buildingId);
-  setResponsibleOptionsForField(bookForOtherEmployeeField, options);
+  if (bookForOtherOptionsCache.loaded) {
+    setResponsibleOptionsForField(bookForOtherEmployeeField, bookForOtherOptionsCache.options);
+    return;
+  }
+  try {
+    const result = await apiRequest("/api/users?scope=booking");
+    const items = Array.isArray(result?.items) ? result.items : [];
+    const normalized = items
+      .map((item) => ({
+        employee_id: String(item?.employee_id || item?.employeeId || "").trim(),
+        full_name: String(item?.full_name || item?.fullName || "").trim(),
+      }))
+      .filter((item) => item.employee_id);
+    const unique = getUniqueResponsibleOptions(normalized);
+    bookForOtherOptionsCache.options = unique;
+    bookForOtherOptionsCache.loaded = true;
+    setResponsibleOptionsForField(bookForOtherEmployeeField, unique);
+  } catch (error) {
+    setResponsibleOptionsForField(bookForOtherEmployeeField, []);
+    showTopAlert("Не удалось загрузить список сотрудников.", "error");
+  }
 };
 
 const updateBookForOtherSubmitState = () => {

@@ -24,6 +24,52 @@ func (a *app) handleUsers(w http.ResponseWriter, r *http.Request) {
 		respondRoleResolutionError(w, err)
 		return
 	}
+
+	// scope=booking — any authenticated user may list all users (for booking on behalf).
+	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+	if scope == "booking" {
+		if role != roleAdmin && role != roleEmployee {
+			respondError(w, http.StatusForbidden, "Недостаточно прав")
+			return
+		}
+		// Return all users for booking purposes.
+		rows, err := a.db.QueryContext(r.Context(),
+			`SELECT COALESCE(employee_id, ''),
+			        COALESCE(full_name, ''),
+			        COALESCE(wb_user_id, '')
+			   FROM users
+			  WHERE TRIM(COALESCE(employee_id, '')) <> ''
+			  ORDER BY full_name, employee_id`,
+		)
+		if err != nil {
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		defer rows.Close()
+
+		items := make([]userSummary, 0)
+		for rows.Next() {
+			var item userSummary
+			if err := rows.Scan(&item.EmployeeID, &item.FullName, &item.WbUserID); err != nil {
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			item.EmployeeID = strings.TrimSpace(item.EmployeeID)
+			item.FullName = strings.TrimSpace(item.FullName)
+			item.WbUserID = strings.TrimSpace(item.WbUserID)
+			items = append(items, item)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("internal error: %v", err)
+			respondError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]any{"items": items})
+		return
+	}
+
 	var scopedBuildingID int64
 	var scopedRequesterEmployeeID string
 	if role == roleEmployee {
