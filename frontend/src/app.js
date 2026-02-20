@@ -398,6 +398,7 @@ const spaceEditState = {
 };
 let floorPlanDirty = false;
 let floorPlanRasterBlobUrl = null;
+let floorPlanEmbeddedRasterTemplate = null;
 let floorPlanModalRequested = false;
 const addSpaceBtnLabel = addSpaceBtn
   ? addSpaceBtn.dataset.label || addSpaceBtn.getAttribute("aria-label") || addSpaceBtn.textContent
@@ -7299,6 +7300,13 @@ const getCleanFloorPlanMarkup = () => {
     return "";
   }
   const clone = lassoState.svg.cloneNode(true);
+  // Keep original embedded floor image in saved SVG even if runtime view uses native <img>.
+  const hasEmbeddedRaster = Boolean(
+    clone.querySelector("image[href^='data:']") || clone.querySelector("image[xlink\\:href^='data:']")
+  );
+  if (floorPlanEmbeddedRasterTemplate && !hasEmbeddedRaster) {
+    clone.insertBefore(floorPlanEmbeddedRasterTemplate.cloneNode(true), clone.firstChild);
+  }
   stripEditorArtifacts(clone);
   stripSpaceOverlays(clone);
   return new XMLSerializer().serializeToString(clone);
@@ -11509,6 +11517,7 @@ const renderFloorPlan = (svgMarkup) => {
     URL.revokeObjectURL(floorPlanRasterBlobUrl);
     floorPlanRasterBlobUrl = null;
   }
+  floorPlanEmbeddedRasterTemplate = null;
   floorPlanCanvas.replaceChildren();
   if (!svgMarkup) {
     floorPlanPreview.classList.add("is-hidden");
@@ -11545,6 +11554,7 @@ const renderFloorPlan = (svgMarkup) => {
     const embeddedImage = svg.querySelector("image[href^='data:']")
       || svg.querySelector("image[xlink\\:href^='data:']");
     if (embeddedImage) {
+      floorPlanEmbeddedRasterTemplate = embeddedImage.cloneNode(true);
       const imgSrc =
         embeddedImage.getAttribute("href") || embeddedImage.getAttributeNS("http://www.w3.org/1999/xlink", "href");
       if (imgSrc) {
