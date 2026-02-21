@@ -1700,6 +1700,15 @@ const loadApiResponse = async (path) => {
   return request;
 };
 
+const loadFloorDetailsFresh = async (floorId) => {
+  const normalizedFloorId = Number(floorId);
+  if (!Number.isFinite(normalizedFloorId)) {
+    throw new Error("Некорректный идентификатор этажа.");
+  }
+  // Floor plan must always come from the exact floor endpoint without route cache reuse.
+  return apiRequest(`/api/floors/${normalizedFloorId}`);
+};
+
 const prefetchBuildingRouteData = (buildingId) => {
   const normalizedId = Number(buildingId);
   if (!Number.isFinite(normalizedId)) {
@@ -12344,30 +12353,32 @@ const loadFloorSpaces = async (floorID, { prefetchedResponse = null, skipIfUncha
 };
 
 const loadFloorPage = async (buildingID, floorNumber) => {
+  const expectedBuildingID = Number(buildingID);
+  const expectedFloorNumber = Number(floorNumber);
+  const isStillOnRequestedFloorRoute = () => {
+    const params = getFloorParamsFromPath();
+    if (!params) {
+      return false;
+    }
+    return (
+      Number(params.buildingID) === expectedBuildingID &&
+      Number(params.floorNumber) === expectedFloorNumber
+    );
+  };
   setPageMode("floor");
   clearFloorStatus();
-  const previousFloor = currentFloor;
-  const previousFloorPlan = String(previousFloor?.plan_svg || "");
-  const previousFloorBuildingId = Number(
-    previousFloor?.building_id ?? previousFloor?.buildingId
-  );
-  const hasWarmFloorState =
-    Boolean(previousFloor) &&
-    previousFloorBuildingId === Number(buildingID) &&
-    Number(previousFloor?.level) === Number(floorNumber) &&
-    Boolean(previousFloor?.plan_svg) &&
-    Boolean(floorPlanCanvas && floorPlanCanvas.firstElementChild);
-  if (!hasWarmFloorState) {
-    renderFloorPlan("");
-    renderFloorSpaces([]);
-    currentFloor = null;
-  }
+  renderFloorPlan("");
+  renderFloorSpaces([]);
+  currentFloor = null;
   try {
     // Fetch buildings list and floors in parallel — both only need buildingID.
     const [, floorsResponse] = await Promise.all([
       refreshBuildings({ allowPrefetch: true }),
       loadApiResponse(`/api/buildings/${buildingID}/floors`),
     ]);
+    if (!isStillOnRequestedFloorRoute()) {
+      return;
+    }
     const building = buildings.find((item) => item.id === buildingID);
     if (!building) {
       currentBuilding = null;
@@ -12421,17 +12432,16 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     }
 
     const floorSpacesPromise = loadApiResponse(`/api/floors/${floor.id}/spaces`);
-    const floorDetails = await loadApiResponse(`/api/floors/${floor.id}`);
-    // Some API responses can omit `plan_svg` for constrained contexts; keep warm state instead
-    // of wiping the map and snapshot on route transitions.
+    const floorDetails = await loadFloorDetailsFresh(floor.id);
+    if (!isStillOnRequestedFloorRoute()) {
+      return;
+    }
     const planSvg =
       typeof floorDetails?.plan_svg === "string"
         ? floorDetails.plan_svg
         : typeof floor?.plan_svg === "string"
           ? floor.plan_svg
-          : hasWarmFloorState
-            ? previousFloorPlan
-            : "";
+          : "";
     currentFloor = {
       ...floor,
       plan_svg: planSvg,
@@ -12442,15 +12452,15 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     if (editFloorBtn) {
       editFloorBtn.classList.toggle("is-hidden", !canManageFloorResources(getUserInfo(), currentFloor));
     }
-    const shouldRerenderPlan = !hasWarmFloorState || planSvg !== String(previousFloor?.plan_svg || "");
-    if (shouldRerenderPlan) {
-      renderFloorPlan(planSvg);
-    }
+    renderFloorPlan(planSvg);
     await loadFloorSpaces(floor.id, {
       prefetchedResponse: await floorSpacesPromise,
-      skipIfUnchanged: hasWarmFloorState,
+      skipIfUnchanged: false,
     });
   } catch (error) {
+    if (!isStillOnRequestedFloorRoute()) {
+      return;
+    }
     setFloorStatus(error.message, "error");
   }
 };
@@ -12512,15 +12522,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   };
   const initialBookingDate = getBookingDateFromLocation();
   const previousSpace = currentSpace;
-  const previousFloorPlan = String(currentFloor?.plan_svg || "");
-  const previousFloorBuildingId = Number(
-    currentFloor?.building_id ?? currentFloor?.buildingId
-  );
-  const canReusePreviousFloorPlan =
-    Boolean(currentFloor) &&
-    previousFloorBuildingId === Number(buildingID) &&
-    Number(currentFloor?.level) === Number(floorNumber) &&
-    Boolean(previousFloorPlan);
+  const previousSnapshotFloorPlan = String(currentFloor?.plan_svg || "");
   const normalizedTargetSpaceId = Number(spaceId);
   const hasWarmSpaceState =
     Boolean(previousSpace) &&
@@ -12612,10 +12614,6 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
         skipIfUnchanged: hasWarmSpaceState,
         showSnapshotLoading: true,
       });
-      // If we already have the same floor plan in memory, render snapshot immediately.
-      if (!hasWarmSpaceState && canReusePreviousFloorPlan) {
-        renderSpaceSnapshot(space, previousFloorPlan);
-      }
     }
 
     // Wait for floors (need floor.id to fetch floor details).
@@ -12631,7 +12629,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     const spaceFloorID = Number(space.floor_id ?? space.floorId);
     const routeFloorID = Number(floor.id);
     if (Number.isFinite(spaceFloorID) && Number.isFinite(routeFloorID) && spaceFloorID !== routeFloorID) {
-      const canonicalFloor = await loadApiResponse(`/api/floors/${spaceFloorID}`);
+      const canonicalFloor = await loadFloorDetailsFresh(spaceFloorID);
       const canonicalBuildingID = Number(canonicalFloor?.building_id ?? canonicalFloor?.buildingId);
       const canonicalLevel = Number(canonicalFloor?.level);
       if (
@@ -12652,7 +12650,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
 
     // Floor details depends on floor.id; building is already in flight — await both together.
     const [floorDetails, building] = await Promise.all([
-      loadApiResponse(`/api/floors/${floor.id}`),
+      loadFloorDetailsFresh(floor.id),
       buildingPromise,
     ]);
     if (!isStillOnRequestedSpaceRoute()) {
@@ -12674,9 +12672,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
         ? floorDetails.plan_svg
         : typeof floor?.plan_svg === "string"
           ? floor.plan_svg
-          : canReusePreviousFloorPlan
-            ? previousFloorPlan
-            : "";
+          : "";
     currentFloor = {
       ...floor,
       plan_svg: resolvedFloorPlanSvg,
@@ -12760,7 +12756,10 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       spaceBookingPanel.setAttribute("aria-hidden", "false");
     }
     const floorPlanMarkup = resolvedFloorPlanSvg;
-    const previousSnapshotFingerprint = buildSpaceSnapshotFingerprint(previousSpace, previousFloorPlan);
+    const previousSnapshotFingerprint = buildSpaceSnapshotFingerprint(
+      previousSpace,
+      previousSnapshotFloorPlan
+    );
     const nextSnapshotFingerprint = buildSpaceSnapshotFingerprint(space, floorPlanMarkup);
     if (!hasWarmSpaceState || previousSnapshotFingerprint !== nextSnapshotFingerprint) {
       renderSpaceSnapshot(space, floorPlanMarkup);
