@@ -397,7 +397,6 @@ const spaceEditState = {
   lastHandleClickIndex: null,
 };
 let floorPlanDirty = false;
-let floorPlanRasterBlobUrl = null;
 let floorPlanEmbeddedRasterTemplate = null;
 let floorPlanEmbeddedRasterFloorId = null;
 let floorPlanModalRequested = false;
@@ -467,10 +466,56 @@ let routeNavigationQueued = false;
 const routePrefetchCache = new Map();
 const routePrefetchInFlight = new Map();
 const API_GET_CACHE_TTL_MS = 5 * 60 * 1000;
+const FLOOR_PLAN_RASTER_CACHE_MAX_ENTRIES = 12;
+const floorPlanRasterBlobCache = new Map();
 const floorSpacesRenderFingerprint = new Map();
 const spaceDesksRenderFingerprint = new Map();
 let latestSpaceDesksRequestToken = 0;
 const deskBookingActionsInFlight = new Set();
+
+const getCachedFloorPlanRasterBlobUrl = (dataUrl) => {
+  const key = String(dataUrl || "");
+  if (!key) {
+    return null;
+  }
+  const cached = floorPlanRasterBlobCache.get(key) || null;
+  if (!cached) {
+    return null;
+  }
+  // Refresh insertion order for a tiny LRU behavior.
+  floorPlanRasterBlobCache.delete(key);
+  floorPlanRasterBlobCache.set(key, cached);
+  return cached;
+};
+
+const rememberFloorPlanRasterBlobUrl = (dataUrl, blobUrl) => {
+  const key = String(dataUrl || "");
+  const value = String(blobUrl || "");
+  if (!key || !value) {
+    return;
+  }
+  const existing = floorPlanRasterBlobCache.get(key);
+  if (existing && existing !== value) {
+    URL.revokeObjectURL(existing);
+  }
+  floorPlanRasterBlobCache.set(key, value);
+  while (floorPlanRasterBlobCache.size > FLOOR_PLAN_RASTER_CACHE_MAX_ENTRIES) {
+    const oldestEntry = floorPlanRasterBlobCache.entries().next().value;
+    if (!oldestEntry) {
+      break;
+    }
+    const [oldestKey, oldestBlobUrl] = oldestEntry;
+    floorPlanRasterBlobCache.delete(oldestKey);
+    URL.revokeObjectURL(oldestBlobUrl);
+  }
+};
+
+const clearFloorPlanRasterBlobCache = () => {
+  for (const blobUrl of floorPlanRasterBlobCache.values()) {
+    URL.revokeObjectURL(blobUrl);
+  }
+  floorPlanRasterBlobCache.clear();
+};
 
 /* setAuthToken → imported from auth.js */
 
@@ -1649,6 +1694,7 @@ const setCachedApiResponse = (path, data) => {
 const clearApiResponseCache = () => {
   routePrefetchCache.clear();
   routePrefetchInFlight.clear();
+  clearFloorPlanRasterBlobCache();
 };
 
 const consumePrefetchedApiResponse = (path) => {
@@ -11542,11 +11588,6 @@ const renderFloorPlan = (svgMarkup, options = {}) => {
   hasFloorPlan = Boolean(svgMarkup);
   updateFloorPlanActionLabel();
   updateFloorPlanSpacesVisibility();
-  // Release previous blob URL to free memory.
-  if (floorPlanRasterBlobUrl) {
-    URL.revokeObjectURL(floorPlanRasterBlobUrl);
-    floorPlanRasterBlobUrl = null;
-  }
   floorPlanEmbeddedRasterTemplate = null;
   floorPlanEmbeddedRasterFloorId = null;
   floorPlanCanvas.replaceChildren();
@@ -11594,25 +11635,31 @@ const renderFloorPlan = (svgMarkup, options = {}) => {
         // Convert data: URL to a Blob URL — browser keeps decoded pixels in memory
         // instead of re-parsing the multi-MB base64 string on every composite.
         let effectiveSrc = imgSrc;
-        try {
-          const commaIdx = imgSrc.indexOf(",");
-          if (commaIdx > 0) {
-            const meta = imgSrc.substring(0, commaIdx); // e.g. "data:image/jpeg;base64"
-            const mimeMatch = meta.match(/data:([^;,]+)/);
-            const mime = mimeMatch ? mimeMatch[1] : "image/png";
-            const b64 = imgSrc.substring(commaIdx + 1);
-            const bin = atob(b64);
-            const bytes = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) {
-              bytes[i] = bin.charCodeAt(i);
+        const cachedBlobUrl = getCachedFloorPlanRasterBlobUrl(imgSrc);
+        if (cachedBlobUrl) {
+          effectiveSrc = cachedBlobUrl;
+        } else {
+          try {
+            const commaIdx = imgSrc.indexOf(",");
+            if (commaIdx > 0) {
+              const meta = imgSrc.substring(0, commaIdx); // e.g. "data:image/jpeg;base64"
+              const mimeMatch = meta.match(/data:([^;,]+)/);
+              const mime = mimeMatch ? mimeMatch[1] : "image/png";
+              const b64 = imgSrc.substring(commaIdx + 1);
+              const bin = atob(b64);
+              const bytes = new Uint8Array(bin.length);
+              for (let i = 0; i < bin.length; i++) {
+                bytes[i] = bin.charCodeAt(i);
+              }
+              const blob = new Blob([bytes], { type: mime });
+              const blobUrl = URL.createObjectURL(blob);
+              rememberFloorPlanRasterBlobUrl(imgSrc, blobUrl);
+              effectiveSrc = blobUrl;
             }
-            const blob = new Blob([bytes], { type: mime });
-            floorPlanRasterBlobUrl = URL.createObjectURL(blob);
-            effectiveSrc = floorPlanRasterBlobUrl;
+          } catch {
+            // Fallback to the original data URL if conversion fails.
+            effectiveSrc = imgSrc;
           }
-        } catch {
-          // Fallback to the original data URL if conversion fails.
-          effectiveSrc = imgSrc;
         }
         const nativeImg = document.createElement("img");
         nativeImg.className = "floor-plan-raster";
