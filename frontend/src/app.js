@@ -7680,7 +7680,10 @@ const renderFloorSpacesList = (spaces) => {
   const spacesToRender = Array.isArray(spaces) ? spaces : [];
   floorSpacesList.replaceChildren();
   const sortByName = (left, right) =>
-    (left?.name || "").localeCompare(right?.name || "", "ru", { sensitivity: "base" });
+    (left?.name || "").localeCompare(right?.name || "", "ru", {
+      sensitivity: "base",
+      numeric: true,
+    });
   const createKindHeading = (kindGroup) => {
       const heading = document.createElement("div");
       heading.className = "space-kind-heading";
