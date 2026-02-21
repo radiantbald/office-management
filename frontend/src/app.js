@@ -12349,7 +12349,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
   const previousFloor = currentFloor;
   const previousFloorPlan = String(previousFloor?.plan_svg || "");
   const previousFloorBuildingId = Number(
-    previousFloor?.building_id ?? previousFloor?.buildingId ?? currentBuilding?.id
+    previousFloor?.building_id ?? previousFloor?.buildingId
   );
   const hasWarmFloorState =
     Boolean(previousFloor) &&
@@ -12514,7 +12514,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   const previousSpace = currentSpace;
   const previousFloorPlan = String(currentFloor?.plan_svg || "");
   const previousFloorBuildingId = Number(
-    currentFloor?.building_id ?? currentFloor?.buildingId ?? currentBuilding?.id
+    currentFloor?.building_id ?? currentFloor?.buildingId
   );
   const canReusePreviousFloorPlan =
     Boolean(currentFloor) &&
