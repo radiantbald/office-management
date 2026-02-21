@@ -12426,7 +12426,9 @@ const loadFloorPage = async (buildingID, floorNumber) => {
         ? floorDetails.plan_svg
         : typeof floor?.plan_svg === "string"
           ? floor.plan_svg
-          : previousFloorPlan;
+          : hasWarmFloorState
+            ? previousFloorPlan
+            : "";
     currentFloor = {
       ...floor,
       plan_svg: planSvg,
@@ -12491,9 +12493,31 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   setPageMode("space");
   clearSpacePageStatus();
   setSpaceSnapshotLoading(false);
+  const expectedBuildingID = Number(buildingID);
+  const expectedFloorNumber = Number(floorNumber);
+  const expectedSpaceID = Number(spaceId);
+  const isStillOnRequestedSpaceRoute = () => {
+    const params = getSpaceParamsFromPath();
+    if (!params) {
+      return false;
+    }
+    return (
+      Number(params.buildingID) === expectedBuildingID &&
+      Number(params.floorNumber) === expectedFloorNumber &&
+      Number(params.spaceId) === expectedSpaceID
+    );
+  };
   const initialBookingDate = getBookingDateFromLocation();
   const previousSpace = currentSpace;
   const previousFloorPlan = String(currentFloor?.plan_svg || "");
+  const previousFloorBuildingId = Number(
+    currentFloor?.building_id ?? currentFloor?.buildingId ?? currentBuilding?.id
+  );
+  const canReusePreviousFloorPlan =
+    Boolean(currentFloor) &&
+    previousFloorBuildingId === Number(buildingID) &&
+    Number(currentFloor?.level) === Number(floorNumber) &&
+    Boolean(previousFloorPlan);
   const normalizedTargetSpaceId = Number(spaceId);
   const hasWarmSpaceState =
     Boolean(previousSpace) &&
@@ -12567,6 +12591,9 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
 
     // Wait for space first (needed for desks kickoff & kind check).
     const space = await spacePromise;
+    if (!isStillOnRequestedSpaceRoute()) {
+      return;
+    }
     if (!space || !space.id) {
       throw new Error("Пространство не найдено.");
     }
@@ -12582,14 +12609,42 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
         skipIfUnchanged: hasWarmSpaceState,
         showSnapshotLoading: true,
       });
+      // If we already have the same floor plan in memory, render snapshot immediately.
+      if (!hasWarmSpaceState && canReusePreviousFloorPlan) {
+        renderSpaceSnapshot(space, previousFloorPlan);
+      }
     }
 
     // Wait for floors (need floor.id to fetch floor details).
     const floorsResponse = await floorsPromise;
+    if (!isStillOnRequestedSpaceRoute()) {
+      return;
+    }
     const floors = Array.isArray(floorsResponse.items) ? floorsResponse.items : [];
     const floor = floors.find((item) => item.level === floorNumber) || null;
     if (!floor) {
       throw new Error("Этаж не найден.");
+    }
+    const spaceFloorID = Number(space.floor_id ?? space.floorId);
+    const routeFloorID = Number(floor.id);
+    if (Number.isFinite(spaceFloorID) && Number.isFinite(routeFloorID) && spaceFloorID !== routeFloorID) {
+      const canonicalFloor = await loadApiResponse(`/api/floors/${spaceFloorID}`);
+      const canonicalBuildingID = Number(canonicalFloor?.building_id ?? canonicalFloor?.buildingId);
+      const canonicalLevel = Number(canonicalFloor?.level);
+      if (
+        Number.isFinite(canonicalBuildingID) &&
+        Number.isFinite(canonicalLevel) &&
+        Number.isFinite(Number(space.id))
+      ) {
+        await navigateTo(
+          `/buildings/${encodeURIComponent(canonicalBuildingID)}/floors/${encodeURIComponent(
+            canonicalLevel
+          )}/spaces/${encodeURIComponent(space.id)}`,
+          { replace: true }
+        );
+        return;
+      }
+      throw new Error("Коворкинг привязан к другому этажу. Обновите страницу и повторите попытку.");
     }
 
     // Floor details depends on floor.id; building is already in flight — await both together.
@@ -12597,6 +12652,9 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       loadApiResponse(`/api/floors/${floor.id}`),
       buildingPromise,
     ]);
+    if (!isStillOnRequestedSpaceRoute()) {
+      return;
+    }
     if (building) {
       currentBuilding = building;
       if (Array.isArray(buildings)) {
@@ -12613,7 +12671,9 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
         ? floorDetails.plan_svg
         : typeof floor?.plan_svg === "string"
           ? floor.plan_svg
-          : previousFloorPlan;
+          : canReusePreviousFloorPlan
+            ? previousFloorPlan
+            : "";
     currentFloor = {
       ...floor,
       plan_svg: resolvedFloorPlanSvg,
@@ -12712,7 +12772,13 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
         showSnapshotLoading: true,
       })
     );
+    if (!isStillOnRequestedSpaceRoute()) {
+      return;
+    }
   } catch (error) {
+    if (!isStillOnRequestedSpaceRoute()) {
+      return;
+    }
     setSpacePageStatus(error.message, "error");
     if (spaceSnapshotPlaceholder) {
       spaceSnapshotPlaceholder.classList.remove("is-hidden");
