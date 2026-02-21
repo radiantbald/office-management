@@ -399,6 +399,7 @@ const spaceEditState = {
 let floorPlanDirty = false;
 let floorPlanRasterBlobUrl = null;
 let floorPlanEmbeddedRasterTemplate = null;
+let floorPlanEmbeddedRasterFloorId = null;
 let floorPlanModalRequested = false;
 const addSpaceBtnLabel = addSpaceBtn
   ? addSpaceBtn.dataset.label || addSpaceBtn.getAttribute("aria-label") || addSpaceBtn.textContent
@@ -7304,6 +7305,11 @@ const stripSpaceOverlays = (svg) => {
   svg.querySelectorAll(".space-label").forEach((label) => label.remove());
 };
 
+const normalizeFloorId = (value) => {
+  const id = Number(value);
+  return Number.isFinite(id) ? id : null;
+};
+
 const getCleanFloorPlanMarkup = () => {
   if (!lassoState.svg) {
     return "";
@@ -7313,7 +7319,12 @@ const getCleanFloorPlanMarkup = () => {
   const hasEmbeddedRaster = Boolean(
     clone.querySelector("image[href^='data:']") || clone.querySelector("image[xlink\\:href^='data:']")
   );
-  if (floorPlanEmbeddedRasterTemplate && !hasEmbeddedRaster) {
+  const currentFloorId = normalizeFloorId(currentFloor?.id);
+  const canReuseEmbeddedTemplate =
+    Boolean(floorPlanEmbeddedRasterTemplate) &&
+    currentFloorId !== null &&
+    floorPlanEmbeddedRasterFloorId === currentFloorId;
+  if (canReuseEmbeddedTemplate && !hasEmbeddedRaster) {
     clone.insertBefore(floorPlanEmbeddedRasterTemplate.cloneNode(true), clone.firstChild);
   }
   stripEditorArtifacts(clone);
@@ -11512,8 +11523,14 @@ const rotateSelectedDesk = () => {
   queueDeskUpdate(deskId, payload);
 };
 
-const renderFloorPlan = (svgMarkup) => {
+const renderFloorPlan = (svgMarkup, options = {}) => {
   if (!floorPlanPreview || !floorPlanPlaceholder || !floorPlanCanvas) {
+    return;
+  }
+  const requestedFloorId = normalizeFloorId(options.floorId ?? currentFloor?.id);
+  const activeFloorId = normalizeFloorId(currentFloor?.id);
+  // Ignore stale async renders that target another floor.
+  if (requestedFloorId !== null && activeFloorId !== null && requestedFloorId !== activeFloorId) {
     return;
   }
   floorPlanDirty = false;
@@ -11527,6 +11544,7 @@ const renderFloorPlan = (svgMarkup) => {
     floorPlanRasterBlobUrl = null;
   }
   floorPlanEmbeddedRasterTemplate = null;
+  floorPlanEmbeddedRasterFloorId = null;
   floorPlanCanvas.replaceChildren();
   if (!svgMarkup) {
     floorPlanPreview.classList.add("is-hidden");
@@ -11564,6 +11582,7 @@ const renderFloorPlan = (svgMarkup) => {
       || svg.querySelector("image[xlink\\:href^='data:']");
     if (embeddedImage) {
       floorPlanEmbeddedRasterTemplate = embeddedImage.cloneNode(true);
+      floorPlanEmbeddedRasterFloorId = requestedFloorId;
       const imgSrc =
         embeddedImage.getAttribute("href") || embeddedImage.getAttributeNS("http://www.w3.org/1999/xlink", "href");
       if (imgSrc) {
@@ -12452,7 +12471,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     if (editFloorBtn) {
       editFloorBtn.classList.toggle("is-hidden", !canManageFloorResources(getUserInfo(), currentFloor));
     }
-    renderFloorPlan(planSvg);
+    renderFloorPlan(planSvg, { floorId: floor.id });
     await loadFloorSpaces(floor.id, {
       prefetchedResponse: await floorSpacesPromise,
       skipIfUnchanged: false,
@@ -13416,7 +13435,7 @@ if (uploadFloorPlanBtn) {
         body: JSON.stringify({ plan_svg: svgMarkup }),
       });
       currentFloor = { ...currentFloor, plan_svg: updated.plan_svg || svgMarkup };
-      renderFloorPlan(updated.plan_svg || svgMarkup);
+      renderFloorPlan(updated.plan_svg || svgMarkup, { floorId: currentFloor.id });
       floorPlanFile.value = "";
       setFloorStatus("План этажа обновлен.", "success");
       closeFloorPlanModal();
@@ -13453,7 +13472,7 @@ if (deleteFloorPlanBtn) {
         body: JSON.stringify({ plan_svg: "" }),
       });
       currentFloor = { ...currentFloor, plan_svg: updated.plan_svg || "" };
-      renderFloorPlan("");
+      renderFloorPlan("", { floorId: currentFloor.id });
       await loadFloorSpaces(currentFloor.id);
       setFloorStatus("План этажа удален.", "success");
       setFloorEditMode(false);
