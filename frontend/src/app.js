@@ -12107,6 +12107,8 @@ const maxFloorPlanUploadBytes = 50 * 1024 * 1024;
 const pdfJsWorkerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 const maxFloorPlanRasterDimension = 5000;
 const maxFloorPlanRasterPixels = 18_000_000;
+const pdfBaseDpi = 72;
+const floorPlanPdfRasterDpi = 250;
 
 const normalizeSvgMarkup = (markup) => {
   if (!markup) {
@@ -12191,10 +12193,11 @@ const pdfFileToSvgMarkup = async (file) => {
   const pdfDocument = await loadingTask.promise;
   try {
     const page = await pdfDocument.getPage(1);
-    const baseViewport = page.getViewport({ scale: 1 });
+    const dpiScale = floorPlanPdfRasterDpi / pdfBaseDpi;
+    const baseViewport = page.getViewport({ scale: dpiScale });
     const fittedSize = fitImageToRasterBudget(baseViewport.width, baseViewport.height);
-    const scale = Math.max(0.1, fittedSize.width / Math.max(1, baseViewport.width));
-    const viewport = page.getViewport({ scale });
+    const budgetScale = Math.max(0.1, fittedSize.width / Math.max(1, baseViewport.width));
+    const viewport = page.getViewport({ scale: dpiScale * budgetScale });
     const width = Math.max(1, Math.round(viewport.width));
     const height = Math.max(1, Math.round(viewport.height));
     const canvas = document.createElement("canvas");
