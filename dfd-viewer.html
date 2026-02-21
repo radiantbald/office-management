@@ -514,10 +514,10 @@ graph LR
 
     subgraph API["Building Endpoints"]
         Build["/api/buildings + /api/buildings/:id&#10;GET / POST / PUT / DELETE"]
-        Floor["/api/floors + /api/floors/:id&#10;GET / POST / PUT / DELETE"]
-        Space["/api/spaces + /api/spaces/:id&#10;POST / GET / PUT / DELETE"]
-        Desk["/api/desks + /api/desks/:id&#10;GET / POST / PUT / DELETE"]
-        Bulk["/api/desks/bulk&#10;POST batch"]
+        Floor["/api/floors + /api/floors/:id&#10;POST + GET/PUT/DELETE by :id"]
+        Space["/api/spaces + /api/spaces/:id&#10;POST + GET/PUT/DELETE by :id"]
+        Desk["/api/desks + /api/desks/:id&#10;POST + PUT/DELETE by :id"]
+        Bulk["/api/desks/bulk&#10;POST batch + DELETE batch"]
         MR["/api/meeting-rooms&#10;POST (create only)"]
     end
 
@@ -575,10 +575,10 @@ graph LR
     end
 
     subgraph BookAPI["Booking Endpoints"]
-        Book["/api/bookings&#10;GET / POST"]
-        BookDel["/api/bookings/:id&#10;DELETE"]
-        MRBook["/api/meeting-room-bookings&#10;GET / POST"]
-        MRDel["/api/meeting-room-bookings/:id&#10;DELETE"]
+        Book["/api/bookings&#10;GET / POST / DELETE (payload)"]
+        BookSub["/api/bookings/*&#10;/me, /all, /multiple, /space-bookings, /space-bookings-all"]
+        MRBook["/api/meeting-room-bookings&#10;GET / POST / DELETE (payload)"]
+        MRSub["/api/meeting-room-bookings/*&#10;/me, /all"]
     end
 
     subgraph UserAPI["User Endpoints"]
@@ -592,17 +592,17 @@ graph LR
     end
 
     JS --> Book
-    JS --> BookDel
+    JS --> BookSub
     JS --> MRBook
-    JS --> MRDel
+    JS --> MRSub
     JS --> Users
     JS --> Role
     JS --> Resp
 
     Book -- "workplace_bookings" --> DB
-    BookDel -- "cancelled_at" --> DB
-    MRBook -- "meeting_room_bookings" --> DB
-    MRDel -- "cancelled_at" --> DB
+    BookSub -- "my/multi/space bookings" --> DB
+    MRBook -- "meeting_room_bookings (list/create/cancel)" --> DB
+    MRSub -- "my bookings + bulk cancel" --> DB
     Users -- "users" --> DB
     Role -- "users.role" --> DB
     Resp -- "buildings / floors / coworkings" --> DB
@@ -754,7 +754,7 @@ sequenceDiagram
     DB-->>A: Spaces data
     A-->>F: JSON
     F->>A: GET /api/desks?space_id=Y&date=2026-02-14
-    A->>DB: SELECT workplaces LEFT JOIN bookings
+    A->>DB: SELECT workplaces LEFT JOIN workplace_bookings
     DB-->>A: Desks + booking status
     A-->>F: Desks with booking info
     F->>U: Показать план этажа
@@ -771,7 +771,7 @@ sequenceDiagram
     
     Note over U,DB: Отмена бронирования
     U->>F: Отменить бронь
-    F->>A: DELETE /api/bookings/ID
+    F->>A: DELETE /api/bookings (workplace_id + date в body)
     A->>A: Проверить права
     A->>DB: UPDATE cancelled_at = NOW()
     DB-->>A: OK
@@ -798,7 +798,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant FS as File Storage
     
-    Note over A,FS: Все защищённые /api/* проходят через authMiddleware (kid-aware verify + strict iss/aud/nbf/exp/jti, claims в context)
+    Note over A,FS: Все защищённые /api/* проходят через authMiddleware (kid-aware verify + strict iss/aud/nbf/exp/jti, claims в context); проверки role/responsibility выполняются в handler-ах через БД
     
     Note over A,FS: Создание здания
     A->>F: Заполнить форму
@@ -851,7 +851,7 @@ sequenceDiagram
 erDiagram
     users ||--o{ workplace_bookings : "books"
     users ||--o{ meeting_room_bookings : "books"
-    users ||--o{ office_refresh_tokens : "has"
+    users ||--o{ office_refresh_tokens : "logical by employee_id (no FK)"
     office_buildings ||--|{ floors : "contains"
     floors ||--|{ coworkings : "contains"
     floors ||--|{ meeting_rooms : "contains"
@@ -862,7 +862,7 @@ erDiagram
     users {
         bigint id PK
         text full_name
-        text employee_id UK
+        text employee_id
         text wb_team_profile_id
         text wb_user_id UK
         text avatar_url
@@ -947,7 +947,7 @@ erDiagram
     
     office_refresh_tokens {
         bigint id PK
-        text token_hash UK "HMAC-SHA256(token_id, pepper)"
+        text token_id UK "HMAC-SHA256(token_id, pepper)"
         text employee_id
         text family_id "replay detection chain"
         text device_id "device binding - hard check"
@@ -969,7 +969,7 @@ erDiagram
             <li><strong>meeting_rooms</strong> — переговорные комнаты на этажах</li>
             <li><strong>workplace_bookings</strong> — бронирования столов (UNIQUE workplace_id + date только для активных, cancelled_at IS NULL)</li>
             <li><strong>meeting_room_bookings</strong> — бронирования переговорных (start_at / end_at)</li>
-            <li><strong>office_refresh_tokens</strong> — refresh-токены: HMAC-SHA256 хеш, family_id для replay detection, device_id binding (жёсткая проверка), ротация, ip/ua audit-only</li>
+            <li><strong>office_refresh_tokens</strong> — refresh-токены: HMAC-SHA256 хеш, family_id для replay detection, device_id binding (жёсткая проверка), ротация, ip/ua audit-only; связь с users по employee_id логическая (без FK)</li>
                     </ul>
                 </div>
             </div>
@@ -1007,6 +1007,7 @@ erDiagram
     <div class="info">
         <ul>
             <li><strong>Stateless API</strong> — ключевые claims пользователя передаются в JWT</li>
+            <li><strong>Physical schema note</strong> — <code>office_refresh_tokens.employee_id</code> не имеет FK на <code>users.employee_id</code>; целостность обеспечивается логикой приложения</li>
             <li><strong>Graceful Shutdown</strong> — SIGTERM / SIGINT</li>
             <li><strong>Health Check</strong> — GET /api/health</li>
             <li><strong>Auto Migrations</strong> — при старте сервера</li>
@@ -1023,7 +1024,7 @@ erDiagram
         
         <footer>
     <strong>Office Management System — Data Flow Diagram</strong><br>
-    Создано: 2026-02-13 &nbsp;|&nbsp; Обновлено: 2026-02-16 &nbsp;|&nbsp; Версия 3.2 (RS256+kid key management)
+    Создано: 2026-02-13 &nbsp;|&nbsp; Обновлено: 2026-02-20 &nbsp;|&nbsp; Версия 3.4 (physical DB schema alignment)
         </footer>
     
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>

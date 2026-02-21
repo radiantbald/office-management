@@ -11397,11 +11397,11 @@ const flushPendingDeskChanges = async () => {
     return;
   }
   if (hasCreates) {
-    const entries = Array.from(pendingDeskCreates.entries());
-    for (const [, payload] of entries) {
-      await apiRequest("/api/desks", {
+    const items = Array.from(pendingDeskCreates.values());
+    if (items.length > 0) {
+      await apiRequest("/api/desks/bulk", {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ items }),
       });
     }
     pendingDeskCreates.clear();

@@ -130,12 +130,12 @@ graph LR
     end
 
     subgraph BuildAPI["Building Endpoints"]
-        Buildings["/api/buildings\nGET / POST"]
-        Floors["/api/floors\nGET / POST / PUT / DELETE"]
-        Spaces["/api/spaces\nGET / POST / PUT / DELETE"]
-        Desks["/api/desks\nGET / POST / PUT / DELETE"]
-        DeskBulk["/api/desks/bulk\nPOST — Массовое создание"]
-        MeetRooms["/api/meeting-rooms\nGET / POST / PUT / DELETE"]
+        Buildings["/api/buildings + /api/buildings/:id\nGET / POST / PUT / DELETE"]
+        Floors["/api/floors + /api/floors/:id\nPOST + GET / PUT / DELETE по :id"]
+        Spaces["/api/spaces + /api/spaces/:id\nPOST + GET / PUT / DELETE по :id"]
+        Desks["/api/desks + /api/desks/:id\nPOST + PUT / DELETE по :id"]
+        DeskBulk["/api/desks/bulk\nPOST — Массовое создание, DELETE — bulk-удаление"]
+        MeetRooms["/api/meeting-rooms\nPOST (create only)"]
     end
 
     subgraph Data
@@ -174,10 +174,10 @@ graph LR
     end
 
     subgraph BookingAPI["Booking Endpoints"]
-        Bookings["/api/bookings\nGET / POST"]
-        BookingSub["/api/bookings/:id\nDELETE — Отмена"]
-        MRBook["/api/meeting-room-bookings\nGET / POST"]
-        MRBookSub["/api/meeting-room-bookings/:id\nDELETE — Отмена"]
+        Bookings["/api/bookings\nGET / POST / DELETE (cancel by payload)"]
+        BookingsSub["/api/bookings/*\n/me, /all, /multiple, /space-bookings, /space-bookings-all"]
+        MRBook["/api/meeting-room-bookings\nGET / POST / DELETE (cancel by payload)"]
+        MRBookSub["/api/meeting-room-bookings/*\n/me, /all"]
     end
 
     subgraph UserAPI["User Endpoints"]
@@ -191,7 +191,7 @@ graph LR
     end
 
     JS -- "cookie auto (office_access_token)" --> Bookings
-    JS -- "cookie auto (office_access_token)" --> BookingSub
+    JS -- "cookie auto (office_access_token)" --> BookingsSub
     JS -- "cookie auto (office_access_token)" --> MRBook
     JS -- "cookie auto (office_access_token)" --> MRBookSub
 
@@ -199,10 +199,10 @@ graph LR
     JS -- "cookie auto (office_access_token)" --> UserRole
     JS -- "cookie auto (office_access_token)" --> Resp
 
-    Bookings -- "workplace_bookings" --> DB
-    BookingSub -- "UPDATE cancelled_at" --> DB
-    MRBook -- "meeting_room_bookings" --> DB
-    MRBookSub -- "UPDATE cancelled_at" --> DB
+    Bookings -- "workplace_bookings (list/create/cancel)" --> DB
+    BookingsSub -- "my/multi/space bookings" --> DB
+    MRBook -- "meeting_room_bookings (list/create/cancel)" --> DB
+    MRBookSub -- "my bookings + bulk cancel" --> DB
 
     Users -- "users" --> DB
     UserRole -- "UPDATE users.role" --> DB
@@ -345,7 +345,7 @@ sequenceDiagram
     
     Note over U,DB: Отмена бронирования
     U->>F: Отменить бронь
-    F->>A: DELETE /api/bookings/:id
+    F->>A: DELETE /api/bookings (workplace_id + date в body)
     A->>A: Проверить права
     A->>DB: UPDATE workplace_bookings SET cancelled_at = NOW()
     DB-->>A: OK
@@ -365,7 +365,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant FS as File Storage
     
-    Note over A,FS: Все /api/* запросы проходят через authMiddleware (kid-aware verify, claims в context)
+    Note over A,FS: Все /api/* запросы проходят через authMiddleware (kid-aware verify, claims в context); проверки role/responsibility выполняются в handler-ах через БД
     
     Note over A,FS: Создание здания
     A->>F: Заполнить форму здания
@@ -412,7 +412,7 @@ sequenceDiagram
 erDiagram
     users ||--o{ workplace_bookings : "books"
     users ||--o{ meeting_room_bookings : "books"
-    users ||--o{ office_refresh_tokens : "has"
+    users ||--o{ office_refresh_tokens : "logical by employee_id (no FK)"
     
     office_buildings ||--|{ floors : "contains"
     
@@ -428,7 +428,7 @@ erDiagram
     users {
         bigint id PK
         text full_name
-        text employee_id UK
+        text employee_id
         text wb_team_profile_id
         text wb_user_id UK
         text avatar_url
@@ -444,7 +444,7 @@ erDiagram
         text timezone
         text image_url
         text responsible_employee_id
-        text floors_json
+        text floors
         timestamptz created_at
     }
     
@@ -465,7 +465,7 @@ erDiagram
         text subdivision_level_1
         text subdivision_level_2
         text responsible_employee_id
-        text points_json
+        jsonb points_json
         text color
         int snapshot_hidden
         timestamptz created_at
@@ -475,11 +475,7 @@ erDiagram
         bigint id PK
         bigint coworking_id FK
         text label
-        float x
-        float y
-        float width
-        float height
-        float rotation
+        jsonb points_json
         timestamptz created_at
     }
     
@@ -499,7 +495,7 @@ erDiagram
         bigint floor_id FK
         text name
         int capacity
-        text points_json
+        jsonb points_json
         text color
         timestamptz created_at
     }
@@ -517,9 +513,10 @@ erDiagram
     
     office_refresh_tokens {
         bigint id PK
-        text token_hash UK "HMAC-SHA256(token_id, pepper)"
+        text token_id UK "HMAC-SHA256(token_id, pepper)"
         text employee_id
         text family_id "token family for replay detection"
+        text device_id "device binding"
         timestamptz expires_at
         timestamptz revoked_at
         timestamptz last_used_at
@@ -599,8 +596,8 @@ erDiagram
    - **Token hashing** — token_id хранится как HMAC-SHA256(token_id, pepper), не в открытом виде; pepper задаётся отдельно (`OFFICE_REFRESH_PEPPER`, fallback на `OFFICE_JWT_SECRET`)
    - **Token families** — family_id связывает цепочку ротации для replay detection
    - **Фактические JWT claims (по коду):**
-     - Access JWT: `employee_id`, `user_name`, `role`, `exp`, `iat`
-     - Refresh JWT: `employee_id`, `token_id`, `family_id`, `exp`, `iat`
+     - Access JWT: `employee_id`, `user_name`, `role`, `responsibilities`, `iss`, `aud`, `exp`, `nbf`, `iat`, `jti`
+     - Refresh JWT: `employee_id`, `token_id`, `family_id`, `iss`, `aud`, `exp`, `nbf`, `iat`, `jti`
    - **Replay protection** — повторное использование revoked refresh → инвалидация всей семьи токенов; **atomic consume** (UPDATE…RETURNING) исключает race condition при параллельных refresh
    - **Audit fields** — last_used_at, ip_address, user_agent в каждом refresh token
 
@@ -613,7 +610,7 @@ erDiagram
 
 3. **Контроль доступа**
    - Роли: Employee (1), Admin (2)
-   - Responsibilities не хранятся в JWT; проверка выполняется по БД (`responsible_employee_id`) с `employee_id` из access claims
+   - Responsibilities включаются в access JWT как convenience-claims, но критичные write-проверки выполняются по БД (`responsible_employee_id`) с `employee_id` из access claims
    - Rate limiting на auth endpoints + office-token (10 req/min per IP)
 
 4. **Защита данных**
@@ -627,7 +624,7 @@ erDiagram
 
 ## Особенности архитектуры
 
-1. **Stateless API** — в JWT хранятся минимальные claims для авторизации, без массивов responsibilities
+1. **Stateless API** — ключевые claims авторизации передаются в JWT (включая `role` и `responsibilities`), при этом критичные права дополнительно валидируются по БД
 2. **Graceful Shutdown** — корректное завершение при SIGTERM/SIGINT
 3. **Health Check** — `GET /api/health` для мониторинга
 4. **Auto Migrations** — автоматическое применение миграций при старте сервера
@@ -635,9 +632,10 @@ erDiagram
 6. **Timezone Support** — каждое здание имеет свою временную зону
 7. **Soft Delete** — бронирования отменяются через `cancelled_at`, не удаляются
 8. **Token Rotation + Replay Detection** — при обновлении refresh token старый отзывается (revoked_at + last_used_at) **атомарно** через `UPDATE … RETURNING` (защита от race condition параллельных запросов), выдаётся новый с тем же family_id; повторное использование revoked token → инвалидация всего семейства
+9. **Physical schema note** — `office_refresh_tokens.employee_id` связан с `users.employee_id` логически, без FK-constraint (проверки на уровне приложения)
 
 ---
 
 **Дата создания:** 2026-02-13
-**Обновлено:** 2026-02-16
-**Версия:** 2.5 — RS256+kid key management + DFD sync
+**Обновлено:** 2026-02-20
+**Версия:** 2.7 — physical DB schema alignment
