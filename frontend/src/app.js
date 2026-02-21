@@ -13754,16 +13754,8 @@ if (spaceForm) {
       if (createdElements.polygon && createdSpace?.id) {
         createdElements.polygon.setAttribute("data-space-id", String(createdSpace.id));
       }
-      const svgMarkup = getCleanFloorPlanMarkup();
-      const updated = await apiRequest(`/api/floors/${currentFloor.id}`, {
-        method: "PUT",
-        body: JSON.stringify({ plan_svg: svgMarkup }),
-      });
-      currentFloor = {
-        ...currentFloor,
-        plan_svg: updated.plan_svg || svgMarkup,
-        responsible_employee_id: currentFloor.responsible_employee_id,
-      };
+      // Polygon geometry is persisted in /api/spaces; re-uploading full floor SVG here is redundant
+      // and noticeably slows down assigning polygons to spaces.
       setFloorStatus("Пространство добавлено.", "success");
       await loadFloorSpaces(currentFloor.id);
       closeSpaceModal();
