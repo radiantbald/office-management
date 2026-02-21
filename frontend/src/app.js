@@ -1706,8 +1706,9 @@ const loadFloorDetailsFresh = async (floorId) => {
   if (!Number.isFinite(normalizedFloorId)) {
     throw new Error("Некорректный идентификатор этажа.");
   }
-  // Floor plan must always come from the exact floor endpoint without route cache reuse.
-  return apiRequest(`/api/floors/${normalizedFloorId}`);
+  // Keep cache scoped to the exact floor endpoint so each floor
+  // reuses its own plan data on repeated opens.
+  return loadApiResponse(`/api/floors/${normalizedFloorId}`);
 };
 
 const prefetchBuildingRouteData = (buildingId) => {
