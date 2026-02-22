@@ -12817,10 +12817,11 @@ const loadFloorPage = async (buildingID, floorNumber) => {
   };
   setPageMode("floor");
   clearFloorStatus();
+  const warmFloorLevel = Number(currentFloor?.level);
   const warmFloorFromSpaceRoute =
     currentFloor &&
-    Number(currentFloor?.building_id ?? currentFloor?.buildingId) === expectedBuildingID &&
-    Number(currentFloor?.level) === expectedFloorNumber
+    Number.isFinite(warmFloorLevel) &&
+    warmFloorLevel === expectedFloorNumber
       ? currentFloor
       : null;
   if (warmFloorFromSpaceRoute) {
