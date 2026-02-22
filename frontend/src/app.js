@@ -8431,7 +8431,62 @@ const persistSpaceGeometry = async (space) => {
   });
 };
 
+const ensureFloorPlanSurfaceForPolygons = (spaces) => {
+  if (lassoState.svg && lassoState.spacesLayer) {
+    return true;
+  }
+  if (!floorPlanPreview || !floorPlanPlaceholder || !floorPlanCanvas) {
+    return false;
+  }
+  const points = [];
+  (Array.isArray(spaces) ? spaces : []).forEach((space) => {
+    const normalized = normalizeSpacePoints(space?.points);
+    if (normalized.length >= 3) {
+      points.push(...normalized);
+    }
+  });
+  if (points.length === 0) {
+    return false;
+  }
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  points.forEach((point) => {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  });
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return false;
+  }
+  const width = Math.max(1, maxX - minX);
+  const height = Math.max(1, maxY - minY);
+  const padding = Math.max(Math.min(width, height) * 0.15, 24);
+  const svg = document.createElementNS(svgNamespace, "svg");
+  svg.setAttribute(
+    "viewBox",
+    `${minX - padding} ${minY - padding} ${width + padding * 2} ${height + padding * 2}`
+  );
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", "100%");
+  floorPlanCanvas.replaceChildren(svg);
+  floorPlanPreview.classList.remove("is-hidden");
+  floorPlanPlaceholder.classList.add("is-hidden");
+  ensureSpaceLayers(svg);
+  bindSpaceInteractions(svg);
+  resetFloorPlanTransform();
+  return Boolean(lassoState.svg && lassoState.spacesLayer);
+};
+
 const syncSpacePolygons = async (spaces, { persistMissing = false } = {}) => {
+  if (!lassoState.svg || !lassoState.spacesLayer) {
+    if (!ensureFloorPlanSurfaceForPolygons(spaces)) {
+      return;
+    }
+  }
   if (!lassoState.svg || !lassoState.spacesLayer) {
     return;
   }
