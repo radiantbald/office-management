@@ -12862,6 +12862,7 @@ const loadFloorSpaces = async (floorID, { prefetchedResponse = null, skipIfUncha
 const loadFloorPage = async (buildingID, floorNumber) => {
   const expectedBuildingID = Number(buildingID);
   const expectedFloorNumber = Number(floorNumber);
+  const previousFloorPlanSvg = String(currentFloor?.plan_svg || "");
   const isStillOnRequestedFloorRoute = () => {
     const params = getFloorParamsFromPath();
     if (!params) {
@@ -12945,6 +12946,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       (hasMatchingFloorUpdatedAt(floor, cachedFloorDetails) ||
         (!hasKnownFloorUpdatedAt(floor) && hasKnownFloorUpdatedAt(cachedFloorDetails)));
     const initialPlanSvg =
+      previousFloorPlanSvg ||
       (canUseClientPlanImmediately
         ? cachedPlanSvg
         : "") ||
@@ -13004,7 +13006,9 @@ const loadFloorPage = async (buildingID, floorNumber) => {
           editFloorBtn.classList.toggle("is-hidden", !canManageFloorResources(getUserInfo(), currentFloor));
         }
         if (freshPlanSvg !== previousPlanSvg) {
-          if (shouldDelayFloorPlanHotSwap()) {
+          if (!previousPlanSvg) {
+            renderFloorPlan(freshPlanSvg, { floorId: floor.id });
+          } else if (shouldDelayFloorPlanHotSwap()) {
             scheduleFloorPlanHotSwap(freshPlanSvg, { floorId: floor.id });
           } else {
             renderFloorPlan(freshPlanSvg, { floorId: floor.id });
@@ -13073,6 +13077,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   setPageMode("space");
   clearSpacePageStatus();
   setSpaceSnapshotLoading(false);
+  const previousFloorPlanSvg = String(currentFloor?.plan_svg || "");
   const expectedBuildingID = Number(buildingID);
   const expectedFloorNumber = Number(floorNumber);
   const expectedSpaceID = Number(spaceId);
@@ -13239,6 +13244,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       (hasMatchingFloorUpdatedAt(floor, cachedFloorDetails) ||
         (!hasKnownFloorUpdatedAt(floor) && hasKnownFloorUpdatedAt(cachedFloorDetails)));
     const resolvedFloorPlanSvg =
+      previousFloorPlanSvg ||
       (canUseClientPlanImmediately
         ? cachedFloorPlanSvg
         : "") ||
