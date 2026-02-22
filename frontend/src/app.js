@@ -555,6 +555,32 @@ const getFloorDetailsFromClientCache = (floorId) => {
   return floorDetailsCacheByFloorId.get(normalizedFloorId) || null;
 };
 
+const normalizeFloorUpdatedAtToken = (value) => {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  const raw = String(value).trim();
+  if (!raw) {
+    return "";
+  }
+  const parsedDate = Date.parse(raw);
+  if (Number.isFinite(parsedDate)) {
+    return String(parsedDate);
+  }
+  return raw;
+};
+
+const hasMatchingFloorUpdatedAt = (serverFloor, cachedFloorDetails) => {
+  const serverToken = normalizeFloorUpdatedAtToken(serverFloor?.updated_at ?? serverFloor?.updatedAt);
+  const cacheToken = normalizeFloorUpdatedAtToken(
+    cachedFloorDetails?.updated_at ?? cachedFloorDetails?.updatedAt
+  );
+  if (!serverToken || !cacheToken) {
+    return false;
+  }
+  return serverToken === cacheToken;
+};
+
 const rememberFloorDetailsInClientCache = (floorId, floorDetails) => {
   const normalizedFloorId = Number(floorId);
   if (!Number.isFinite(normalizedFloorId) || !floorDetails) {
@@ -11878,7 +11904,8 @@ const renderFloorPlan = (svgMarkup, options = {}) => {
   floorPlanDirty = false;
   clearSpaceSelection();
   hasFloorPlan = Boolean(svgMarkup);
-  if (requestedFloorId !== null) {
+  const shouldPersistMarkupInCache = options.persistCache !== false;
+  if (requestedFloorId !== null && shouldPersistMarkupInCache) {
     rememberFloorPlanMarkupCache(requestedFloorId, svgMarkup || "");
   }
   updateFloorPlanActionLabel();
@@ -12787,7 +12814,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
   };
   setPageMode("floor");
   clearFloorStatus();
-  renderFloorPlan("");
+  renderFloorPlan("", { persistCache: false });
   renderFloorSpaces([]);
   currentFloor = null;
   try {
@@ -12842,8 +12869,10 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     const cachedFloorDetails = getFloorDetailsFromClientCache(floor.id);
     const hasCachedPlanMarkup = hasFloorPlanMarkupCacheEntry(floor.id);
     const cachedPlanSvg = getFloorPlanMarkupFromCache(floor.id);
+    const canUseClientPlanImmediately =
+      hasCachedPlanMarkup && hasMatchingFloorUpdatedAt(floor, cachedFloorDetails);
     const initialPlanSvg =
-      (hasCachedPlanMarkup
+      (canUseClientPlanImmediately
         ? cachedPlanSvg
         : "") ||
       (typeof floor?.plan_svg === "string"
@@ -13128,8 +13157,10 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     const cachedFloorDetails = getFloorDetailsFromClientCache(floor.id);
     const hasCachedPlanMarkup = hasFloorPlanMarkupCacheEntry(floor.id);
     const cachedFloorPlanSvg = getFloorPlanMarkupFromCache(floor.id);
+    const canUseClientPlanImmediately =
+      hasCachedPlanMarkup && hasMatchingFloorUpdatedAt(floor, cachedFloorDetails);
     const resolvedFloorPlanSvg =
-      (hasCachedPlanMarkup
+      (canUseClientPlanImmediately
         ? cachedFloorPlanSvg
         : "") ||
       (typeof floor?.plan_svg === "string"
