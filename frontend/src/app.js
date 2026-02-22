@@ -472,6 +472,10 @@ const FLOOR_PLAN_RASTER_CACHE_MAX_ENTRIES = 12;
 const floorPlanRasterBlobCache = new Map();
 const floorPlanRasterBlobInFlight = new Map();
 const floorPlanMarkupCacheByFloorId = new Map();
+const floorDetailsCacheByFloorId = new Map();
+const floorDetailsRevalidateInFlight = new Map();
+const floorDetailsLastRevalidateAt = new Map();
+const FLOOR_DETAILS_REVALIDATE_MIN_INTERVAL_MS = 30 * 1000;
 const floorSpacesRenderFingerprint = new Map();
 const spaceDesksRenderFingerprint = new Map();
 let latestSpaceDesksRequestToken = 0;
@@ -526,6 +530,14 @@ const getFloorPlanMarkupFromCache = (floorId) => {
   return String(floorPlanMarkupCacheByFloorId.get(normalizedFloorId) || "");
 };
 
+const hasFloorPlanMarkupCacheEntry = (floorId) => {
+  const normalizedFloorId = Number(floorId);
+  if (!Number.isFinite(normalizedFloorId)) {
+    return false;
+  }
+  return floorPlanMarkupCacheByFloorId.has(normalizedFloorId);
+};
+
 const rememberFloorPlanMarkupCache = (floorId, planSvg) => {
   const normalizedFloorId = Number(floorId);
   if (!Number.isFinite(normalizedFloorId)) {
@@ -533,6 +545,51 @@ const rememberFloorPlanMarkupCache = (floorId, planSvg) => {
   }
   const normalizedPlanSvg = typeof planSvg === "string" ? planSvg : "";
   floorPlanMarkupCacheByFloorId.set(normalizedFloorId, normalizedPlanSvg);
+};
+
+const getFloorDetailsFromClientCache = (floorId) => {
+  const normalizedFloorId = Number(floorId);
+  if (!Number.isFinite(normalizedFloorId)) {
+    return null;
+  }
+  return floorDetailsCacheByFloorId.get(normalizedFloorId) || null;
+};
+
+const rememberFloorDetailsInClientCache = (floorId, floorDetails) => {
+  const normalizedFloorId = Number(floorId);
+  if (!Number.isFinite(normalizedFloorId) || !floorDetails) {
+    return;
+  }
+  const normalized = { ...floorDetails };
+  if (typeof normalized.plan_svg !== "string") {
+    normalized.plan_svg = "";
+  }
+  floorDetailsCacheByFloorId.set(normalizedFloorId, normalized);
+  rememberFloorPlanMarkupCache(normalizedFloorId, normalized.plan_svg);
+};
+
+const shouldDelayFloorPlanHotSwap = ({ forSpaceSnapshot = false } = {}) => {
+  if (
+    isFloorEditing ||
+    lassoState.active ||
+    floorPlanState.isDragging ||
+    floorPlanState.isMoving ||
+    spaceEditState.isDragging ||
+    spaceEditState.isPolygonDragging ||
+    spaceEditState.isEditingPolygon
+  ) {
+    return true;
+  }
+  if (
+    forSpaceSnapshot &&
+    (isSpaceEditing ||
+      isDeskPlacementActive ||
+      Boolean(deskEditState.draggingDeskId) ||
+      Boolean(deskEditState.transformMode))
+  ) {
+    return true;
+  }
+  return false;
 };
 
 const resolveFloorPlanRasterBlobUrl = async (dataUrl) => {
@@ -1849,6 +1906,43 @@ const loadFloorDetailsFresh = async (floorId) => {
   // Keep cache scoped to the exact floor endpoint so each floor
   // reuses its own plan data on repeated opens.
   return loadApiResponse(`/api/floors/${normalizedFloorId}`);
+};
+
+const loadFloorDetailsNetworkFresh = async (floorId) => {
+  const normalizedFloorId = Number(floorId);
+  if (!Number.isFinite(normalizedFloorId)) {
+    throw new Error("Некорректный идентификатор этажа.");
+  }
+  const cacheBypass = `_rt=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const response = await apiRequest(`/api/floors/${normalizedFloorId}?${cacheBypass}`);
+  setCachedApiResponse(`/api/floors/${normalizedFloorId}`, response);
+  return response;
+};
+
+const revalidateFloorDetailsOnce = (floorId, { force = false } = {}) => {
+  const normalizedFloorId = Number(floorId);
+  if (!Number.isFinite(normalizedFloorId)) {
+    return Promise.resolve(null);
+  }
+  const now = Date.now();
+  const lastAt = floorDetailsLastRevalidateAt.get(normalizedFloorId) || 0;
+  if (!force && now - lastAt < FLOOR_DETAILS_REVALIDATE_MIN_INTERVAL_MS) {
+    return Promise.resolve(getFloorDetailsFromClientCache(normalizedFloorId));
+  }
+  if (floorDetailsRevalidateInFlight.has(normalizedFloorId)) {
+    return floorDetailsRevalidateInFlight.get(normalizedFloorId);
+  }
+  floorDetailsLastRevalidateAt.set(normalizedFloorId, now);
+  const request = loadFloorDetailsNetworkFresh(normalizedFloorId)
+    .then((floorDetails) => {
+      rememberFloorDetailsInClientCache(normalizedFloorId, floorDetails || {});
+      return floorDetails;
+    })
+    .finally(() => {
+      floorDetailsRevalidateInFlight.delete(normalizedFloorId);
+    });
+  floorDetailsRevalidateInFlight.set(normalizedFloorId, request);
+  return request;
 };
 
 const prefetchBuildingRouteData = (buildingId) => {
@@ -12704,16 +12798,21 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       }
       return;
     }
+    const cachedFloorDetails = getFloorDetailsFromClientCache(floor.id);
+    const hasCachedPlanMarkup = hasFloorPlanMarkupCacheEntry(floor.id);
     const cachedPlanSvg = getFloorPlanMarkupFromCache(floor.id);
     const initialPlanSvg =
-      cachedPlanSvg ||
+      (hasCachedPlanMarkup
+        ? cachedPlanSvg
+        : "") ||
       (typeof floor?.plan_svg === "string"
         ? floor.plan_svg
         : "");
     currentFloor = {
       ...floor,
       plan_svg: initialPlanSvg,
-      responsible_employee_id: floor?.responsible_employee_id || "",
+      responsible_employee_id:
+        cachedFloorDetails?.responsible_employee_id || floor?.responsible_employee_id || "",
     };
     if (floorTitle) {
       floorTitle.textContent = floor.name || `Этаж ${floor.level}`;
@@ -12736,10 +12835,13 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       prefetchedResponse: await floorSpacesPromise,
       skipIfUnchanged: false,
     });
-    const finishSchemeLoad = beginSchemeBackgroundLoad("Обновляем схему этажа...");
-    void loadFloorDetailsFresh(floor.id)
+    const shouldShowInitialSchemeLoader = !cachedFloorDetails && !hasCachedPlanMarkup && !initialPlanSvg;
+    const finishSchemeLoad = shouldShowInitialSchemeLoader
+      ? beginSchemeBackgroundLoad("Обновляем схему этажа...")
+      : null;
+    void revalidateFloorDetailsOnce(floor.id, { force: shouldShowInitialSchemeLoader })
       .then((floorDetails) => {
-        if (!isStillOnRequestedFloorRoute()) {
+        if (!isStillOnRequestedFloorRoute() || !floorDetails) {
           return;
         }
         const previousPlanSvg = String(currentFloor?.plan_svg || "");
@@ -12747,7 +12849,6 @@ const loadFloorPage = async (buildingID, floorNumber) => {
           typeof floorDetails?.plan_svg === "string"
             ? floorDetails.plan_svg
             : previousPlanSvg;
-        rememberFloorPlanMarkupCache(floor.id, freshPlanSvg);
         currentFloor = {
           ...floor,
           ...floorDetails,
@@ -12759,7 +12860,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
         if (editFloorBtn) {
           editFloorBtn.classList.toggle("is-hidden", !canManageFloorResources(getUserInfo(), currentFloor));
         }
-        if (freshPlanSvg !== previousPlanSvg) {
+        if (freshPlanSvg !== previousPlanSvg && !shouldDelayFloorPlanHotSwap()) {
           renderFloorPlan(freshPlanSvg, { floorId: floor.id });
         }
       })
@@ -12772,7 +12873,9 @@ const loadFloorPage = async (buildingID, floorNumber) => {
         }
       })
       .finally(() => {
-        finishSchemeLoad();
+        if (typeof finishSchemeLoad === "function") {
+          finishSchemeLoad();
+        }
       });
   } catch (error) {
     if (!isStillOnRequestedFloorRoute()) {
@@ -12947,6 +13050,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     const routeFloorID = Number(floor.id);
     if (Number.isFinite(spaceFloorID) && Number.isFinite(routeFloorID) && spaceFloorID !== routeFloorID) {
       const canonicalFloor = await loadFloorDetailsFresh(spaceFloorID);
+      rememberFloorDetailsInClientCache(spaceFloorID, canonicalFloor || {});
       const canonicalBuildingID = Number(canonicalFloor?.building_id ?? canonicalFloor?.buildingId);
       const canonicalLevel = Number(canonicalFloor?.level);
       if (
@@ -12980,9 +13084,13 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
         }
       }
     }
+    const cachedFloorDetails = getFloorDetailsFromClientCache(floor.id);
+    const hasCachedPlanMarkup = hasFloorPlanMarkupCacheEntry(floor.id);
     const cachedFloorPlanSvg = getFloorPlanMarkupFromCache(floor.id);
     const resolvedFloorPlanSvg =
-      cachedFloorPlanSvg ||
+      (hasCachedPlanMarkup
+        ? cachedFloorPlanSvg
+        : "") ||
       (typeof floor?.plan_svg === "string"
         ? floor.plan_svg
         : "");
@@ -12991,7 +13099,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       ...floor,
       plan_svg: resolvedFloorPlanSvg,
       responsible_employee_id:
-        floor?.responsible_employee_id || "",
+        cachedFloorDetails?.responsible_employee_id || floor?.responsible_employee_id || "",
     };
 
     if (spaceBreadcrumbBuilding) {
@@ -13081,10 +13189,13 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     if (spaceSnapshot) {
       spaceSnapshot.classList.toggle("can-manage-bookings", canBookForOthers());
     }
-    const finishSchemeLoad = beginSchemeBackgroundLoad("Обновляем схему коворкинга...");
-    void loadFloorDetailsFresh(floor.id)
+    const shouldShowInitialSpaceLoader = !cachedFloorDetails && !hasCachedPlanMarkup && !resolvedFloorPlanSvg;
+    const finishSpaceSchemeLoad = shouldShowInitialSpaceLoader
+      ? beginSchemeBackgroundLoad("Обновляем схему коворкинга...")
+      : null;
+    void revalidateFloorDetailsOnce(floor.id, { force: shouldShowInitialSpaceLoader })
       .then((floorDetails) => {
-        if (!isStillOnRequestedSpaceRoute()) {
+        if (!isStillOnRequestedSpaceRoute() || !floorDetails) {
           return;
         }
         const previousPlanSvg = String(currentFloor?.plan_svg || "");
@@ -13092,7 +13203,6 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
           typeof floorDetails?.plan_svg === "string"
             ? floorDetails.plan_svg
             : previousPlanSvg;
-        rememberFloorPlanMarkupCache(floor.id, freshPlanSvg);
         currentFloor = {
           ...floor,
           ...floorDetails,
@@ -13100,7 +13210,11 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
           responsible_employee_id:
             floorDetails?.responsible_employee_id || floor?.responsible_employee_id || "",
         };
-        if (space?.kind === "coworking" && freshPlanSvg !== previousPlanSvg) {
+        if (
+          space?.kind === "coworking" &&
+          freshPlanSvg !== previousPlanSvg &&
+          !shouldDelayFloorPlanHotSwap({ forSpaceSnapshot: true })
+        ) {
           renderSpaceSnapshot(space, freshPlanSvg);
         }
       })
@@ -13108,7 +13222,9 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
         // Keep already visible content if background refresh failed.
       })
       .finally(() => {
-        finishSchemeLoad();
+        if (typeof finishSpaceSchemeLoad === "function") {
+          finishSpaceSchemeLoad();
+        }
       });
     await (
       desksLoadPromise ||
@@ -13758,8 +13874,14 @@ if (uploadFloorPlanBtn) {
         method: "PUT",
         body: JSON.stringify({ plan_svg: svgMarkup }),
       });
-      currentFloor = { ...currentFloor, plan_svg: updated.plan_svg || svgMarkup };
-      renderFloorPlan(updated.plan_svg || svgMarkup, { floorId: currentFloor.id });
+      const nextPlanSvg = updated.plan_svg || svgMarkup;
+      currentFloor = { ...currentFloor, plan_svg: nextPlanSvg };
+      rememberFloorDetailsInClientCache(currentFloor.id, {
+        ...currentFloor,
+        ...updated,
+        plan_svg: nextPlanSvg,
+      });
+      renderFloorPlan(nextPlanSvg, { floorId: currentFloor.id });
       floorPlanFile.value = "";
       setFloorStatus("План этажа обновлен.", "success");
       closeFloorPlanModal();
@@ -13795,7 +13917,13 @@ if (deleteFloorPlanBtn) {
         method: "PUT",
         body: JSON.stringify({ plan_svg: "" }),
       });
-      currentFloor = { ...currentFloor, plan_svg: updated.plan_svg || "" };
+      const nextPlanSvg = updated.plan_svg || "";
+      currentFloor = { ...currentFloor, plan_svg: nextPlanSvg };
+      rememberFloorDetailsInClientCache(currentFloor.id, {
+        ...currentFloor,
+        ...updated,
+        plan_svg: nextPlanSvg,
+      });
       renderFloorPlan("", { floorId: currentFloor.id });
       await loadFloorSpaces(currentFloor.id);
       setFloorStatus("План этажа удален.", "success");
