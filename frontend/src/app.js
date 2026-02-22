@@ -87,6 +87,8 @@ const buildingsGrid = document.getElementById("buildingsGrid");
 const emptyState = document.getElementById("emptyState");
 const statusBox = document.getElementById("status");
 const topAlert = document.getElementById("topAlert");
+const schemeLoadingIndicator = document.getElementById("schemeLoadingIndicator");
+const schemeLoadingIndicatorText = document.getElementById("schemeLoadingIndicatorText");
 const appHeader = document.querySelector(".app-header");
 const pageTitle = document.getElementById("pageTitle");
 const pageSubtitle = document.getElementById("pageSubtitle");
@@ -468,9 +470,15 @@ const routePrefetchInFlight = new Map();
 const API_GET_CACHE_TTL_MS = 5 * 60 * 1000;
 const FLOOR_PLAN_RASTER_CACHE_MAX_ENTRIES = 12;
 const floorPlanRasterBlobCache = new Map();
+const floorPlanRasterBlobInFlight = new Map();
+const floorPlanMarkupCacheByFloorId = new Map();
 const floorSpacesRenderFingerprint = new Map();
 const spaceDesksRenderFingerprint = new Map();
 let latestSpaceDesksRequestToken = 0;
+let latestFloorPlanRenderToken = 0;
+let schemeLoadingRequestId = 0;
+let activeSchemeLoadingRequestId = 0;
+let activeSchemeLoadingCount = 0;
 const deskBookingActionsInFlight = new Set();
 
 const getCachedFloorPlanRasterBlobUrl = (dataUrl) => {
@@ -510,7 +518,54 @@ const rememberFloorPlanRasterBlobUrl = (dataUrl, blobUrl) => {
   }
 };
 
+const getFloorPlanMarkupFromCache = (floorId) => {
+  const normalizedFloorId = Number(floorId);
+  if (!Number.isFinite(normalizedFloorId)) {
+    return "";
+  }
+  return String(floorPlanMarkupCacheByFloorId.get(normalizedFloorId) || "");
+};
+
+const rememberFloorPlanMarkupCache = (floorId, planSvg) => {
+  const normalizedFloorId = Number(floorId);
+  if (!Number.isFinite(normalizedFloorId)) {
+    return;
+  }
+  const normalizedPlanSvg = typeof planSvg === "string" ? planSvg : "";
+  floorPlanMarkupCacheByFloorId.set(normalizedFloorId, normalizedPlanSvg);
+};
+
+const resolveFloorPlanRasterBlobUrl = async (dataUrl) => {
+  const key = String(dataUrl || "");
+  if (!key) {
+    return "";
+  }
+  const cachedBlobUrl = getCachedFloorPlanRasterBlobUrl(key);
+  if (cachedBlobUrl) {
+    return cachedBlobUrl;
+  }
+  if (floorPlanRasterBlobInFlight.has(key)) {
+    return floorPlanRasterBlobInFlight.get(key);
+  }
+  const conversionPromise = (async () => {
+    try {
+      const response = await fetch(key);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      rememberFloorPlanRasterBlobUrl(key, blobUrl);
+      return blobUrl;
+    } catch {
+      return "";
+    } finally {
+      floorPlanRasterBlobInFlight.delete(key);
+    }
+  })();
+  floorPlanRasterBlobInFlight.set(key, conversionPromise);
+  return conversionPromise;
+};
+
 const clearFloorPlanRasterBlobCache = () => {
+  floorPlanRasterBlobInFlight.clear();
   for (const blobUrl of floorPlanRasterBlobCache.values()) {
     URL.revokeObjectURL(blobUrl);
   }
@@ -1959,6 +2014,42 @@ const showTopAlert = (message, tone = "success") => {
   topAlertTimer = setTimeout(() => {
     hideTopAlert();
   }, 5000);
+};
+
+const updateSchemeLoadingIndicator = () => {
+  if (!schemeLoadingIndicator) {
+    return;
+  }
+  const hasActiveLoads = activeSchemeLoadingCount > 0;
+  schemeLoadingIndicator.classList.toggle("is-hidden", !hasActiveLoads);
+  schemeLoadingIndicator.setAttribute("aria-hidden", String(!hasActiveLoads));
+};
+
+const beginSchemeBackgroundLoad = (message = "Загрузка схемы...") => {
+  const requestId = ++schemeLoadingRequestId;
+  activeSchemeLoadingRequestId = requestId;
+  activeSchemeLoadingCount += 1;
+  if (schemeLoadingIndicatorText) {
+    schemeLoadingIndicatorText.textContent = message;
+  }
+  updateSchemeLoadingIndicator();
+  let closed = false;
+  return () => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    activeSchemeLoadingCount = Math.max(0, activeSchemeLoadingCount - 1);
+    if (activeSchemeLoadingCount === 0) {
+      activeSchemeLoadingRequestId = 0;
+      if (schemeLoadingIndicatorText) {
+        schemeLoadingIndicatorText.textContent = "Загрузка схемы...";
+      }
+    } else if (activeSchemeLoadingRequestId === requestId && schemeLoadingIndicatorText) {
+      schemeLoadingIndicatorText.textContent = "Загрузка схемы...";
+    }
+    updateSchemeLoadingIndicator();
+  };
 };
 
 const updateTopAlertHeight = () => {
@@ -11638,6 +11729,9 @@ const renderFloorPlan = (svgMarkup, options = {}) => {
   floorPlanDirty = false;
   clearSpaceSelection();
   hasFloorPlan = Boolean(svgMarkup);
+  if (requestedFloorId !== null) {
+    rememberFloorPlanMarkupCache(requestedFloorId, svgMarkup || "");
+  }
   updateFloorPlanActionLabel();
   updateFloorPlanSpacesVisibility();
   floorPlanEmbeddedRasterTemplate = null;
@@ -11684,37 +11778,10 @@ const renderFloorPlan = (svgMarkup, options = {}) => {
         embeddedImage.getAttribute("href") || embeddedImage.getAttributeNS("http://www.w3.org/1999/xlink", "href");
       if (imgSrc) {
         embeddedImage.remove();
-        // Convert data: URL to a Blob URL — browser keeps decoded pixels in memory
-        // instead of re-parsing the multi-MB base64 string on every composite.
-        let effectiveSrc = imgSrc;
-        const cachedBlobUrl = getCachedFloorPlanRasterBlobUrl(imgSrc);
-        if (cachedBlobUrl) {
-          effectiveSrc = cachedBlobUrl;
-        } else {
-          try {
-            const commaIdx = imgSrc.indexOf(",");
-            if (commaIdx > 0) {
-              const meta = imgSrc.substring(0, commaIdx); // e.g. "data:image/jpeg;base64"
-              const mimeMatch = meta.match(/data:([^;,]+)/);
-              const mime = mimeMatch ? mimeMatch[1] : "image/png";
-              const b64 = imgSrc.substring(commaIdx + 1);
-              const bin = atob(b64);
-              const bytes = new Uint8Array(bin.length);
-              for (let i = 0; i < bin.length; i++) {
-                bytes[i] = bin.charCodeAt(i);
-              }
-              const blob = new Blob([bytes], { type: mime });
-              const blobUrl = URL.createObjectURL(blob);
-              rememberFloorPlanRasterBlobUrl(imgSrc, blobUrl);
-              effectiveSrc = blobUrl;
-            }
-          } catch {
-            // Fallback to the original data URL if conversion fails.
-            effectiveSrc = imgSrc;
-          }
-        }
+        let effectiveSrc = getCachedFloorPlanRasterBlobUrl(imgSrc) || imgSrc;
         const nativeImg = document.createElement("img");
         nativeImg.className = "floor-plan-raster";
+        nativeImg.dataset.floorPlanSource = imgSrc;
         nativeImg.src = effectiveSrc;
         nativeImg.draggable = false;
         nativeImg.alt = "";
@@ -11724,6 +11791,31 @@ const renderFloorPlan = (svgMarkup, options = {}) => {
         svg.style.position = "absolute";
         svg.style.inset = "0";
         svg.style.background = "transparent";
+        if (effectiveSrc === imgSrc) {
+          const renderToken = ++latestFloorPlanRenderToken;
+          const targetFloorId = requestedFloorId;
+          void resolveFloorPlanRasterBlobUrl(imgSrc).then((blobUrl) => {
+            if (
+              !blobUrl ||
+              !nativeImg.isConnected ||
+              nativeImg.dataset.floorPlanSource !== imgSrc
+            ) {
+              return;
+            }
+            const activeFloorIdNow = normalizeFloorId(currentFloor?.id);
+            if (
+              targetFloorId !== null &&
+              activeFloorIdNow !== null &&
+              targetFloorId !== activeFloorIdNow
+            ) {
+              return;
+            }
+            if (renderToken < latestFloorPlanRenderToken) {
+              return;
+            }
+            nativeImg.src = blobUrl;
+          });
+        }
       }
     }
 
@@ -12541,7 +12633,17 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       }
       return;
     }
-    currentFloor = floor;
+    const cachedPlanSvg = getFloorPlanMarkupFromCache(floor.id);
+    const initialPlanSvg =
+      cachedPlanSvg ||
+      (typeof floor?.plan_svg === "string"
+        ? floor.plan_svg
+        : "");
+    currentFloor = {
+      ...floor,
+      plan_svg: initialPlanSvg,
+      responsible_employee_id: floor?.responsible_employee_id || "",
+    };
     if (floorTitle) {
       floorTitle.textContent = floor.name || `Этаж ${floor.level}`;
     }
@@ -12552,33 +12654,55 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     if (floorLevelTag) {
       floorLevelTag.textContent = `Этаж ${floor.level}`;
     }
-
-    const floorSpacesPromise = loadApiResponse(`/api/floors/${floor.id}/spaces`);
-    const floorDetails = await loadFloorDetailsFresh(floor.id);
-    if (!isStillOnRequestedFloorRoute()) {
-      return;
-    }
-    const planSvg =
-      typeof floorDetails?.plan_svg === "string"
-        ? floorDetails.plan_svg
-        : typeof floor?.plan_svg === "string"
-          ? floor.plan_svg
-          : "";
-    currentFloor = {
-      ...floor,
-      plan_svg: planSvg,
-      responsible_employee_id:
-        floorDetails?.responsible_employee_id || floor?.responsible_employee_id || "",
-    };
     applyRoleRestrictions(getUserInfo());
     if (editFloorBtn) {
       editFloorBtn.classList.toggle("is-hidden", !canManageFloorResources(getUserInfo(), currentFloor));
     }
-    renderFloorPlan(planSvg, { floorId: floor.id });
+
+    const floorSpacesPromise = loadApiResponse(`/api/floors/${floor.id}/spaces`);
+    renderFloorPlan(initialPlanSvg, { floorId: floor.id });
     await loadFloorSpaces(floor.id, {
       prefetchedResponse: await floorSpacesPromise,
       skipIfUnchanged: false,
     });
+    const finishSchemeLoad = beginSchemeBackgroundLoad("Обновляем схему этажа...");
+    void loadFloorDetailsFresh(floor.id)
+      .then((floorDetails) => {
+        if (!isStillOnRequestedFloorRoute()) {
+          return;
+        }
+        const previousPlanSvg = String(currentFloor?.plan_svg || "");
+        const freshPlanSvg =
+          typeof floorDetails?.plan_svg === "string"
+            ? floorDetails.plan_svg
+            : previousPlanSvg;
+        rememberFloorPlanMarkupCache(floor.id, freshPlanSvg);
+        currentFloor = {
+          ...floor,
+          ...floorDetails,
+          plan_svg: freshPlanSvg,
+          responsible_employee_id:
+            floorDetails?.responsible_employee_id || floor?.responsible_employee_id || "",
+        };
+        applyRoleRestrictions(getUserInfo());
+        if (editFloorBtn) {
+          editFloorBtn.classList.toggle("is-hidden", !canManageFloorResources(getUserInfo(), currentFloor));
+        }
+        if (freshPlanSvg !== previousPlanSvg) {
+          renderFloorPlan(freshPlanSvg, { floorId: floor.id });
+        }
+      })
+      .catch((error) => {
+        if (!isStillOnRequestedFloorRoute()) {
+          return;
+        }
+        if (!currentFloor?.plan_svg) {
+          setFloorStatus(error.message, "error");
+        }
+      })
+      .finally(() => {
+        finishSchemeLoad();
+      });
   } catch (error) {
     if (!isStillOnRequestedFloorRoute()) {
       return;
@@ -12770,11 +12894,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       throw new Error("Коворкинг привязан к другому этажу. Обновите страницу и повторите попытку.");
     }
 
-    // Floor details depends on floor.id; building is already in flight — await both together.
-    const [floorDetails, building] = await Promise.all([
-      loadFloorDetailsFresh(floor.id),
-      buildingPromise,
-    ]);
+    const building = await buildingPromise;
     if (!isStillOnRequestedSpaceRoute()) {
       return;
     }
@@ -12789,17 +12909,18 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
         }
       }
     }
+    const cachedFloorPlanSvg = getFloorPlanMarkupFromCache(floor.id);
     const resolvedFloorPlanSvg =
-      typeof floorDetails?.plan_svg === "string"
-        ? floorDetails.plan_svg
-        : typeof floor?.plan_svg === "string"
-          ? floor.plan_svg
-          : "";
+      cachedFloorPlanSvg ||
+      (typeof floor?.plan_svg === "string"
+        ? floor.plan_svg
+        : "");
+    rememberFloorPlanMarkupCache(floor.id, resolvedFloorPlanSvg);
     currentFloor = {
       ...floor,
       plan_svg: resolvedFloorPlanSvg,
       responsible_employee_id:
-        floorDetails?.responsible_employee_id || floor?.responsible_employee_id || "",
+        floor?.responsible_employee_id || "",
     };
 
     if (spaceBreadcrumbBuilding) {
@@ -12889,6 +13010,35 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     if (spaceSnapshot) {
       spaceSnapshot.classList.toggle("can-manage-bookings", canBookForOthers());
     }
+    const finishSchemeLoad = beginSchemeBackgroundLoad("Обновляем схему коворкинга...");
+    void loadFloorDetailsFresh(floor.id)
+      .then((floorDetails) => {
+        if (!isStillOnRequestedSpaceRoute()) {
+          return;
+        }
+        const previousPlanSvg = String(currentFloor?.plan_svg || "");
+        const freshPlanSvg =
+          typeof floorDetails?.plan_svg === "string"
+            ? floorDetails.plan_svg
+            : previousPlanSvg;
+        rememberFloorPlanMarkupCache(floor.id, freshPlanSvg);
+        currentFloor = {
+          ...floor,
+          ...floorDetails,
+          plan_svg: freshPlanSvg,
+          responsible_employee_id:
+            floorDetails?.responsible_employee_id || floor?.responsible_employee_id || "",
+        };
+        if (space?.kind === "coworking" && freshPlanSvg !== previousPlanSvg) {
+          renderSpaceSnapshot(space, freshPlanSvg);
+        }
+      })
+      .catch(() => {
+        // Keep already visible content if background refresh failed.
+      })
+      .finally(() => {
+        finishSchemeLoad();
+      });
     await (
       desksLoadPromise ||
       loadSpaceDesks(space.id, {

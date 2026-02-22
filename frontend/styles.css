@@ -606,6 +606,44 @@ button:disabled {
   border-color: var(--color-red-200);
 }
 
+.scheme-loading-indicator {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1250;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-default);
+  background: rgba(15, 23, 42, 0.9);
+  color: var(--color-slate-50);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.25);
+  pointer-events: none;
+}
+
+.scheme-loading-indicator.is-hidden {
+  display: none;
+}
+
+.scheme-loading-indicator-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #ffffff;
+  animation: schemeLoaderSpin 0.8s linear infinite;
+}
+
+@keyframes schemeLoaderSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .buildings-grid {
   --buildings-grid-gap: 16px;
   display: grid;
