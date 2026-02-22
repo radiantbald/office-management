@@ -12,7 +12,7 @@ import {
   cacheAvatarData,
 } from "./auth.js";
 
-import { makeApiRequest, createCancellableRequest } from "./api.js";
+import { makeApiRequest, createCancellableRequest, ApiError } from "./api.js";
 
 import { createStatusManager } from "./status.js";
 
@@ -1311,6 +1311,8 @@ const ACTIVITY_WINDOW_MS = 15 * 60 * 1000;
 
 let lastUserActivityAt = Date.now();
 let refreshInFlight = false;
+let sessionRecoveryInFlight = null;
+let reloginInProgress = false;
 
 const markUserActivity = () => {
   lastUserActivityAt = Date.now();
@@ -1441,6 +1443,42 @@ const fetchOfficeToken = async (accessToken) => {
   }
 };
 
+const forceReloginAfterSessionExpiry = async (message = "Сессия истекла. Авторизуйтесь снова.") => {
+  if (reloginInProgress) {
+    return;
+  }
+  reloginInProgress = true;
+  await logoutOfficeSession().catch(() => false);
+  clearAuthStorage();
+  setSessionClaims(null);
+  showAuthLogin();
+  setAuthStep("phone");
+  setAuthStatus(message, "error");
+};
+
+const recoverOfficeSession = async () => {
+  if (sessionRecoveryInFlight) {
+    return sessionRecoveryInFlight;
+  }
+  sessionRecoveryInFlight = (async () => {
+    const refreshed = await refreshAccessToken();
+    if (refreshed && isOfficeAccessTokenValid()) {
+      return true;
+    }
+
+    const externalToken = getAuthToken();
+    if (!externalToken) {
+      return false;
+    }
+
+    const officeTokenResult = await fetchOfficeToken(externalToken);
+    return Boolean(officeTokenResult?.success && isOfficeAccessTokenValid());
+  })().finally(() => {
+    sessionRecoveryInFlight = null;
+  });
+  return sessionRecoveryInFlight;
+};
+
 const fetchAndStoreWBBand = async (accessToken, user) => {
   try {
     if (!accessToken || !user) {
@@ -1562,6 +1600,7 @@ const initializeAuth = async () => {
   
   // Start automatic token refresh checking only for authenticated session.
   if (getSessionClaims()) {
+    reloginInProgress = false;
     startAutoTokenRefresh();
   }
 
@@ -1814,7 +1853,7 @@ const attachRoutePrefetchHandlers = (element, prefetchFn) => {
   );
 };
 
-const apiRequest = async (path, options = {}) => {
+const apiRequest = async (path, options = {}, retryAttempted = false) => {
   if (shouldBlockEmployeeRequest(path, options)) {
     throw new Error("Недостаточно прав для выполнения действия.");
   }
@@ -1823,7 +1862,20 @@ const apiRequest = async (path, options = {}) => {
     // Mutations may affect many dependent entities, so invalidate read cache.
     clearApiResponseCache();
   }
-  return makeApiRequest(path, options);
+  try {
+    return await makeApiRequest(path, options);
+  } catch (error) {
+    const status = Number(error?.status) || 0;
+    if (status !== 401 || retryAttempted) {
+      throw error;
+    }
+    const recovered = await recoverOfficeSession();
+    if (!recovered) {
+      await forceReloginAfterSessionExpiry();
+      throw new ApiError("Сессия истекла. Авторизуйтесь снова.", 401);
+    }
+    return apiRequest(path, options, true);
+  }
 };
 
 /* createCancellableRequest → imported from api.js (now takes requestFn param) */
@@ -14286,6 +14338,7 @@ if (floorPlanPreview && floorPlanCanvas) {
 }
 
 const handleAuthSuccess = async (token, user) => {
+  reloginInProgress = false;
   setAuthToken(token);
   if (user) {
     setUserInfo(user);

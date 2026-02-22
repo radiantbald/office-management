@@ -26,6 +26,15 @@ const isUnsafeMethod = (method) => {
   return !["GET", "HEAD", "OPTIONS", "TRACE"].includes(normalized);
 };
 
+export class ApiError extends Error {
+  constructor(message, status, payload = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = Number(status) || 0;
+    this.payload = payload;
+  }
+}
+
 /**
  * Base HTTP helper — parses the JSON response.
  *
@@ -61,7 +70,7 @@ export const makeApiRequest = async (path, options = {}) => {
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     const message = error.error || "Ошибка запроса";
-    throw new Error(message);
+    throw new ApiError(message, response.status, error);
   }
   if (response.status === 204) {
     return null;
