@@ -581,6 +581,9 @@ const hasMatchingFloorUpdatedAt = (serverFloor, cachedFloorDetails) => {
   return serverToken === cacheToken;
 };
 
+const hasKnownFloorUpdatedAt = (floorLike) =>
+  Boolean(normalizeFloorUpdatedAtToken(floorLike?.updated_at ?? floorLike?.updatedAt));
+
 const rememberFloorDetailsInClientCache = (floorId, floorDetails) => {
   const normalizedFloorId = Number(floorId);
   if (!Number.isFinite(normalizedFloorId) || !floorDetails) {
@@ -12814,7 +12817,19 @@ const loadFloorPage = async (buildingID, floorNumber) => {
   };
   setPageMode("floor");
   clearFloorStatus();
-  renderFloorPlan("", { persistCache: false });
+  const warmFloorFromSpaceRoute =
+    currentFloor &&
+    Number(currentFloor?.building_id ?? currentFloor?.buildingId) === expectedBuildingID &&
+    Number(currentFloor?.level) === expectedFloorNumber
+      ? currentFloor
+      : null;
+  if (warmFloorFromSpaceRoute) {
+    renderFloorPlan(String(warmFloorFromSpaceRoute?.plan_svg || ""), {
+      floorId: warmFloorFromSpaceRoute.id,
+    });
+  } else {
+    renderFloorPlan("", { persistCache: false });
+  }
   renderFloorSpaces([]);
   currentFloor = null;
   try {
@@ -12870,7 +12885,9 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     const hasCachedPlanMarkup = hasFloorPlanMarkupCacheEntry(floor.id);
     const cachedPlanSvg = getFloorPlanMarkupFromCache(floor.id);
     const canUseClientPlanImmediately =
-      hasCachedPlanMarkup && hasMatchingFloorUpdatedAt(floor, cachedFloorDetails);
+      hasCachedPlanMarkup &&
+      (hasMatchingFloorUpdatedAt(floor, cachedFloorDetails) ||
+        (!hasKnownFloorUpdatedAt(floor) && hasKnownFloorUpdatedAt(cachedFloorDetails)));
     const initialPlanSvg =
       (canUseClientPlanImmediately
         ? cachedPlanSvg
@@ -13158,7 +13175,9 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
     const hasCachedPlanMarkup = hasFloorPlanMarkupCacheEntry(floor.id);
     const cachedFloorPlanSvg = getFloorPlanMarkupFromCache(floor.id);
     const canUseClientPlanImmediately =
-      hasCachedPlanMarkup && hasMatchingFloorUpdatedAt(floor, cachedFloorDetails);
+      hasCachedPlanMarkup &&
+      (hasMatchingFloorUpdatedAt(floor, cachedFloorDetails) ||
+        (!hasKnownFloorUpdatedAt(floor) && hasKnownFloorUpdatedAt(cachedFloorDetails)));
     const resolvedFloorPlanSvg =
       (canUseClientPlanImmediately
         ? cachedFloorPlanSvg
