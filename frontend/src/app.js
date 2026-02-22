@@ -621,6 +621,63 @@ const shouldDelayFloorPlanHotSwap = ({ forSpaceSnapshot = false } = {}) => {
   return false;
 };
 
+let scheduledFloorPlanHotSwapToken = 0;
+const scheduleFloorPlanHotSwap = (svgMarkup, { floorId = null, forSpaceSnapshot = false } = {}) => {
+  const plannedSvgMarkup = String(svgMarkup || "");
+  const plannedFloorId = normalizeFloorId(floorId ?? currentFloor?.id);
+  if (plannedFloorId === null) {
+    return;
+  }
+  const startedAt = Date.now();
+  const maxDelayMs = 4000;
+  const checkIntervalMs = 120;
+  const token = ++scheduledFloorPlanHotSwapToken;
+  const run = () => {
+    if (token !== scheduledFloorPlanHotSwapToken) {
+      return;
+    }
+    const activeFloorId = normalizeFloorId(currentFloor?.id);
+    if (activeFloorId === null || activeFloorId !== plannedFloorId) {
+      return;
+    }
+    const timeoutReached = Date.now() - startedAt >= maxDelayMs;
+    if (!shouldDelayFloorPlanHotSwap({ forSpaceSnapshot }) || timeoutReached) {
+      renderFloorPlan(plannedSvgMarkup, { floorId: plannedFloorId });
+      return;
+    }
+    window.setTimeout(run, checkIntervalMs);
+  };
+  run();
+};
+
+let scheduledSpaceSnapshotHotSwapToken = 0;
+const scheduleSpaceSnapshotHotSwap = (space, floorPlanMarkup, { floorId = null } = {}) => {
+  const plannedFloorId = normalizeFloorId(floorId ?? currentFloor?.id);
+  if (plannedFloorId === null) {
+    return;
+  }
+  const startedAt = Date.now();
+  const maxDelayMs = 4000;
+  const checkIntervalMs = 120;
+  const token = ++scheduledSpaceSnapshotHotSwapToken;
+  const run = () => {
+    if (token !== scheduledSpaceSnapshotHotSwapToken) {
+      return;
+    }
+    const activeFloorId = normalizeFloorId(currentFloor?.id);
+    if (activeFloorId === null || activeFloorId !== plannedFloorId) {
+      return;
+    }
+    const timeoutReached = Date.now() - startedAt >= maxDelayMs;
+    if (!shouldDelayFloorPlanHotSwap({ forSpaceSnapshot: true }) || timeoutReached) {
+      renderSpaceSnapshot(space, floorPlanMarkup);
+      return;
+    }
+    window.setTimeout(run, checkIntervalMs);
+  };
+  run();
+};
+
 const resolveFloorPlanRasterBlobUrl = async (dataUrl) => {
   const key = String(dataUrl || "");
   if (!key) {
@@ -12828,8 +12885,6 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     renderFloorPlan(String(warmFloorFromSpaceRoute?.plan_svg || ""), {
       floorId: warmFloorFromSpaceRoute.id,
     });
-  } else {
-    renderFloorPlan("", { persistCache: false });
   }
   renderFloorSpaces([]);
   currentFloor = null;
@@ -12948,8 +13003,12 @@ const loadFloorPage = async (buildingID, floorNumber) => {
         if (editFloorBtn) {
           editFloorBtn.classList.toggle("is-hidden", !canManageFloorResources(getUserInfo(), currentFloor));
         }
-        if (freshPlanSvg !== previousPlanSvg && !shouldDelayFloorPlanHotSwap()) {
-          renderFloorPlan(freshPlanSvg, { floorId: floor.id });
+        if (freshPlanSvg !== previousPlanSvg) {
+          if (shouldDelayFloorPlanHotSwap()) {
+            scheduleFloorPlanHotSwap(freshPlanSvg, { floorId: floor.id });
+          } else {
+            renderFloorPlan(freshPlanSvg, { floorId: floor.id });
+          }
         }
       })
       .catch((error) => {
@@ -13304,10 +13363,13 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
         };
         if (
           space?.kind === "coworking" &&
-          freshPlanSvg !== previousPlanSvg &&
-          !shouldDelayFloorPlanHotSwap({ forSpaceSnapshot: true })
+          freshPlanSvg !== previousPlanSvg
         ) {
-          renderSpaceSnapshot(space, freshPlanSvg);
+          if (shouldDelayFloorPlanHotSwap({ forSpaceSnapshot: true })) {
+            scheduleSpaceSnapshotHotSwap(space, freshPlanSvg, { floorId: floor.id });
+          } else {
+            renderSpaceSnapshot(space, freshPlanSvg);
+          }
         }
       })
       .catch(() => {
