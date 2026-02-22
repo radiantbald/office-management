@@ -11778,11 +11778,9 @@ const renderFloorPlan = (svgMarkup, options = {}) => {
         embeddedImage.getAttribute("href") || embeddedImage.getAttributeNS("http://www.w3.org/1999/xlink", "href");
       if (imgSrc) {
         embeddedImage.remove();
-        let effectiveSrc = getCachedFloorPlanRasterBlobUrl(imgSrc) || imgSrc;
         const nativeImg = document.createElement("img");
         nativeImg.className = "floor-plan-raster";
         nativeImg.dataset.floorPlanSource = imgSrc;
-        nativeImg.src = effectiveSrc;
         nativeImg.draggable = false;
         nativeImg.alt = "";
         // Insert the native image before the SVG so SVG overlay sits on top.
@@ -11791,30 +11789,48 @@ const renderFloorPlan = (svgMarkup, options = {}) => {
         svg.style.position = "absolute";
         svg.style.inset = "0";
         svg.style.background = "transparent";
-        if (effectiveSrc === imgSrc) {
-          const renderToken = ++latestFloorPlanRenderToken;
-          const targetFloorId = requestedFloorId;
-          void resolveFloorPlanRasterBlobUrl(imgSrc).then((blobUrl) => {
-            if (
-              !blobUrl ||
-              !nativeImg.isConnected ||
-              nativeImg.dataset.floorPlanSource !== imgSrc
-            ) {
-              return;
-            }
-            const activeFloorIdNow = normalizeFloorId(currentFloor?.id);
-            if (
-              targetFloorId !== null &&
-              activeFloorIdNow !== null &&
-              targetFloorId !== activeFloorIdNow
-            ) {
-              return;
-            }
-            if (renderToken < latestFloorPlanRenderToken) {
-              return;
-            }
-            nativeImg.src = blobUrl;
-          });
+        const renderToken = ++latestFloorPlanRenderToken;
+        const targetFloorId = requestedFloorId;
+        const markRasterReady = () => {
+          nativeImg.classList.add("is-ready");
+        };
+        const applyRasterSrcIfStillRelevant = (src) => {
+          if (!src || !nativeImg.isConnected || nativeImg.dataset.floorPlanSource !== imgSrc) {
+            return false;
+          }
+          const activeFloorIdNow = normalizeFloorId(currentFloor?.id);
+          if (
+            targetFloorId !== null &&
+            activeFloorIdNow !== null &&
+            targetFloorId !== activeFloorIdNow
+          ) {
+            return false;
+          }
+          if (renderToken < latestFloorPlanRenderToken) {
+            return false;
+          }
+          nativeImg.src = src;
+          if (nativeImg.complete) {
+            markRasterReady();
+          } else {
+            nativeImg.addEventListener("load", markRasterReady, { once: true });
+            nativeImg.addEventListener("error", markRasterReady, { once: true });
+          }
+          return true;
+        };
+        const cachedBlobUrl = getCachedFloorPlanRasterBlobUrl(imgSrc);
+        if (cachedBlobUrl && applyRasterSrcIfStillRelevant(cachedBlobUrl)) {
+          // Cached underlay is ready immediately, polygons are already interactive.
+        } else {
+          const finishRasterLoad = beginSchemeBackgroundLoad("Загружаем подложку схемы...");
+          void resolveFloorPlanRasterBlobUrl(imgSrc)
+            .then((blobUrl) => {
+              const finalSrc = blobUrl || imgSrc;
+              applyRasterSrcIfStillRelevant(finalSrc);
+            })
+            .finally(() => {
+              finishRasterLoad();
+            });
         }
       }
     }

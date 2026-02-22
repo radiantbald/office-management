@@ -3118,10 +3118,16 @@ body.space-editing .space-booking-panel {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  opacity: 0;
+  transition: opacity 0.2s ease;
   pointer-events: none;
   image-rendering: auto;
   /* Own compositing layer — transforms move only this texture (like a photo viewer). */
   will-change: transform;
+}
+
+.floor-plan-canvas > img.floor-plan-raster.is-ready {
+  opacity: 1;
 }
 
 .floor-plan-canvas svg {
