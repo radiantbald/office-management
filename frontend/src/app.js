@@ -12497,6 +12497,7 @@ const maxFloorPlanRasterDimension = 5000;
 const maxFloorPlanRasterPixels = 18_000_000;
 const pdfBaseDpi = 72;
 const floorPlanPdfRasterDpi = 250;
+const floorPlanRasterWebpQuality = 0.84;
 
 const normalizeSvgMarkup = (markup) => {
   if (!markup) {
@@ -12509,6 +12510,20 @@ const normalizeSvgMarkup = (markup) => {
     return markup.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
   }
   return markup;
+};
+
+const optimizeSvgMarkup = (markup) => {
+  const normalized = String(markup || "");
+  if (!normalized) {
+    return "";
+  }
+  // Remove XML prolog/comments and collapse gaps between tags.
+  return normalized
+    .replace(/^\uFEFF/, "")
+    .replace(/<\?xml[\s\S]*?\?>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/>\s+</g, "><")
+    .trim();
 };
 
 const getUtf8ByteLength = (value) => new TextEncoder().encode(String(value || "")).length;
@@ -12566,12 +12581,38 @@ const buildSvgWithImage = (dataUrl, width, height) => {
   return svgMarkup;
 };
 
+const encodeCanvasToDataUrl = (canvas) => {
+  const webpDataUrl = canvas.toDataURL("image/webp", floorPlanRasterWebpQuality);
+  if (typeof webpDataUrl === "string" && webpDataUrl.startsWith("data:image/webp")) {
+    return webpDataUrl;
+  }
+  return canvas.toDataURL("image/png");
+};
+
+const rasterizeImageToOptimizedDataUrl = (image, width, height) => {
+  const safeWidth = Math.max(1, Math.round(width || 1));
+  const safeHeight = Math.max(1, Math.round(height || 1));
+  const canvas = document.createElement("canvas");
+  canvas.width = safeWidth;
+  canvas.height = safeHeight;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    throw new Error("Не удалось подготовить изображение к оптимизации.");
+  }
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(image, 0, 0, safeWidth, safeHeight);
+  return encodeCanvasToDataUrl(canvas);
+};
+
 const rasterFileToSvgMarkup = async (file) => {
   const dataUrl = await readFileAsDataUrl(file);
   const image = await loadImageFromDataUrl(dataUrl);
-  const width = Math.max(1, Math.round(image.naturalWidth || image.width || 1));
-  const height = Math.max(1, Math.round(image.naturalHeight || image.height || 1));
-  return buildSvgWithImage(dataUrl, width, height);
+  const sourceWidth = Math.max(1, Math.round(image.naturalWidth || image.width || 1));
+  const sourceHeight = Math.max(1, Math.round(image.naturalHeight || image.height || 1));
+  const fittedSize = fitImageToRasterBudget(sourceWidth, sourceHeight);
+  const optimizedDataUrl = rasterizeImageToOptimizedDataUrl(image, fittedSize.width, fittedSize.height);
+  return buildSvgWithImage(optimizedDataUrl, fittedSize.width, fittedSize.height);
 };
 
 const pdfFileToSvgMarkup = async (file) => {
@@ -12596,7 +12637,7 @@ const pdfFileToSvgMarkup = async (file) => {
       throw new Error("Не удалось подготовить PDF для обработки.");
     }
     await page.render({ canvasContext: context, viewport, background: "#ffffff" }).promise;
-    const imageDataUrl = canvas.toDataURL("image/png");
+    const imageDataUrl = encodeCanvasToDataUrl(canvas);
     return buildSvgWithImage(imageDataUrl, width, height);
   } finally {
     await pdfDocument.destroy();
@@ -12615,7 +12656,7 @@ const fileToSvgMarkup = async (file) => {
   const isPdfFile = file.type === "application/pdf" || lowerName.endsWith(".pdf");
   if (isSvgFile) {
     const raw = await readFileAsText(file);
-    const normalized = normalizeSvgMarkup(raw.trim());
+    const normalized = normalizeSvgMarkup(optimizeSvgMarkup(raw));
     if (!normalized) {
       throw new Error("Не удалось прочитать SVG.");
     }
