@@ -7886,6 +7886,37 @@ const coworkingDeskSummaryCache = new Map();
 let coworkingDeskSummaryRequestId = 0;
 
 const getCoworkingDeskSummaryKey = (spaceId, date) => `${spaceId}:${date}`;
+const getCachedCoworkingDeskSummary = (spaceId, date) => {
+  const cacheKey = getCoworkingDeskSummaryKey(spaceId, date);
+  return coworkingDeskSummaryCache.get(cacheKey) || null;
+};
+const rememberCoworkingDeskSummary = (spaceId, date, summary) => {
+  const cacheKey = getCoworkingDeskSummaryKey(spaceId, date);
+  coworkingDeskSummaryCache.set(cacheKey, summary);
+};
+const buildCoworkingDeskSummaryFromDesks = (desks = []) => {
+  const list = Array.isArray(desks) ? desks : [];
+  let freeCount = 0;
+  let occupiedCount = 0;
+  list.forEach((desk) => {
+    applyDeskBookingPayload(desk);
+    if (desk.bookingStatus === "free") {
+      freeCount += 1;
+    } else {
+      occupiedCount += 1;
+    }
+  });
+  return { freeCount, occupiedCount, totalCount: list.length };
+};
+const syncCoworkingDeskSummaryCacheForDesks = (spaceId, desks, date) => {
+  const normalizedSpaceId = Number(spaceId);
+  const normalizedDate = normalizeBookingDate(date);
+  if (!Number.isFinite(normalizedSpaceId) || !normalizedDate) {
+    return;
+  }
+  const summary = buildCoworkingDeskSummaryFromDesks(desks);
+  rememberCoworkingDeskSummary(normalizedSpaceId, normalizedDate, summary);
+};
 
 const getAvailabilityColorPair = (freeCount, totalCount) => {
   if (!Number.isFinite(totalCount) || totalCount <= 0) {
@@ -7912,26 +7943,15 @@ const updateCoworkingAvailabilityTag = (tag, occupiedCount, totalCount, freeCoun
 };
 
 const loadCoworkingDeskSummary = async (spaceId, date) => {
-  const cacheKey = getCoworkingDeskSummaryKey(spaceId, date);
-  if (coworkingDeskSummaryCache.has(cacheKey)) {
-    return coworkingDeskSummaryCache.get(cacheKey);
+  const cached = getCachedCoworkingDeskSummary(spaceId, date);
+  if (cached) {
+    return cached;
   }
   const response = await apiRequest(
     `/api/spaces/${encodeURIComponent(spaceId)}/desks?date=${encodeURIComponent(date)}`
   );
-  const desks = Array.isArray(response?.items) ? response.items : [];
-  let freeCount = 0;
-  let occupiedCount = 0;
-  desks.forEach((desk) => {
-    applyDeskBookingPayload(desk);
-    if (desk.bookingStatus === "free") {
-      freeCount += 1;
-    } else {
-      occupiedCount += 1;
-    }
-  });
-  const summary = { freeCount, occupiedCount, totalCount: desks.length };
-  coworkingDeskSummaryCache.set(cacheKey, summary);
+  const summary = buildCoworkingDeskSummaryFromDesks(Array.isArray(response?.items) ? response.items : []);
+  rememberCoworkingDeskSummary(spaceId, date, summary);
   return summary;
 };
 
@@ -8048,6 +8068,7 @@ const renderFloorSpacesList = (spaces) => {
     restoreAddSpaceBtnHome();
   }
   const spacesToRender = Array.isArray(spaces) ? spaces : [];
+  const availabilityDate = formatPickerDate(new Date());
   floorSpacesList.replaceChildren();
   const sortByName = (left, right) =>
     (left?.name || "").localeCompare(right?.name || "", "ru", {
@@ -8126,7 +8147,17 @@ const renderFloorSpacesList = (spaces) => {
     if (space.kind === "coworking") {
       const availabilityTag = document.createElement("span");
       availabilityTag.className = "space-availability-tag pill number-pill";
-      availabilityTag.textContent = "— / —";
+      const cachedSummary = getCachedCoworkingDeskSummary(space.id, availabilityDate);
+      if (cachedSummary) {
+        updateCoworkingAvailabilityTag(
+          availabilityTag,
+          cachedSummary.occupiedCount,
+          cachedSummary.totalCount,
+          cachedSummary.freeCount
+        );
+      } else {
+        availabilityTag.textContent = "— / —";
+      }
       selectButton.appendChild(availabilityTag);
     }
 
@@ -10568,6 +10599,9 @@ const refreshDeskCollectionsView = () => {
   }
   renderSpaceDeskList(currentDesks);
   renderSpaceAttendeesList(currentDesks);
+  if (currentSpace?.kind === "coworking" && currentSpace?.id) {
+    syncCoworkingDeskSummaryCacheForDesks(currentSpace.id, currentDesks, formatPickerDate(new Date()));
+  }
 };
 
 const setDeskBookingInFlight = (deskId, inFlight) => {
@@ -10632,6 +10666,17 @@ const loadSpaceDesks = async (
     }
     syncBookingsFromDesks(normalized.desks);
     currentDesks = normalized.desks;
+    if (currentSpace?.kind === "coworking" && currentSpace?.id) {
+      const effectiveDate = normalizedDate || formatPickerDate(new Date());
+      syncCoworkingDeskSummaryCacheForDesks(currentSpace.id, currentDesks, effectiveDate);
+      if (effectiveDate !== formatPickerDate(new Date())) {
+        syncCoworkingDeskSummaryCacheForDesks(
+          currentSpace.id,
+          currentDesks,
+          formatPickerDate(new Date())
+        );
+      }
+    }
     pendingDeskUpdates = new Map();
     pendingDeskCreates = new Map();
     pendingDeskDeletes = new Set();
@@ -12886,8 +12931,10 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     renderFloorPlan(String(warmFloorFromSpaceRoute?.plan_svg || ""), {
       floorId: warmFloorFromSpaceRoute.id,
     });
+    renderFloorSpaces(currentSpaces);
+  } else {
+    renderFloorSpaces([]);
   }
-  renderFloorSpaces([]);
   currentFloor = null;
   try {
     // Fetch buildings list and floors in parallel — both only need buildingID.
