@@ -12954,10 +12954,12 @@ const loadFloorPage = async (buildingID, floorNumber) => {
     warmFloorLevel === expectedFloorNumber
       ? currentFloor
       : null;
+  const warmPlanSvg = String(warmFloorFromSpaceRoute?.plan_svg || "");
+  const warmSpacesSnapshot = warmFloorFromSpaceRoute && Array.isArray(currentSpaces) ? [...currentSpaces] : [];
   if (warmFloorFromSpaceRoute) {
     // Restore spaces first so sidebar visibility is stable before plan repaint.
-    renderFloorSpaces(currentSpaces);
-    renderFloorPlan(String(warmFloorFromSpaceRoute?.plan_svg || ""), {
+    renderFloorSpaces(warmSpacesSnapshot);
+    renderFloorPlan(warmPlanSvg, {
       floorId: warmFloorFromSpaceRoute.id,
     });
     // Hydrate polygons immediately from warm state; don't wait for network refresh.
@@ -13051,11 +13053,21 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       editFloorBtn.classList.toggle("is-hidden", !canManageFloorResources(getUserInfo(), currentFloor));
     }
 
+    const isWarmFloorContinuation =
+      Boolean(warmFloorFromSpaceRoute) &&
+      Number(warmFloorFromSpaceRoute?.id) === Number(floor.id);
+    const shouldKeepWarmPlan =
+      isWarmFloorContinuation && Boolean(warmPlanSvg) && initialPlanSvg === warmPlanSvg;
+    if (isWarmFloorContinuation) {
+      floorSpacesRenderFingerprint.set(Number(floor.id) || 0, buildFloorSpacesFingerprint(warmSpacesSnapshot));
+    }
     const floorSpacesPromise = loadApiResponse(`/api/floors/${floor.id}/spaces`);
-    renderFloorPlan(initialPlanSvg, { floorId: floor.id });
+    if (!shouldKeepWarmPlan) {
+      renderFloorPlan(initialPlanSvg, { floorId: floor.id });
+    }
     await loadFloorSpaces(floor.id, {
       prefetchedResponse: await floorSpacesPromise,
-      skipIfUnchanged: false,
+      skipIfUnchanged: isWarmFloorContinuation,
     });
     const shouldShowInitialSchemeLoader = !cachedFloorDetails && !hasCachedPlanMarkup && !initialPlanSvg;
     const finishSchemeLoad = shouldShowInitialSchemeLoader
