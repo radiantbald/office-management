@@ -7935,11 +7935,25 @@ const updateCoworkingAvailabilityTag = (tag, occupiedCount, totalCount, freeCoun
   if (!tag) {
     return;
   }
+  tag.classList.remove("is-loading");
+  tag.setAttribute("aria-busy", "false");
   tag.textContent = `${occupiedCount} / ${totalCount}`;
   const colors = getAvailabilityColorPair(freeCount, totalCount);
   tag.style.color = colors.text;
   tag.style.backgroundColor = colors.background;
   tag.style.borderColor = colors.border;
+};
+
+const setCoworkingAvailabilityTagLoading = (tag) => {
+  if (!tag) {
+    return;
+  }
+  tag.classList.add("is-loading");
+  tag.setAttribute("aria-busy", "true");
+  tag.textContent = "";
+  tag.style.color = "";
+  tag.style.backgroundColor = "";
+  tag.style.borderColor = "";
 };
 
 const loadCoworkingDeskSummary = async (spaceId, date) => {
@@ -7970,11 +7984,16 @@ const refreshCoworkingAvailability = async (spaces) => {
         `.space-list-item[data-space-id="${String(space.id)}"]`
       );
       const tag = item ? item.querySelector(".space-availability-tag") : null;
-      if (tag) {
-        tag.textContent = "— / —";
-        tag.style.color = "";
-        tag.style.backgroundColor = "";
-        tag.style.borderColor = "";
+      const cachedSummary = getCachedCoworkingDeskSummary(space.id, date);
+      if (cachedSummary) {
+        updateCoworkingAvailabilityTag(
+          tag,
+          cachedSummary.occupiedCount,
+          cachedSummary.totalCount,
+          cachedSummary.freeCount
+        );
+      } else {
+        setCoworkingAvailabilityTagLoading(tag);
       }
       try {
         const summary = await loadCoworkingDeskSummary(space.id, date);
@@ -7989,7 +8008,12 @@ const refreshCoworkingAvailability = async (spaces) => {
         );
       } catch (error) {
         if (tag) {
-          tag.textContent = "— / —";
+          tag.classList.remove("is-loading");
+          tag.setAttribute("aria-busy", "false");
+          tag.textContent = "?";
+          tag.style.color = "";
+          tag.style.backgroundColor = "";
+          tag.style.borderColor = "";
         }
       }
     })
@@ -8156,7 +8180,7 @@ const renderFloorSpacesList = (spaces) => {
           cachedSummary.freeCount
         );
       } else {
-        availabilityTag.textContent = "— / —";
+        setCoworkingAvailabilityTagLoading(availabilityTag);
       }
       selectButton.appendChild(availabilityTag);
     }
@@ -8557,6 +8581,9 @@ const renderSpaceDeskList = (desks) => {
     return;
   }
   const list = Array.isArray(desks) ? desks : [];
+  if (currentSpace?.kind === "coworking" && currentSpace?.id) {
+    syncCoworkingDeskSummaryCacheForDesks(currentSpace.id, list, formatPickerDate(new Date()));
+  }
   spaceDesksList.replaceChildren();
   if (list.length === 0) {
     spaceDesksEmpty.classList.toggle("is-hidden", !isSpaceEditing);
@@ -12928,10 +12955,13 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       ? currentFloor
       : null;
   if (warmFloorFromSpaceRoute) {
+    // Restore spaces first so sidebar visibility is stable before plan repaint.
+    renderFloorSpaces(currentSpaces);
     renderFloorPlan(String(warmFloorFromSpaceRoute?.plan_svg || ""), {
       floorId: warmFloorFromSpaceRoute.id,
     });
-    renderFloorSpaces(currentSpaces);
+    // Hydrate polygons immediately from warm state; don't wait for network refresh.
+    void syncSpacePolygons(visibleSpaces, { persistMissing: true });
   } else {
     renderFloorSpaces([]);
   }
