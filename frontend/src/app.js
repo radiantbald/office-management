@@ -480,6 +480,7 @@ const floorSpacesRenderFingerprint = new Map();
 const spaceDesksRenderFingerprint = new Map();
 let latestSpaceDesksRequestToken = 0;
 let latestFloorPlanRenderToken = 0;
+let currentFloorRouteKey = "";
 let schemeLoadingRequestId = 0;
 let activeSchemeLoadingRequestId = 0;
 let activeSchemeLoadingCount = 0;
@@ -12906,6 +12907,15 @@ const buildFloorSpacesFingerprint = (spaces) => {
     .join("|");
 };
 
+const getFloorRouteKey = (buildingID, floorNumber) => {
+  const normalizedBuildingId = Number(buildingID);
+  const normalizedFloorNumber = Number(floorNumber);
+  if (!Number.isFinite(normalizedBuildingId) || !Number.isFinite(normalizedFloorNumber)) {
+    return "";
+  }
+  return `${normalizedBuildingId}:${normalizedFloorNumber}`;
+};
+
 const loadFloorSpaces = async (floorID, { prefetchedResponse = null, skipIfUnchanged = false } = {}) => {
   if (!floorID) {
     renderFloorSpaces([]);
@@ -12934,7 +12944,7 @@ const loadFloorSpaces = async (floorID, { prefetchedResponse = null, skipIfUncha
 const loadFloorPage = async (buildingID, floorNumber) => {
   const expectedBuildingID = Number(buildingID);
   const expectedFloorNumber = Number(floorNumber);
-  const previousFloorPlanSvg = String(currentFloor?.plan_svg || "");
+  const expectedFloorRouteKey = getFloorRouteKey(expectedBuildingID, expectedFloorNumber);
   const isStillOnRequestedFloorRoute = () => {
     const params = getFloorParamsFromPath();
     if (!params) {
@@ -12947,11 +12957,9 @@ const loadFloorPage = async (buildingID, floorNumber) => {
   };
   setPageMode("floor");
   clearFloorStatus();
-  const warmFloorLevel = Number(currentFloor?.level);
+  const canReuseWarmFloorByRoute = currentFloorRouteKey && currentFloorRouteKey === expectedFloorRouteKey;
   const warmFloorFromSpaceRoute =
-    currentFloor &&
-    Number.isFinite(warmFloorLevel) &&
-    warmFloorLevel === expectedFloorNumber
+    canReuseWarmFloorByRoute && currentFloor
       ? currentFloor
       : null;
   const warmPlanSvg = String(warmFloorFromSpaceRoute?.plan_svg || "");
@@ -13025,7 +13033,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       (hasMatchingFloorUpdatedAt(floor, cachedFloorDetails) ||
         (!hasKnownFloorUpdatedAt(floor) && hasKnownFloorUpdatedAt(cachedFloorDetails)));
     const initialPlanSvg =
-      previousFloorPlanSvg ||
+      warmPlanSvg ||
       (canUseClientPlanImmediately
         ? cachedPlanSvg
         : "") ||
@@ -13038,6 +13046,7 @@ const loadFloorPage = async (buildingID, floorNumber) => {
       responsible_employee_id:
         cachedFloorDetails?.responsible_employee_id || floor?.responsible_employee_id || "",
     };
+    currentFloorRouteKey = expectedFloorRouteKey;
     if (floorTitle) {
       floorTitle.textContent = floor.name || `Этаж ${floor.level}`;
     }
@@ -13166,10 +13175,15 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
   setPageMode("space");
   clearSpacePageStatus();
   setSpaceSnapshotLoading(false);
-  const previousFloorPlanSvg = String(currentFloor?.plan_svg || "");
   const expectedBuildingID = Number(buildingID);
   const expectedFloorNumber = Number(floorNumber);
   const expectedSpaceID = Number(spaceId);
+  const expectedFloorRouteKey = getFloorRouteKey(expectedBuildingID, expectedFloorNumber);
+  const warmFloorPlanForRoute =
+    currentFloorRouteKey && currentFloorRouteKey === expectedFloorRouteKey
+      ? String(currentFloor?.plan_svg || "")
+      : "";
+  currentFloorRouteKey = expectedFloorRouteKey;
   const isStillOnRequestedSpaceRoute = () => {
     const params = getSpaceParamsFromPath();
     if (!params) {
@@ -13333,7 +13347,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       (hasMatchingFloorUpdatedAt(floor, cachedFloorDetails) ||
         (!hasKnownFloorUpdatedAt(floor) && hasKnownFloorUpdatedAt(cachedFloorDetails)));
     const resolvedFloorPlanSvg =
-      previousFloorPlanSvg ||
+      warmFloorPlanForRoute ||
       (canUseClientPlanImmediately
         ? cachedFloorPlanSvg
         : "") ||
@@ -13347,6 +13361,7 @@ const loadSpacePage = async ({ buildingID, floorNumber, spaceId }) => {
       responsible_employee_id:
         cachedFloorDetails?.responsible_employee_id || floor?.responsible_employee_id || "",
     };
+    currentFloorRouteKey = expectedFloorRouteKey;
 
     if (spaceBreadcrumbBuilding) {
       const buildingId = building?.id || buildingID || "";
