@@ -4539,13 +4539,32 @@ const deskLabelMeasureContext = deskLabelMeasureCanvas.getContext("2d");
 
 const getDeskLabelAvailableWidth = (desk) => {
   const { width } = getDeskDimensions(desk);
-  return Math.max(20, width * 0.76);
+  return Math.max(20, width * 0.7);
 };
 
-const measureDeskLabelLineWidth = (desk, line) => {
+const measureDeskLabelLineWidth = (desk, line, labelNode = null) => {
   const text = typeof line === "string" ? line : "";
   if (!text) {
     return 0;
+  }
+  if (labelNode && typeof labelNode.getAttribute === "function") {
+    const probe = document.createElementNS(svgNamespace, "tspan");
+    probe.setAttribute("visibility", "hidden");
+    probe.setAttribute("x", String(Number.isFinite(desk?.x) ? desk.x : 0));
+    probe.setAttribute("dy", "0");
+    probe.textContent = text;
+    try {
+      labelNode.appendChild(probe);
+      const svgWidth =
+        typeof probe.getComputedTextLength === "function" ? probe.getComputedTextLength() : 0;
+      if (Number.isFinite(svgWidth) && svgWidth > 0) {
+        return svgWidth;
+      }
+    } finally {
+      if (probe.parentNode === labelNode) {
+        labelNode.removeChild(probe);
+      }
+    }
   }
   if (!deskLabelMeasureContext) {
     return text.length * 8;
@@ -4560,13 +4579,13 @@ const measureDeskLabelLineWidth = (desk, line) => {
   return deskLabelMeasureContext.measureText(text).width;
 };
 
-const wrapDeskBookingLabelLine = (bookingLine, desk) => {
+const wrapDeskBookingLabelLine = (bookingLine, desk, labelNode = null) => {
   const line = typeof bookingLine === "string" ? bookingLine.trim() : "";
   if (!line) {
     return [];
   }
   const availableWidth = getDeskLabelAvailableWidth(desk);
-  const lineWidth = measureDeskLabelLineWidth(desk, line);
+  const lineWidth = measureDeskLabelLineWidth(desk, line, labelNode);
   if (lineWidth <= availableWidth) {
     return [line];
   }
@@ -4586,8 +4605,8 @@ const wrapDeskBookingLabelLine = (bookingLine, desk) => {
     if (
       head &&
       tail &&
-      measureDeskLabelLineWidth(desk, head) <= availableWidth &&
-      measureDeskLabelLineWidth(desk, tail) <= availableWidth
+      measureDeskLabelLineWidth(desk, head, labelNode) <= availableWidth &&
+      measureDeskLabelLineWidth(desk, tail, labelNode) <= availableWidth
     ) {
       return [head, tail];
     }
@@ -4595,10 +4614,10 @@ const wrapDeskBookingLabelLine = (bookingLine, desk) => {
   return [line];
 };
 
-const getDeskLabelLines = (desk) => {
+const getDeskLabelLines = (desk, labelNode = null) => {
   const label = typeof desk?.label === "string" ? desk.label.trim() : "";
   const bookingLine = getDeskBookingLabelLine(desk);
-  const wrappedBookingLines = wrapDeskBookingLabelLine(bookingLine, desk);
+  const wrappedBookingLines = wrapDeskBookingLabelLine(bookingLine, desk, labelNode);
   if (bookingLine) {
     return label ? [label, ...wrappedBookingLines] : wrappedBookingLines;
   }
@@ -4609,7 +4628,7 @@ const setDeskLabelContent = (label, desk) => {
   if (!label) {
     return;
   }
-  const lines = getDeskLabelLines(desk);
+  const lines = getDeskLabelLines(desk, label);
   label.textContent = "";
   if (lines.length <= 1) {
     label.textContent = lines[0] || "";
