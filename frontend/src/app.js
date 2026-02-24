@@ -4711,7 +4711,7 @@ const applyBookingsToDesks = (bookings = []) => {
     const bookingApplierID = String(booking.applier_employee_id || booking.employee_id || booking.employeeId || "").trim();
     const bookingTenantID = String(booking.tenant_employee_id || "").trim();
     const bookingUserKey = bookingApplierID;
-    const bookingUserName = String(booking.user_name || booking.userName || bookingUserKey || "").trim();
+    const bookingUserName = String(booking.user_name || booking.userName || "").trim();
     const avatarUrl = String(booking.avatar_url || booking.avatarUrl || "").trim();
     const wbBand = String(booking.wb_band || booking.wbBand || booking.wbband || "").trim();
     const formattedBookingUserName = formatUserNameInitials(bookingUserName);
@@ -5834,8 +5834,8 @@ const markDeskAsMyLocally = (deskId) => {
   refreshDeskCollectionsView();
 };
 
-const markDeskAsBookedLocally = (deskId, { userName = "Сотрудник", userKey = "" } = {}) => {
-  const normalizedUserName = String(userName || "").trim() || "Сотрудник";
+const markDeskAsBookedLocally = (deskId, { userName = "", userKey = "" } = {}) => {
+  const normalizedUserName = String(userName || "").trim();
   const normalizedUserKey = String(userKey || "").trim();
   const desk = findDeskById(deskId);
   if (!desk) {
@@ -5851,7 +5851,7 @@ const markDeskAsBookedLocally = (deskId, { userName = "Сотрудник", user
     user: {
       applier_employee_id: normalizedUserKey,
       tenant_employee_id: normalizedUserKey,
-      user_name: normalizedUserName,
+      user_name: normalizedUserName || normalizedUserKey,
     },
   };
   if (!(bookingState.bookingsByDeskId instanceof Map)) {
@@ -5861,7 +5861,7 @@ const markDeskAsBookedLocally = (deskId, { userName = "Сотрудник", user
     workplace_id: Number(desk.id),
     applier_employee_id: normalizedUserKey,
     tenant_employee_id: normalizedUserKey,
-    user_name: normalizedUserName,
+    user_name: normalizedUserName || normalizedUserKey,
   });
   refreshDeskCollectionsView();
 };
@@ -5883,7 +5883,7 @@ const resolveDeskActionStatus = (desk) => {
   return status;
 };
 
-const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
+const bookDeskForEmployee = async (desk, targetEmployeeId = null, { targetEmployeeName = "" } = {}) => {
   if (!bookingState.selectedDate) {
     ensureBookingDate();
   }
@@ -5916,7 +5916,10 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null) => {
     } else if (isGuest) {
       markDeskAsBookedLocally(deskId, { userName: "Гость", userKey: "guest" });
     } else {
-      markDeskAsBookedLocally(deskId, { userName: "Сотрудник" });
+      markDeskAsBookedLocally(deskId, {
+        userName: String(targetEmployeeName || "").trim(),
+        userKey: String(targetEmployeeId || "").trim(),
+      });
     }
     if (isGuest) {
       notifyDeskBookingCompletion("Место забронировано для гостя.", "success");
@@ -6051,14 +6054,13 @@ const handleBookForOtherSubmit = async () => {
   }
   const type = bookForOtherState.selectedType;
   let targetEmployeeId = "";
+  let targetEmployeeName = "";
   if (type === "guest") {
     targetEmployeeId = "0";
   } else if (type === "employee") {
+    const options = getResponsibleOptionsForField(bookForOtherEmployeeField);
     const raw = normalizeResponsibleValue(bookForOtherEmployeeField?.value);
-    const resolved = resolveResponsibleEmployeeId(
-      raw,
-      getResponsibleOptionsForField(bookForOtherEmployeeField)
-    );
+    const resolved = resolveResponsibleEmployeeId(raw, options);
     if (!resolved) {
       if (bookForOtherStatus) {
         bookForOtherStatus.textContent = "Выберите сотрудника из списка.";
@@ -6067,11 +6069,17 @@ const handleBookForOtherSubmit = async () => {
       return;
     }
     targetEmployeeId = resolved;
+    const selectedOption = options.find(
+      (item) => normalizeResponsibleValue(item?.employee_id || item?.employeeId || "") === resolved
+    );
+    targetEmployeeName = normalizeResponsibleValue(
+      selectedOption?.full_name || selectedOption?.fullName || ""
+    );
   } else {
     return;
   }
   closeBookForOtherModal();
-  await bookDeskForEmployee(desk, targetEmployeeId);
+  await bookDeskForEmployee(desk, targetEmployeeId, { targetEmployeeName });
 };
 
 const handleDeskBookingClick = async (desk) => {
