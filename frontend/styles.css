@@ -1256,6 +1256,9 @@ body.space-editing .space-booking-panel {
   font-size: 12px;
   font-weight: 600;
   fill: var(--color-white);
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
   transition: fill 0.3s ease, font-size 0.3s ease;
 }
 
