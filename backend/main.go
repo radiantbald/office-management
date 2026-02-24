@@ -317,6 +317,7 @@ func main() {
 	mux.HandleFunc("/api/users", app.handleUsers)
 	mux.HandleFunc("/api/users/role", app.handleUserRole)
 	mux.HandleFunc("/api/responsibilities", app.handleResponsibilities)
+	mux.HandleFunc("/api/admin/logs", app.handleAdminAuditLogs)
 	mux.HandleFunc("/api/admin/db-dumps/export", app.handleDatabaseDumpExport)
 	mux.HandleFunc("/api/admin/db-dumps/import", app.handleDatabaseDumpImport)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -548,6 +549,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateWorkplaceCoworkingID(db); err != nil {
+		return err
+	}
+	if err := ensureAuditLogsStorage(db); err != nil {
 		return err
 	}
 	stmts := []string{
@@ -2409,6 +2413,15 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
+			a.logAuditEventFromRequest(r, auditActionCreate, auditEntityBuilding, created.ID, created.Name, map[string]any{
+				"building_id":           created.ID,
+				"building_name":         created.Name,
+				"address":               created.Address,
+				"timezone":              created.Timezone,
+				"responsible_employee":  created.ResponsibleEmployeeID,
+				"created_floor_ids":     created.Floors,
+				"created_from_multipart": true,
+			})
 			respondJSON(w, http.StatusCreated, created)
 			return
 		}
@@ -2446,6 +2459,17 @@ func (a *app) handleBuildings(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+		a.logAuditEventFromRequest(r, auditActionCreate, auditEntityBuilding, result.ID, result.Name, map[string]any{
+			"building_id":           result.ID,
+			"building_name":         result.Name,
+			"address":               result.Address,
+			"timezone":              result.Timezone,
+			"underground_floors":    payload.UndergroundFloors,
+			"aboveground_floors":    payload.AbovegroundFloors,
+			"responsible_employee":  result.ResponsibleEmployeeID,
+			"created_floor_ids":     result.Floors,
+			"created_from_multipart": false,
+		})
 		respondJSON(w, http.StatusCreated, result)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -2631,9 +2655,27 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			if payload.ResponsibleEmployeeID != nil {
 				a.auditResponsibilityChange(r.Context(), "building", id, previousResponsible, *payload.ResponsibleEmployeeID, requesterEmployeeID)
 			}
+			a.logAuditEventFromRequest(r, auditActionUpdate, auditEntityBuilding, result.ID, result.Name, map[string]any{
+				"building_id":          result.ID,
+				"building_name":        result.Name,
+				"address":              result.Address,
+				"timezone":             result.Timezone,
+				"floor_ids":            result.Floors,
+				"responsible_employee": result.ResponsibleEmployeeID,
+			})
 			respondJSON(w, http.StatusOK, result)
 		case http.MethodDelete:
 			if !ensureNotEmployeeRole(w, r, a.db) {
+				return
+			}
+			existing, existingErr := a.getBuilding(id)
+			if existingErr != nil {
+				if errors.Is(existingErr, errNotFound) {
+					respondError(w, http.StatusNotFound, "building not found")
+					return
+				}
+				log.Printf("internal error: %v", existingErr)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			if err := a.deleteBuilding(id); err != nil {
@@ -2645,6 +2687,13 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
+			a.logAuditEventFromRequest(r, auditActionDelete, auditEntityBuilding, existing.ID, existing.Name, map[string]any{
+				"building_id":   existing.ID,
+				"building_name": existing.Name,
+				"address":       existing.Address,
+				"timezone":      existing.Timezone,
+				"floor_ids":     existing.Floors,
+			})
 			respondJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -2773,6 +2822,13 @@ func (a *app) handleFloors(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	a.logAuditEventFromRequest(r, auditActionCreate, auditEntityFloor, result.ID, result.Name, map[string]any{
+		"floor_id":     result.ID,
+		"floor_name":   result.Name,
+		"building_id":  result.BuildingID,
+		"floor_level":  result.Level,
+		"has_plan_svg": strings.TrimSpace(result.PlanSVG) != "",
+	})
 	respondJSON(w, http.StatusCreated, result)
 }
 
@@ -2886,9 +2942,27 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 					a.auditResponsibilityChange(r.Context(), "floor", id, previousResponsible, *payload.ResponsibleEmployeeID, requesterEmployeeID)
 				}
 			}
+			a.logAuditEventFromRequest(r, auditActionUpdate, auditEntityFloor, updated.ID, updated.Name, map[string]any{
+				"floor_id":             updated.ID,
+				"floor_name":           updated.Name,
+				"building_id":          updated.BuildingID,
+				"floor_level":          updated.Level,
+				"responsible_employee": updated.ResponsibleEmployeeID,
+				"has_plan_svg":         strings.TrimSpace(updated.PlanSVG) != "",
+			})
 			respondJSON(w, http.StatusOK, updated)
 		case http.MethodDelete:
 			if !a.ensureCanManageBuildingByFloor(w, r, id) {
+				return
+			}
+			existing, existingErr := a.getFloor(id)
+			if existingErr != nil {
+				if errors.Is(existingErr, errNotFound) {
+					respondError(w, http.StatusNotFound, "floor not found")
+					return
+				}
+				log.Printf("internal error: %v", existingErr)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			if err := a.deleteFloorAndShift(id); err != nil {
@@ -2900,6 +2974,13 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
+			a.logAuditEventFromRequest(r, auditActionDelete, auditEntityFloor, existing.ID, existing.Name, map[string]any{
+				"floor_id":     existing.ID,
+				"floor_name":   existing.Name,
+				"building_id":  existing.BuildingID,
+				"floor_level":  existing.Level,
+				"has_plan_svg": strings.TrimSpace(existing.PlanSVG) != "",
+			})
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -3036,6 +3117,21 @@ func (a *app) handleSpaces(w http.ResponseWriter, r *http.Request) {
 	if payload.Kind == "coworking" {
 		a.auditResponsibilityChange(r.Context(), "coworking", result.ID, "", payload.ResponsibleEmployeeID, requesterEmployeeID)
 	}
+	entityType := auditEntityCoworking
+	if result.Kind == "meeting" {
+		entityType = auditEntityMeetingRoom
+	}
+	a.logAuditEventFromRequest(r, auditActionCreate, entityType, result.ID, result.Name, map[string]any{
+		"space_id":              result.ID,
+		"space_name":            result.Name,
+		"space_kind":            result.Kind,
+		"floor_id":              result.FloorID,
+		"capacity":              result.Capacity,
+		"subdivision_level_1":   result.SubdivisionL1,
+		"subdivision_level_2":   result.SubdivisionL2,
+		"responsible_employee":  result.ResponsibleEmployeeID,
+		"snapshot_hidden":       result.SnapshotHidden,
+	})
 	respondJSON(w, http.StatusCreated, result)
 }
 
@@ -3234,9 +3330,34 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 				}
 				a.auditResponsibilityChange(r.Context(), "floor", floorID, previousFloorResponsible, *payload.FloorResponsibleEmployeeID, requesterEmployeeID)
 			}
+			entityType := auditEntityCoworking
+			if result.Kind == "meeting" {
+				entityType = auditEntityMeetingRoom
+			}
+			a.logAuditEventFromRequest(r, auditActionUpdate, entityType, result.ID, result.Name, map[string]any{
+				"space_id":              result.ID,
+				"space_name":            result.Name,
+				"space_kind":            result.Kind,
+				"floor_id":              result.FloorID,
+				"capacity":              result.Capacity,
+				"subdivision_level_1":   result.SubdivisionL1,
+				"subdivision_level_2":   result.SubdivisionL2,
+				"responsible_employee":  result.ResponsibleEmployeeID,
+				"snapshot_hidden":       result.SnapshotHidden,
+			})
 			respondJSON(w, http.StatusOK, result)
 		case http.MethodDelete:
 			if !a.ensureCanManageSpace(w, r, id) {
+				return
+			}
+			existing, existingErr := a.getSpace(id)
+			if existingErr != nil {
+				if errors.Is(existingErr, errNotFound) {
+					respondError(w, http.StatusNotFound, "space not found")
+					return
+				}
+				log.Printf("internal error: %v", existingErr)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			if err := a.deleteSpace(id); err != nil {
@@ -3248,6 +3369,19 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
+			entityType := auditEntityCoworking
+			if existing.Kind == "meeting" {
+				entityType = auditEntityMeetingRoom
+			}
+			a.logAuditEventFromRequest(r, auditActionDelete, entityType, existing.ID, existing.Name, map[string]any{
+				"space_id":            existing.ID,
+				"space_name":          existing.Name,
+				"space_kind":          existing.Kind,
+				"floor_id":            existing.FloorID,
+				"capacity":            existing.Capacity,
+				"subdivision_level_1": existing.SubdivisionL1,
+				"subdivision_level_2": existing.SubdivisionL2,
+			})
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -3337,6 +3471,16 @@ func (a *app) handleDesks(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	a.logAuditEventFromRequest(r, auditActionCreate, auditEntityDesk, result.ID, result.Label, map[string]any{
+		"desk_id":      result.ID,
+		"desk_label":   result.Label,
+		"coworking_id": result.SpaceID,
+		"x":            result.X,
+		"y":            result.Y,
+		"width":        result.Width,
+		"height":       result.Height,
+		"rotation":     result.Rotation,
+	})
 	respondJSON(w, http.StatusCreated, result)
 }
 
@@ -3406,6 +3550,19 @@ func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+		for _, item := range created {
+			a.logAuditEventFromRequest(r, auditActionCreate, auditEntityDesk, item.ID, item.Label, map[string]any{
+				"desk_id":      item.ID,
+				"desk_label":   item.Label,
+				"coworking_id": item.SpaceID,
+				"x":            item.X,
+				"y":            item.Y,
+				"width":        item.Width,
+				"height":       item.Height,
+				"rotation":     item.Rotation,
+				"is_bulk":      true,
+			})
+		}
 		respondJSON(w, http.StatusCreated, map[string]any{"items": created})
 	case http.MethodDelete:
 		var payload struct {
@@ -3438,6 +3595,19 @@ func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 		if !a.ensureCanManageDesks(w, r, unique) {
 			return
 		}
+		desksBeforeDelete := make(map[int64]desk, len(unique))
+		for _, deskID := range unique {
+			item, getErr := a.getDesk(deskID)
+			if getErr != nil {
+				if errors.Is(getErr, errNotFound) {
+					continue
+				}
+				log.Printf("internal error: %v", getErr)
+				respondError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			desksBeforeDelete[deskID] = item
+		}
 		if err := a.deleteDesksBulk(unique); err != nil {
 			if errors.Is(err, errNotFound) {
 				respondError(w, http.StatusNotFound, "desk not found")
@@ -3446,6 +3616,28 @@ func (a *app) handleDeskBulk(w http.ResponseWriter, r *http.Request) {
 			log.Printf("internal error: %v", err)
 			respondError(w, http.StatusInternalServerError, "internal error")
 			return
+		}
+		for _, deskID := range unique {
+			existing, hasExisting := desksBeforeDelete[deskID]
+			entityName := fmt.Sprintf("Стол #%d", deskID)
+			details := map[string]any{
+				"desk_id": deskID,
+				"is_bulk": true,
+				"deleted": true,
+			}
+			if hasExisting {
+				if strings.TrimSpace(existing.Label) != "" {
+					entityName = existing.Label
+				}
+				details["desk_label"] = existing.Label
+				details["coworking_id"] = existing.SpaceID
+				details["x"] = existing.X
+				details["y"] = existing.Y
+				details["width"] = existing.Width
+				details["height"] = existing.Height
+				details["rotation"] = existing.Rotation
+			}
+			a.logAuditEventFromRequest(r, auditActionDelete, auditEntityDesk, deskID, entityName, details)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -3510,9 +3702,29 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+		a.logAuditEventFromRequest(r, auditActionUpdate, auditEntityDesk, result.ID, result.Label, map[string]any{
+			"desk_id":      result.ID,
+			"desk_label":   result.Label,
+			"coworking_id": result.SpaceID,
+			"x":            result.X,
+			"y":            result.Y,
+			"width":        result.Width,
+			"height":       result.Height,
+			"rotation":     result.Rotation,
+		})
 		respondJSON(w, http.StatusOK, result)
 	case http.MethodDelete:
 		if !a.ensureCanManageDesk(w, r, id) {
+			return
+		}
+		existing, existingErr := a.getDesk(id)
+		if existingErr != nil {
+			if errors.Is(existingErr, errNotFound) {
+				respondError(w, http.StatusNotFound, "desk not found")
+				return
+			}
+			log.Printf("internal error: %v", existingErr)
+			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if err := a.deleteDesk(id); err != nil {
@@ -3524,6 +3736,16 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+		a.logAuditEventFromRequest(r, auditActionDelete, auditEntityDesk, existing.ID, existing.Label, map[string]any{
+			"desk_id":      existing.ID,
+			"desk_label":   existing.Label,
+			"coworking_id": existing.SpaceID,
+			"x":            existing.X,
+			"y":            existing.Y,
+			"width":        existing.Width,
+			"height":       existing.Height,
+			"rotation":     existing.Rotation,
+		})
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -3577,6 +3799,12 @@ func (a *app) handleMeetingRooms(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	a.logAuditEventFromRequest(r, auditActionCreate, auditEntityMeetingRoom, result.ID, result.Name, map[string]any{
+		"meeting_room_id":   result.ID,
+		"meeting_room_name": result.Name,
+		"floor_id":          result.FloorID,
+		"capacity":          result.Capacity,
+	})
 	respondJSON(w, http.StatusCreated, result)
 }
 

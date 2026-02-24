@@ -209,6 +209,13 @@ const dbDumpStatus = document.getElementById("dbDumpStatus");
 const dbDumpDownloadBtn = document.getElementById("dbDumpDownloadBtn");
 const dbDumpUploadBtn = document.getElementById("dbDumpUploadBtn");
 const dbDumpUploadInput = document.getElementById("dbDumpUploadInput");
+const auditLogsModal = document.getElementById("auditLogsModal");
+const auditLogsStatus = document.getElementById("auditLogsStatus");
+const auditLogsList = document.getElementById("auditLogsList");
+const auditLogsEmpty = document.getElementById("auditLogsEmpty");
+const auditLogsEntityFilter = document.getElementById("auditLogsEntityFilter");
+const auditLogsActionFilter = document.getElementById("auditLogsActionFilter");
+const auditLogsSearchInput = document.getElementById("auditLogsSearchInput");
 const meetingSearchModal = document.getElementById("meetingSearchModal");
 const meetingSearchStatus = document.getElementById("meetingSearchStatus");
 const meetingSearchDatePicker = document.getElementById("meetingSearchDatePicker");
@@ -268,6 +275,13 @@ let responsibilitiesState = {
   loadedAt: 0,
 };
 let responsibilitiesRequest = null;
+let auditLogsAbortController = null;
+let auditLogsDebounceTimer = null;
+let auditLogsState = {
+  items: [],
+  isLoading: false,
+  search: "",
+};
 let isFloorEditing = false;
 let isSpaceEditing = false;
 let isDeskPlacementActive = false;
@@ -1064,6 +1078,7 @@ const updateBreadcrumbProfile = (user) => {
       node.classList.add("is-hidden");
     });
     setDbDumpMenuVisibility(false);
+    setAuditLogsMenuVisibility(false);
     closeBreadcrumbMenus();
     return;
   }
@@ -1111,6 +1126,7 @@ const updateBreadcrumbProfile = (user) => {
     node.classList.remove("is-hidden");
   });
   setDbDumpMenuVisibility(isAdminRole(user));
+  setAuditLogsMenuVisibility(isAdminRole(user));
   applyRoleRestrictions(user);
 };
 
@@ -2158,6 +2174,9 @@ const notifyDeskBookingCompletion = (message, tone = "success") => {
 const dbDumpStatusManager = createStatusManager(dbDumpStatus);
 const setDbDumpStatus = (message, tone) => dbDumpStatusManager.set(message, tone);
 const clearDbDumpStatus = () => dbDumpStatusManager.clear();
+const auditLogsStatusManager = createStatusManager(auditLogsStatus);
+const setAuditLogsStatus = (message, tone) => auditLogsStatusManager.set(message, tone);
+const clearAuditLogsStatus = () => auditLogsStatusManager.clear();
 
 let topAlertTimer = null;
 let topAlertClearTimer = null;
@@ -2321,6 +2340,18 @@ const setDbDumpMenuVisibility = (isVisible) => {
   }
   breadcrumbProfiles.forEach((profile) => {
     const button = profile.querySelector('[data-role="breadcrumb-db-dump"]');
+    if (button) {
+      button.classList.toggle("is-hidden", !isVisible);
+    }
+  });
+};
+
+const setAuditLogsMenuVisibility = (isVisible) => {
+  if (!breadcrumbProfiles || breadcrumbProfiles.length === 0) {
+    return;
+  }
+  breadcrumbProfiles.forEach((profile) => {
+    const button = profile.querySelector('[data-role="breadcrumb-logs"]');
     if (button) {
       button.classList.toggle("is-hidden", !isVisible);
     }
@@ -2879,7 +2910,8 @@ const closeResponsibilitiesModal = () => {
     !(floorInfoModal && floorInfoModal.classList.contains("is-open")) &&
     !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) &&
     !(meetingSearchModal && meetingSearchModal.classList.contains("is-open")) &&
-    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open"))
+    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
+    !(auditLogsModal && auditLogsModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -2912,7 +2944,243 @@ const closeDbDumpModal = () => {
     !(adminBookingsModal && adminBookingsModal.classList.contains("is-open")) &&
     !(meetingSearchModal && meetingSearchModal.classList.contains("is-open")) &&
     !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
-    !(responsibilitiesModal && responsibilitiesModal.classList.contains("is-open"))
+    !(responsibilitiesModal && responsibilitiesModal.classList.contains("is-open")) &&
+    !(auditLogsModal && auditLogsModal.classList.contains("is-open"))
+  ) {
+    document.body.classList.remove("modal-open");
+  }
+};
+
+const auditEntityLabels = {
+  building: "Здание",
+  floor: "Этаж",
+  coworking: "Коворкинг",
+  meeting_room: "Переговорка",
+  desk: "Стол",
+  desk_booking: "Бронирование стола",
+  meeting_booking: "Бронирование переговорки",
+};
+
+const auditActionLabels = {
+  create: "Создание",
+  update: "Редактирование",
+  delete: "Удаление",
+  book: "Бронирование",
+  cancel: "Отмена бронирования",
+};
+
+const getAuditEntityLabel = (value) => {
+  const key = String(value || "").trim();
+  return auditEntityLabels[key] || key || "—";
+};
+
+const getAuditActionLabel = (value) => {
+  const key = String(value || "").trim();
+  return auditActionLabels[key] || key || "—";
+};
+
+const formatAuditDateTime = (value) => {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return "—";
+  }
+  return date.toLocaleString("ru-RU", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+};
+
+const stringifyAuditDetails = (details) => {
+  if (!details || typeof details !== "object") {
+    return "—";
+  }
+  const entries = Object.entries(details).filter(([, value]) => value !== null && value !== undefined && value !== "");
+  if (entries.length === 0) {
+    return "—";
+  }
+  return entries
+    .map(([key, value]) => {
+      if (Array.isArray(value)) {
+        return `${key}: ${value.join(", ")}`;
+      }
+      if (typeof value === "object") {
+        try {
+          return `${key}: ${JSON.stringify(value)}`;
+        } catch (_error) {
+          return `${key}: [object]`;
+        }
+      }
+      return `${key}: ${value}`;
+    })
+    .join("\n");
+};
+
+const buildAuditLogsQuery = () => {
+  const params = new URLSearchParams();
+  const entityType = String(auditLogsEntityFilter?.value || "all").trim();
+  const actionType = String(auditLogsActionFilter?.value || "all").trim();
+  const search = String(auditLogsState.search || "").trim();
+  if (entityType && entityType !== "all") {
+    params.set("entity_type", entityType);
+  }
+  if (actionType && actionType !== "all") {
+    params.set("action_type", actionType);
+  }
+  if (search) {
+    params.set("search", search);
+  }
+  params.set("limit", "200");
+  return params.toString();
+};
+
+const renderAuditLogs = () => {
+  if (!auditLogsList || !auditLogsEmpty) {
+    return;
+  }
+  auditLogsList.replaceChildren();
+  const items = Array.isArray(auditLogsState.items) ? auditLogsState.items : [];
+  if (items.length === 0) {
+    auditLogsEmpty.classList.remove("is-hidden");
+    return;
+  }
+  auditLogsEmpty.classList.add("is-hidden");
+
+  const table = document.createElement("table");
+  table.className = "audit-logs-table";
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  ["Дата и время", "Событие", "Сущность", "Кто изменил", "Детали"].forEach((label) => {
+    const th = document.createElement("th");
+    th.textContent = label;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  items.forEach((item) => {
+    const row = document.createElement("tr");
+
+    const createdCell = document.createElement("td");
+    createdCell.textContent = formatAuditDateTime(item?.created_at || item?.createdAt || "");
+    row.appendChild(createdCell);
+
+    const actionCell = document.createElement("td");
+    actionCell.textContent = getAuditActionLabel(item?.action_type);
+    row.appendChild(actionCell);
+
+    const entityCell = document.createElement("td");
+    const entityWrap = document.createElement("div");
+    entityWrap.className = "audit-logs-entity";
+    const entityName = document.createElement("span");
+    entityName.className = "audit-logs-entity-name";
+    entityName.textContent = String(item?.entity_name || "").trim() || "—";
+    const entityMeta = document.createElement("span");
+    entityMeta.className = "audit-logs-muted";
+    entityMeta.textContent = `${getAuditEntityLabel(item?.entity_type)} #${item?.entity_id ?? "—"}`;
+    entityWrap.append(entityName, entityMeta);
+    entityCell.appendChild(entityWrap);
+    row.appendChild(entityCell);
+
+    const actorCell = document.createElement("td");
+    const actorName = String(item?.actor_name || "").trim();
+    const actorID = String(item?.actor_employee_id || "").trim();
+    actorCell.textContent = actorName && actorID ? `${actorName} (${actorID})` : actorName || actorID || "—";
+    row.appendChild(actorCell);
+
+    const detailsCell = document.createElement("td");
+    detailsCell.className = "audit-logs-details";
+    detailsCell.textContent = stringifyAuditDetails(item?.details);
+    row.appendChild(detailsCell);
+
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+  auditLogsList.appendChild(table);
+};
+
+const loadAuditLogs = async () => {
+  if (!auditLogsModal || !auditLogsModal.classList.contains("is-open")) {
+    return;
+  }
+  if (auditLogsAbortController) {
+    auditLogsAbortController.abort();
+  }
+  const controller = new AbortController();
+  auditLogsAbortController = controller;
+  const query = buildAuditLogsQuery();
+  const path = query ? `/api/admin/logs?${query}` : "/api/admin/logs";
+  auditLogsState.isLoading = true;
+  setAuditLogsStatus("Загрузка логов...", "info");
+  try {
+    const response = await apiRequest(path, { signal: controller.signal });
+    const items = Array.isArray(response?.items) ? response.items : [];
+    auditLogsState.items = items;
+    clearAuditLogsStatus();
+    renderAuditLogs();
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      return;
+    }
+    auditLogsState.items = [];
+    renderAuditLogs();
+    setAuditLogsStatus(error?.message || "Не удалось загрузить логи.", "error");
+  } finally {
+    auditLogsState.isLoading = false;
+    if (auditLogsAbortController === controller) {
+      auditLogsAbortController = null;
+    }
+  }
+};
+
+const openAuditLogsModal = () => {
+  if (!auditLogsModal) {
+    return;
+  }
+  auditLogsModal.classList.add("is-open");
+  auditLogsModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  clearAuditLogsStatus();
+  auditLogsState.search = "";
+  if (auditLogsEntityFilter) {
+    auditLogsEntityFilter.value = "all";
+  }
+  if (auditLogsActionFilter) {
+    auditLogsActionFilter.value = "all";
+  }
+  if (auditLogsSearchInput) {
+    auditLogsSearchInput.value = "";
+  }
+  void loadAuditLogs();
+};
+
+const closeAuditLogsModal = () => {
+  if (!auditLogsModal) {
+    return;
+  }
+  if (auditLogsAbortController) {
+    auditLogsAbortController.abort();
+    auditLogsAbortController = null;
+  }
+  auditLogsModal.classList.remove("is-open");
+  auditLogsModal.setAttribute("aria-hidden", "true");
+  clearAuditLogsStatus();
+  if (
+    !(buildingModal && buildingModal.classList.contains("is-open")) &&
+    !(spaceModal && spaceModal.classList.contains("is-open")) &&
+    !(deskModal && deskModal.classList.contains("is-open")) &&
+    !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
+    !(floorInfoModal && floorInfoModal.classList.contains("is-open")) &&
+    !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) &&
+    !(adminBookingsModal && adminBookingsModal.classList.contains("is-open")) &&
+    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open")) &&
+    !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
+    !(responsibilitiesModal && responsibilitiesModal.classList.contains("is-open")) &&
+    !(dbDumpModal && dbDumpModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -5605,7 +5873,10 @@ const closeAdminBookingsModal = () => {
     !(floorPlanModal && floorPlanModal.classList.contains("is-open")) &&
     !(spaceBookingsModal && spaceBookingsModal.classList.contains("is-open")) &&
     !(meetingBookingModal && meetingBookingModal.classList.contains("is-open")) &&
-    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open"))
+    !(meetingSearchModal && meetingSearchModal.classList.contains("is-open")) &&
+    !(auditLogsModal && auditLogsModal.classList.contains("is-open")) &&
+    !(dbDumpModal && dbDumpModal.classList.contains("is-open")) &&
+    !(responsibilitiesModal && responsibilitiesModal.classList.contains("is-open"))
   ) {
     document.body.classList.remove("modal-open");
   }
@@ -14166,6 +14437,38 @@ if (dbDumpModal) {
   });
 }
 
+if (auditLogsModal) {
+  auditLogsModal.querySelectorAll("[data-modal-close]").forEach((el) => {
+    el.addEventListener("click", () => {
+      closeAuditLogsModal();
+    });
+  });
+}
+
+if (auditLogsEntityFilter) {
+  auditLogsEntityFilter.addEventListener("change", () => {
+    void loadAuditLogs();
+  });
+}
+
+if (auditLogsActionFilter) {
+  auditLogsActionFilter.addEventListener("change", () => {
+    void loadAuditLogs();
+  });
+}
+
+if (auditLogsSearchInput) {
+  auditLogsSearchInput.addEventListener("input", () => {
+    auditLogsState.search = auditLogsSearchInput.value || "";
+    if (auditLogsDebounceTimer) {
+      clearTimeout(auditLogsDebounceTimer);
+    }
+    auditLogsDebounceTimer = setTimeout(() => {
+      void loadAuditLogs();
+    }, 300);
+  });
+}
+
 if (dbDumpDownloadBtn) {
   dbDumpDownloadBtn.addEventListener("click", () => {
     void handleDownloadDbDump();
@@ -15164,6 +15467,7 @@ if (breadcrumbProfiles.length > 0) {
       '[data-role="breadcrumb-responsibilities"]'
     );
     const dbDumpButton = profile.querySelector('[data-role="breadcrumb-db-dump"]');
+    const logsButton = profile.querySelector('[data-role="breadcrumb-logs"]');
     const logoutButton = profile.querySelector('[data-role="breadcrumb-logout"]');
 
     if (trigger) {
@@ -15229,6 +15533,14 @@ if (breadcrumbProfiles.length > 0) {
         event.stopPropagation();
         closeBreadcrumbMenus();
         openDbDumpModal();
+      });
+    }
+
+    if (logsButton) {
+      logsButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        closeBreadcrumbMenus();
+        openAuditLogsModal();
       });
     }
   });
@@ -15565,6 +15877,10 @@ document.addEventListener("keydown", (event) => {
     }
     if (adminBookingsModal && adminBookingsModal.classList.contains("is-open")) {
       closeAdminBookingsModal();
+      return;
+    }
+    if (auditLogsModal && auditLogsModal.classList.contains("is-open")) {
+      closeAuditLogsModal();
       return;
     }
     if (dbDumpModal && dbDumpModal.classList.contains("is-open")) {

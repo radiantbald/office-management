@@ -71,6 +71,9 @@
               <button class="breadcrumb-menu-item is-hidden" type="button" data-role="breadcrumb-db-dump">
                 Дамп БД
               </button>
+              <button class="breadcrumb-menu-item is-hidden" type="button" data-role="breadcrumb-logs">
+                Логи
+              </button>
               <button class="breadcrumb-menu-item is-logout" type="button" data-role="breadcrumb-logout">
                 Выйти
               </button>
@@ -749,6 +752,57 @@
             type="file"
             accept=".sql,.dump,.backup,.txt,application/sql,text/plain"
           />
+        </div>
+      </div>
+    </div>
+    <div id="auditLogsModal" class="modal audit-logs-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-modal-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="auditLogsModalTitle">
+        <div class="modal-header">
+          <h2 id="auditLogsModalTitle">Логи действий</h2>
+          <button class="icon-button" type="button" data-modal-close="true" aria-label="Закрыть">
+            ✕
+          </button>
+        </div>
+        <div class="audit-logs-controls">
+          <label class="field">
+            <span>Сущность</span>
+            <select id="auditLogsEntityFilter">
+              <option value="all">Все</option>
+              <option value="building">Здание</option>
+              <option value="floor">Этаж</option>
+              <option value="coworking">Коворкинг</option>
+              <option value="meeting_room">Переговорка</option>
+              <option value="desk">Стол</option>
+              <option value="desk_booking">Бронирование стола</option>
+              <option value="meeting_booking">Бронирование переговорки</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Действие</span>
+            <select id="auditLogsActionFilter">
+              <option value="all">Все</option>
+              <option value="create">Создание</option>
+              <option value="update">Редактирование</option>
+              <option value="delete">Удаление</option>
+              <option value="book">Бронирование</option>
+              <option value="cancel">Отмена бронирования</option>
+            </select>
+          </label>
+          <label class="field audit-logs-search">
+            <span>Поиск</span>
+            <input
+              id="auditLogsSearchInput"
+              type="search"
+              placeholder="ID, название, сотрудник или текст события"
+              autocomplete="off"
+            />
+          </label>
+        </div>
+        <div id="auditLogsStatus" class="status" role="status" aria-live="polite"></div>
+        <div class="audit-logs-body">
+          <div id="auditLogsList" class="audit-logs-list"></div>
+          <div id="auditLogsEmpty" class="placeholder app-empty is-hidden">События не найдены.</div>
         </div>
       </div>
     </div>

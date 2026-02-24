@@ -181,6 +181,11 @@ func (a *app) handleCancelAllMyMeetingRoomBookings(w http.ResponseWriter, r *htt
 	}
 
 	count, _ := result.RowsAffected()
+	a.logAuditEventFromRequest(r, auditActionCancel, auditEntityMeetingBooking, 0, "Все бронирования переговорок пользователя", map[string]any{
+		"cancelled_by_employee_id": employeeID,
+		"deleted_count":            count,
+		"scope":                    "all_my_meeting_bookings",
+	})
 	respondJSON(w, http.StatusOK, map[string]any{"success": true, "deletedCount": count})
 }
 
@@ -428,6 +433,13 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	if roomName, details, metaErr := a.getMeetingRoomAuditMeta(payload.MeetingRoomID); metaErr == nil {
+		details["start_time"] = payload.StartTime
+		details["end_time"] = payload.EndTime
+		details["booked_by_employee_id"] = employeeID
+		details["replaced_count"] = replacedCount
+		a.logAuditEventFromRequest(r, auditActionBook, auditEntityMeetingBooking, payload.MeetingRoomID, roomName, details)
+	}
 
 	respondJSON(w, http.StatusCreated, map[string]any{
 		"success":       true,
@@ -499,6 +511,12 @@ func (a *app) handleCancelMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 	if affected == 0 {
 		respondError(w, http.StatusNotFound, "booking not found")
 		return
+	}
+	if roomName, details, metaErr := a.getMeetingRoomAuditMeta(payload.MeetingRoomID); metaErr == nil {
+		details["start_time"] = payload.StartTime
+		details["end_time"] = payload.EndTime
+		details["cancelled_by_employee_id"] = employeeID
+		a.logAuditEventFromRequest(r, auditActionCancel, auditEntityMeetingBooking, payload.MeetingRoomID, roomName, details)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]any{"success": true})

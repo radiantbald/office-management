@@ -296,6 +296,12 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	if deskName, details, metaErr := a.getWorkplaceAuditMeta(payload.WorkplaceID); metaErr == nil {
+		details["date"] = date
+		details["booked_for_employee_id"] = employeeID
+		details["requested_by_employee_id"] = requesterEmployeeID
+		a.logAuditEventFromRequest(r, auditActionBook, auditEntityDeskBooking, payload.WorkplaceID, deskName, details)
+	}
 
 	respondJSON(w, http.StatusCreated, map[string]any{"success": true})
 }
@@ -347,6 +353,12 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 
 	affected, _ := result.RowsAffected()
 	if affected > 0 {
+		if deskName, details, metaErr := a.getWorkplaceAuditMeta(payload.WorkplaceID); metaErr == nil {
+			details["date"] = date
+			details["cancelled_by_employee_id"] = employeeID
+			details["scope"] = "own"
+			a.logAuditEventFromRequest(r, auditActionCancel, auditEntityDeskBooking, payload.WorkplaceID, deskName, details)
+		}
 		respondJSON(w, http.StatusOK, map[string]any{"success": true})
 		return
 	}
@@ -376,6 +388,12 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 	if affected == 0 {
 		respondError(w, http.StatusNotFound, "booking not found")
 		return
+	}
+	if deskName, details, metaErr := a.getWorkplaceAuditMeta(payload.WorkplaceID); metaErr == nil {
+		details["date"] = date
+		details["cancelled_by_employee_id"] = employeeID
+		details["scope"] = "managed"
+		a.logAuditEventFromRequest(r, auditActionCancel, auditEntityDeskBooking, payload.WorkplaceID, deskName, details)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]any{"success": true})
@@ -482,6 +500,11 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	count, _ := result.RowsAffected()
+	a.logAuditEventFromRequest(r, auditActionCancel, auditEntityDeskBooking, 0, "Все бронирования пользователя", map[string]any{
+		"cancelled_by_employee_id": employeeID,
+		"deleted_count":            count,
+		"scope":                    "all_my_bookings",
+	})
 	respondJSON(w, http.StatusOK, map[string]any{"success": true, "deletedCount": count})
 }
 
@@ -589,6 +612,12 @@ func (a *app) handleCancelAllSpaceBookings(w http.ResponseWriter, r *http.Reques
 	}
 
 	count, _ := result.RowsAffected()
+	a.logAuditEventFromRequest(r, auditActionCancel, auditEntityDeskBooking, spaceIDValue, fmt.Sprintf("Коворкинг #%d", spaceIDValue), map[string]any{
+		"coworking_id":             spaceIDValue,
+		"cancelled_by_employee_id": cancellerID,
+		"deleted_count":            count,
+		"scope":                    "all_coworking_bookings",
+	})
 	respondJSON(w, http.StatusOK, map[string]any{"success": true, "deletedCount": count})
 }
 
@@ -720,6 +749,15 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 
 	sort.Strings(created)
 	sort.Strings(failed)
+	if len(created) > 0 {
+		if deskName, details, metaErr := a.getWorkplaceAuditMeta(payload.WorkplaceID); metaErr == nil {
+			details["created_dates"] = created
+			details["failed_dates"] = failed
+			details["booked_for_employee_id"] = employeeID
+			details["requested_by_employee_id"] = requesterEmployeeID
+			a.logAuditEventFromRequest(r, auditActionBook, auditEntityDeskBooking, payload.WorkplaceID, deskName, details)
+		}
+	}
 
 	respondJSON(w, http.StatusOK, map[string]any{
 		"success":      true,
