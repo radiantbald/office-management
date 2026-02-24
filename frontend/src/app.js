@@ -4537,51 +4537,44 @@ const deskBookingInitialsPattern = /^(.+?)\s+((?:[A-Za-zА-Яа-яЁё]\.\s*){1,
 const deskLabelMeasureCanvas = document.createElement("canvas");
 const deskLabelMeasureContext = deskLabelMeasureCanvas.getContext("2d");
 
-const getDeskLabelAvailableWidth = (desk) => {
-  const { width } = getDeskDimensions(desk);
+const getDeskLabelLayoutMetricsPx = (desk) => {
+  const { width, height } = getDeskDimensions(desk);
   const svg = getSnapshotSvg();
   const metrics = getDeskMetrics(svg, desk);
-  // Keep a pixel-based inner padding so label does not touch desk borders on dense/small layouts.
-  const sidePaddingPx = 12;
-  const sidePadding = sidePaddingPx * (metrics?.scaleX || 1);
-  const widthWithPadding = width - sidePadding * 2;
-  return Math.max(20, Math.min(width * 0.7, widthWithPadding));
+  const scaleX = Number(metrics?.scaleX) > 0 ? metrics.scaleX : 1;
+  const scaleY = Number(metrics?.scaleY) > 0 ? metrics.scaleY : 1;
+  const deskWidthPx = width / scaleX;
+  const fontSizePx = getDeskLabelFontSize(width, height) / scaleY;
+  const sidePaddingPx = 10;
+  return {
+    deskWidthPx,
+    fontSizePx,
+    availableWidthPx: Math.max(20, deskWidthPx - sidePaddingPx * 2),
+  };
 };
 
-const measureDeskLabelLineWidth = (desk, line, labelNode = null) => {
+const measureDeskLabelLineWidthPx = (desk, line, labelNode = null) => {
   const text = typeof line === "string" ? line : "";
   if (!text) {
     return 0;
   }
-  if (labelNode && typeof labelNode.getAttribute === "function") {
-    const probe = document.createElementNS(svgNamespace, "tspan");
-    probe.setAttribute("visibility", "hidden");
-    probe.setAttribute("x", String(Number.isFinite(desk?.x) ? desk.x : 0));
-    probe.setAttribute("dy", "0");
-    probe.textContent = text;
-    try {
-      labelNode.appendChild(probe);
-      const svgWidth =
-        typeof probe.getComputedTextLength === "function" ? probe.getComputedTextLength() : 0;
-      if (Number.isFinite(svgWidth) && svgWidth > 0) {
-        return svgWidth;
-      }
-    } finally {
-      if (probe.parentNode === labelNode) {
-        labelNode.removeChild(probe);
-      }
-    }
-  }
   if (!deskLabelMeasureContext) {
     return text.length * 8;
   }
-  const { width, height } = getDeskDimensions(desk);
-  const fontSize = getDeskLabelFontSize(width, height);
-  const fontFamily =
-    typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+  const { fontSizePx } = getDeskLabelLayoutMetricsPx(desk);
+  const fontFamily = (() => {
+    if (labelNode && typeof window !== "undefined" && typeof window.getComputedStyle === "function") {
+      return window.getComputedStyle(labelNode).fontFamily || "sans-serif";
+    }
+    return typeof window !== "undefined" && typeof window.getComputedStyle === "function"
       ? window.getComputedStyle(document.body).fontFamily || "sans-serif"
       : "sans-serif";
-  deskLabelMeasureContext.font = `normal normal 600 ${fontSize}px ${fontFamily}`;
+  })();
+  const fontWeight =
+    labelNode && typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+      ? window.getComputedStyle(labelNode).fontWeight || "600"
+      : "600";
+  deskLabelMeasureContext.font = `normal normal ${fontWeight} ${fontSizePx}px ${fontFamily}`;
   return deskLabelMeasureContext.measureText(text).width;
 };
 
@@ -4590,9 +4583,9 @@ const wrapDeskBookingLabelLine = (bookingLine, desk, labelNode = null) => {
   if (!line) {
     return [];
   }
-  const availableWidth = getDeskLabelAvailableWidth(desk);
-  const lineWidth = measureDeskLabelLineWidth(desk, line, labelNode);
-  if (lineWidth <= availableWidth) {
+  const { availableWidthPx } = getDeskLabelLayoutMetricsPx(desk);
+  const lineWidthPx = measureDeskLabelLineWidthPx(desk, line, labelNode);
+  if (lineWidthPx <= availableWidthPx) {
     return [line];
   }
   const match = line.match(deskBookingInitialsPattern);
@@ -4611,8 +4604,8 @@ const wrapDeskBookingLabelLine = (bookingLine, desk, labelNode = null) => {
     if (
       head &&
       tail &&
-      measureDeskLabelLineWidth(desk, head, labelNode) <= availableWidth &&
-      measureDeskLabelLineWidth(desk, tail, labelNode) <= availableWidth
+      measureDeskLabelLineWidthPx(desk, head, labelNode) <= availableWidthPx &&
+      measureDeskLabelLineWidthPx(desk, tail, labelNode) <= availableWidthPx
     ) {
       return [head, tail];
     }
