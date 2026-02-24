@@ -9476,6 +9476,8 @@ const getDeskDimensions = (desk) => {
   return { width, height };
 };
 
+const getDeskLabelFontSize = (width, height) => Math.min(width, height) * 0.15;
+
 const getDeskRotation = (desk) => {
   const rotation = Number(desk?.rotation);
   return Number.isFinite(rotation) ? rotation : 0;
@@ -9962,6 +9964,8 @@ const updateDeskElementPosition = (group, desk, metrics) => {
     rect.setAttribute("rx", String(Math.min(width, height) * 0.1));
   }
   if (label) {
+    const labelFontSize = getDeskLabelFontSize(width, height);
+    label.style.setProperty("font-size", `${labelFontSize}px`);
     label.setAttribute("x", String(desk.x));
     label.setAttribute("y", String(desk.y));
     label.setAttribute("text-anchor", "middle");
@@ -10353,7 +10357,9 @@ const renderSpaceDesks = (desks = []) => {
     shape.setAttribute("rx", String(Math.min(deskMetrics.width, deskMetrics.height) * 0.1));
 
     const label = document.createElementNS(svgNamespace, "text");
+    const labelFontSize = getDeskLabelFontSize(deskMetrics.width, deskMetrics.height);
     label.classList.add("space-desk-label");
+    label.style.setProperty("font-size", `${labelFontSize}px`);
     setDeskLabelContent(label, desk);
     label.setAttribute("x", String(desk.x));
     label.setAttribute("y", String(desk.y));
