@@ -485,6 +485,7 @@ let schemeLoadingRequestId = 0;
 let activeSchemeLoadingRequestId = 0;
 let activeSchemeLoadingCount = 0;
 const deskBookingActionsInFlight = new Set();
+const optimisticDeskBookingNamesByDeskId = new Map();
 
 const getCachedFloorPlanRasterBlobUrl = (dataUrl) => {
   const key = String(dataUrl || "");
@@ -4706,6 +4707,7 @@ const applyBookingsToDesks = (bookings = []) => {
       desk.bookingUserKey = "";
       desk.bookingTenantEmployeeID = "";
       desk.booking = null;
+      optimisticDeskBookingNamesByDeskId.delete(String(desk.id));
       return;
     }
     const bookingApplierID = String(booking.applier_employee_id || booking.employee_id || booking.employeeId || "").trim();
@@ -4715,9 +4717,13 @@ const applyBookingsToDesks = (bookings = []) => {
     const avatarUrl = String(booking.avatar_url || booking.avatarUrl || "").trim();
     const wbBand = String(booking.wb_band || booking.wbBand || booking.wbband || "").trim();
     const formattedBookingUserName = formatUserNameInitials(bookingUserName);
+    const optimisticName = String(optimisticDeskBookingNamesByDeskId.get(String(desk.id)) || "").trim();
     const isMyBooking = Boolean(currentEmployeeID && bookingUserKey === currentEmployeeID);
     if (formattedBookingUserName) {
       desk.bookingUserName = formattedBookingUserName;
+      optimisticDeskBookingNamesByDeskId.delete(String(desk.id));
+    } else if (optimisticName) {
+      desk.bookingUserName = optimisticName;
     } else if (isMyBooking) {
       desk.bookingUserName = formatUserNameInitials(currentUserName || "Вы");
     } else if (!String(desk.bookingUserName || "").trim()) {
@@ -5784,6 +5790,7 @@ const markDeskAsFreeLocally = (deskId) => {
   desk.bookingUserKey = "";
   desk.bookingTenantEmployeeID = "";
   desk.booking = null;
+  optimisticDeskBookingNamesByDeskId.delete(String(desk.id));
   if (bookingState.bookingsByDeskId instanceof Map) {
     bookingState.bookingsByDeskId.delete(String(desk.id));
   }
@@ -5813,6 +5820,7 @@ const markDeskAsMyLocally = (deskId) => {
   desk.bookingUserName = formatUserNameInitials(name || key || "Вы");
   desk.bookingUserKey = key;
   desk.bookingTenantEmployeeID = employeeId;
+  optimisticDeskBookingNamesByDeskId.delete(String(desk.id));
   desk.booking = {
     is_booked: true,
     user: {
@@ -5846,6 +5854,11 @@ const markDeskAsBookedLocally = (deskId, { userName = "", userKey = "" } = {}) =
   desk.bookingUserName = formatUserNameInitials(normalizedUserName);
   desk.bookingUserKey = normalizedUserKey;
   desk.bookingTenantEmployeeID = normalizedUserKey;
+  if (desk.bookingUserName) {
+    optimisticDeskBookingNamesByDeskId.set(String(desk.id), desk.bookingUserName);
+  } else {
+    optimisticDeskBookingNamesByDeskId.delete(String(desk.id));
+  }
   desk.booking = {
     is_booked: true,
     user: {
@@ -5916,8 +5929,15 @@ const bookDeskForEmployee = async (desk, targetEmployeeId = null, { targetEmploy
     } else if (isGuest) {
       markDeskAsBookedLocally(deskId, { userName: "Гость", userKey: "guest" });
     } else {
+      const fallbackName = getResponsiblePersonName(
+        bookForOtherOptionsCache.options.find(
+          (item) =>
+            normalizeResponsibleValue(item?.employee_id || item?.employeeId || "") ===
+            String(targetEmployeeId || "").trim()
+        ) || null
+      );
       markDeskAsBookedLocally(deskId, {
-        userName: String(targetEmployeeName || "").trim(),
+        userName: String(targetEmployeeName || fallbackName || "").trim(),
         userKey: String(targetEmployeeId || "").trim(),
       });
     }
@@ -6013,7 +6033,7 @@ const populateBookForOtherOptions = async () => {
     const normalized = items
       .map((item) => ({
         employee_id: String(item?.employee_id || item?.employeeId || "").trim(),
-        full_name: String(item?.full_name || item?.fullName || "").trim(),
+        full_name: getResponsiblePersonName(item),
       }))
       .filter((item) => item.employee_id);
     const unique = getUniqueResponsibleOptions(normalized);
@@ -6072,9 +6092,13 @@ const handleBookForOtherSubmit = async () => {
     const selectedOption = options.find(
       (item) => normalizeResponsibleValue(item?.employee_id || item?.employeeId || "") === resolved
     );
-    targetEmployeeName = normalizeResponsibleValue(
-      selectedOption?.full_name || selectedOption?.fullName || ""
-    );
+    targetEmployeeName = normalizeResponsibleValue(getResponsiblePersonName(selectedOption));
+    if (!targetEmployeeName) {
+      targetEmployeeName = raw.replace(/\s*\(\s*\d+\s*\)\s*$/u, "").trim();
+      if (targetEmployeeName === raw) {
+        targetEmployeeName = "";
+      }
+    }
   } else {
     return;
   }
@@ -6606,10 +6630,14 @@ const responsibleOptionsByFieldId = new Map();
 
 const normalizeResponsibleValue = (value) => String(value || "").trim();
 const isNumericEmployeeId = (value) => /^\d+$/.test(value);
+const getResponsiblePersonName = (item) =>
+  String(
+    item?.full_name || item?.fullName || item?.user_name || item?.userName || item?.name || ""
+  ).trim();
 
 const buildResponsibleLabel = (item) => {
   const employeeId = String(item?.employee_id || item?.employeeId || "").trim();
-  const fullName = String(item?.full_name || item?.fullName || "").trim();
+  const fullName = getResponsiblePersonName(item);
   if (!employeeId) {
     return "";
   }
@@ -6853,7 +6881,7 @@ const fetchCoworkingResponsibleOptions = async (buildingId = null) => {
     const normalized = items
       .map((item) => ({
         employee_id: String(item?.employee_id || item?.employeeId || "").trim(),
-        full_name: String(item?.full_name || item?.fullName || "").trim(),
+        full_name: getResponsiblePersonName(item),
       }))
       .filter((item) => item.employee_id);
     const unique = getUniqueResponsibleOptions(normalized);
