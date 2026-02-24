@@ -4539,7 +4539,13 @@ const deskLabelMeasureContext = deskLabelMeasureCanvas.getContext("2d");
 
 const getDeskLabelAvailableWidth = (desk) => {
   const { width } = getDeskDimensions(desk);
-  return Math.max(20, width * 0.7);
+  const svg = getSnapshotSvg();
+  const metrics = getDeskMetrics(svg, desk);
+  // Keep a pixel-based inner padding so label does not touch desk borders on dense/small layouts.
+  const sidePaddingPx = 12;
+  const sidePadding = sidePaddingPx * (metrics?.scaleX || 1);
+  const widthWithPadding = width - sidePadding * 2;
+  return Math.max(20, Math.min(width * 0.7, widthWithPadding));
 };
 
 const measureDeskLabelLineWidth = (desk, line, labelNode = null) => {
