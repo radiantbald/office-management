@@ -4527,7 +4527,7 @@ const getDeskBookingTitle = (desk) => {
 const getDeskBookingLabelLine = (desk) => {
   if (desk?.bookingStatus === "booked" || desk?.bookingStatus === "my") {
     const name = typeof desk?.bookingUserName === "string" ? desk.bookingUserName.trim() : "";
-    return name || "сотрудник";
+    return name;
   }
   return "";
 };
@@ -4538,7 +4538,7 @@ const deskLabelMeasureContext = deskLabelMeasureCanvas.getContext("2d");
 
 const getDeskLabelAvailableWidth = (desk) => {
   const { width } = getDeskDimensions(desk);
-  return Math.max(20, width * 0.84);
+  return Math.max(20, width * 0.76);
 };
 
 const measureDeskLabelLineWidth = (desk, line) => {
@@ -4564,21 +4564,34 @@ const wrapDeskBookingLabelLine = (bookingLine, desk) => {
   if (!line) {
     return [];
   }
-  const match = line.match(deskBookingInitialsPattern);
-  if (!match) {
-    return [line];
-  }
   const availableWidth = getDeskLabelAvailableWidth(desk);
   const lineWidth = measureDeskLabelLineWidth(desk, line);
   if (lineWidth <= availableWidth) {
     return [line];
   }
-  const surname = (match[1] || "").trim();
-  const initials = (match[2] || "").replace(/\s+/g, "").trim();
-  if (!surname || !initials) {
-    return [line];
+  const match = line.match(deskBookingInitialsPattern);
+  if (match) {
+    const surname = (match[1] || "").trim();
+    const initials = (match[2] || "").replace(/\s+/g, "").trim();
+    if (surname && initials) {
+      return [surname, initials];
+    }
   }
-  return [surname, initials];
+  // Fallback for other compact formats: split by the last token if both parts fit.
+  const parts = line.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    const tail = String(parts.pop() || "").trim();
+    const head = parts.join(" ").trim();
+    if (
+      head &&
+      tail &&
+      measureDeskLabelLineWidth(desk, head) <= availableWidth &&
+      measureDeskLabelLineWidth(desk, tail) <= availableWidth
+    ) {
+      return [head, tail];
+    }
+  }
+  return [line];
 };
 
 const getDeskLabelLines = (desk) => {
@@ -4684,7 +4697,7 @@ const applyBookingsToDesks = (bookings = []) => {
     }
   });
   bookingState.bookingsByDeskId = byDesk;
-  const { employeeId: currentEmployeeID } = getBookingUserInfo();
+  const { employeeId: currentEmployeeID, name: currentUserName } = getBookingUserInfo();
   currentDesks.forEach((desk) => {
     const booking = byDesk.get(String(desk.id));
     if (!booking) {
@@ -4701,7 +4714,15 @@ const applyBookingsToDesks = (bookings = []) => {
     const bookingUserName = String(booking.user_name || booking.userName || bookingUserKey || "").trim();
     const avatarUrl = String(booking.avatar_url || booking.avatarUrl || "").trim();
     const wbBand = String(booking.wb_band || booking.wbBand || booking.wbband || "").trim();
-    desk.bookingUserName = formatUserNameInitials(bookingUserName);
+    const formattedBookingUserName = formatUserNameInitials(bookingUserName);
+    const isMyBooking = Boolean(currentEmployeeID && bookingUserKey === currentEmployeeID);
+    if (formattedBookingUserName) {
+      desk.bookingUserName = formattedBookingUserName;
+    } else if (isMyBooking) {
+      desk.bookingUserName = formatUserNameInitials(currentUserName || "Вы");
+    } else if (!String(desk.bookingUserName || "").trim()) {
+      desk.bookingUserName = "";
+    }
     desk.bookingUserKey = bookingUserKey;
     desk.bookingTenantEmployeeID = bookingTenantID;
     desk.booking = {
@@ -4715,7 +4736,7 @@ const applyBookingsToDesks = (bookings = []) => {
         wb_band: wbBand,
       },
     };
-    if (currentEmployeeID && bookingUserKey === currentEmployeeID) {
+    if (isMyBooking) {
       desk.bookingStatus = "my";
     } else {
       desk.bookingStatus = "booked";
