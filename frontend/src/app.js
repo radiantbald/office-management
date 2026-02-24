@@ -4541,8 +4541,14 @@ const deskLabelHorizontalPadding = 10;
 const getDeskLabelAvailableWidth = (desk) => {
   const { width, height } = getDeskDimensions(desk);
   const rotationRadians = (getDeskRotation(desk) * Math.PI) / 180;
-  const horizontalSpan = Math.abs(width * Math.cos(rotationRadians)) + Math.abs(height * Math.sin(rotationRadians));
-  return Math.max(20, horizontalSpan - deskLabelHorizontalPadding * 2);
+  const absCos = Math.abs(Math.cos(rotationRadians));
+  const absSin = Math.abs(Math.sin(rotationRadians));
+  const eps = 1e-6;
+  const limitByWidth = absCos > eps ? width / absCos : Number.POSITIVE_INFINITY;
+  const limitByHeight = absSin > eps ? height / absSin : Number.POSITIVE_INFINITY;
+  // Horizontal text sits on the desk centerline; use that cross-section width.
+  const centerlineHorizontalSpan = Math.min(limitByWidth, limitByHeight);
+  return Math.max(20, centerlineHorizontalSpan - deskLabelHorizontalPadding * 2);
 };
 
 const measureDeskLabelLineWidth = (desk, line, labelNode = null) => {
