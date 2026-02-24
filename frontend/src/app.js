@@ -426,8 +426,6 @@ const deskShrinkFactor = 0.9;
 const deskRotateStep = 15;
 const deskSnapDistance = 8;
 const deskRotationSnapTolerance = 6;
-const deskLabelHorizontalPadding = 6;
-const deskLabelMinFontSize = 7;
 /* spaceKindLabels, spaceKindPluralLabels, defaultSpaceKind → imported from utils.js */
 let currentSpaceKindFilter = defaultSpaceKind;
 let visibleSpaces = [];
@@ -4534,60 +4532,73 @@ const getDeskBookingLabelLine = (desk) => {
   return "";
 };
 
-const getDeskLabelLines = (desk) => {
+const deskBookingInitialsPattern = /^(.+?)\s+((?:[A-Za-zА-Яа-яЁё]\.){1,3})$/u;
+const deskLabelMeasureCanvas = document.createElement("canvas");
+const deskLabelMeasureContext = deskLabelMeasureCanvas.getContext("2d");
+
+const getDeskLabelAvailableWidth = (desk) => {
+  const { width } = getDeskDimensions(desk);
+  return Math.max(20, width * 0.84);
+};
+
+const measureDeskLabelLineWidth = (label, line) => {
+  const text = typeof line === "string" ? line : "";
+  if (!text) {
+    return 0;
+  }
+  if (!deskLabelMeasureContext || typeof window === "undefined" || typeof window.getComputedStyle !== "function") {
+    return text.length * 8;
+  }
+  const styles = window.getComputedStyle(label);
+  const fontStyle = styles.fontStyle || "normal";
+  const fontVariant = styles.fontVariant || "normal";
+  const fontWeight = styles.fontWeight || "400";
+  const fontSize = styles.fontSize || "14px";
+  const fontFamily = styles.fontFamily || "sans-serif";
+  deskLabelMeasureContext.font = `${fontStyle} ${fontVariant} ${fontWeight} ${fontSize} ${fontFamily}`;
+  return deskLabelMeasureContext.measureText(text).width;
+};
+
+const wrapDeskBookingLabelLine = (bookingLine, desk, label) => {
+  const line = typeof bookingLine === "string" ? bookingLine.trim() : "";
+  if (!line) {
+    return [];
+  }
+  const match = line.match(deskBookingInitialsPattern);
+  if (!match) {
+    return [line];
+  }
+  const availableWidth = getDeskLabelAvailableWidth(desk);
+  const lineWidth = measureDeskLabelLineWidth(label, line);
+  if (lineWidth <= availableWidth) {
+    return [line];
+  }
+  const surname = (match[1] || "").trim();
+  const initials = (match[2] || "").trim();
+  if (!surname || !initials) {
+    return [line];
+  }
+  return [surname, initials];
+};
+
+const getDeskLabelLines = (desk, labelNode) => {
   const label = typeof desk?.label === "string" ? desk.label.trim() : "";
   const bookingLine = getDeskBookingLabelLine(desk);
+  const wrappedBookingLines = wrapDeskBookingLabelLine(bookingLine, desk, labelNode);
   if (bookingLine) {
-    return label ? [label, bookingLine] : [bookingLine];
+    return label ? [label, ...wrappedBookingLines] : wrappedBookingLines;
   }
   return [label || ""];
 };
 
-const fitDeskLabelToDeskWidth = (label, deskWidth) => {
+const setDeskLabelContent = (label, desk) => {
   if (!label) {
     return;
   }
-  const normalizedDeskWidth = Number(deskWidth);
-  const availableWidth = Number.isFinite(normalizedDeskWidth)
-    ? Math.max(0, normalizedDeskWidth - deskLabelHorizontalPadding * 2)
-    : 0;
-  const tspanNodes = Array.from(label.querySelectorAll("tspan"));
-  const lineNodes = tspanNodes.length > 0 ? tspanNodes : [label];
-  lineNodes.forEach((lineNode) => {
-    lineNode.style.removeProperty("font-size");
-  });
-  if (!(availableWidth > 0)) {
-    return;
-  }
-  lineNodes.forEach((lineNode) => {
-    const text = String(lineNode.textContent || "").trim();
-    if (!text || typeof lineNode.getComputedTextLength !== "function") {
-      return;
-    }
-    const textWidth = lineNode.getComputedTextLength();
-    if (!(textWidth > availableWidth)) {
-      return;
-    }
-    const lineFontSize = Number.parseFloat(window.getComputedStyle(lineNode).fontSize);
-    if (!Number.isFinite(lineFontSize) || lineFontSize <= 0) {
-      return;
-    }
-    const fittedFontSize = Math.max(deskLabelMinFontSize, lineFontSize * (availableWidth / textWidth));
-    if (fittedFontSize < lineFontSize) {
-      lineNode.style.setProperty("font-size", `${fittedFontSize}px`);
-    }
-  });
-};
-
-const setDeskLabelContent = (label, desk, deskWidth = null) => {
-  if (!label) {
-    return;
-  }
-  const lines = getDeskLabelLines(desk);
+  const lines = getDeskLabelLines(desk, label);
   label.textContent = "";
   if (lines.length <= 1) {
     label.textContent = lines[0] || "";
-    fitDeskLabelToDeskWidth(label, deskWidth);
     return;
   }
   lines.forEach((line, index) => {
@@ -4597,7 +4608,6 @@ const setDeskLabelContent = (label, desk, deskWidth = null) => {
     tspan.textContent = line;
     label.appendChild(tspan);
   });
-  fitDeskLabelToDeskWidth(label, deskWidth);
 };
 
 const updateDeskBookingIndicators = (desks = []) => {
@@ -4633,8 +4643,7 @@ const updateDeskBookingIndicators = (desks = []) => {
       : getDeskBookingTitle(desk);
     const label = group.querySelector(".space-desk-label");
     if (label) {
-      const deskMetrics = getDeskMetrics(svg, desk);
-      setDeskLabelContent(label, desk, deskMetrics.width);
+      setDeskLabelContent(label, desk);
     }
   });
   return !missingDeskNode;
@@ -10018,7 +10027,6 @@ const updateDeskElementPosition = (group, desk, metrics) => {
         tspan.setAttribute("x", String(desk.x));
       });
     }
-    fitDeskLabelToDeskWidth(label, width);
   }
   const rotator = group.querySelector(".space-desk-rotator") || group;
   const handlesGroup = group.querySelector(".desk-handles");
@@ -10402,7 +10410,7 @@ const renderSpaceDesks = (desks = []) => {
     const labelFontSize = getDeskLabelFontSize(deskMetrics.width, deskMetrics.height);
     label.classList.add("space-desk-label");
     label.style.setProperty("font-size", `${labelFontSize}px`);
-    setDeskLabelContent(label, desk, deskMetrics.width);
+    setDeskLabelContent(label, desk);
     label.setAttribute("x", String(desk.x));
     label.setAttribute("y", String(desk.y));
     label.setAttribute("text-anchor", "middle");
