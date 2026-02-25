@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -168,6 +169,7 @@ func (a *app) handleCancelAllMyMeetingRoomBookings(w http.ResponseWriter, r *htt
 		return
 	}
 
+	cancelledSlots, _ := a.listActiveMeetingBookingSlotsByEmployee(r.Context(), employeeID)
 	result, err := a.db.ExecContext(r.Context(),
 		`UPDATE meeting_room_bookings
 		    SET cancelled_at = now(), canceller_employee_id = $1
@@ -181,10 +183,17 @@ func (a *app) handleCancelAllMyMeetingRoomBookings(w http.ResponseWriter, r *htt
 	}
 
 	count, _ := result.RowsAffected()
+	formattedSlots := formatAuditMeetingBookingSlots(cancelledSlots)
+	changes := make([]string, 0)
+	if len(formattedSlots) > 0 {
+		changes = append(changes, fmt.Sprintf("Слоты бронирований: %s", strings.Join(formattedSlots, ", ")))
+	}
 	a.logAuditEventFromRequest(r, auditActionCancel, auditEntityMeetingBooking, 0, "Все бронирования переговорок пользователя", map[string]any{
 		"cancelled_by_employee_id": employeeID,
 		"deleted_count":            count,
 		"scope":                    "all_my_meeting_bookings",
+		"booking_slots":            formattedSlots,
+		"changes":                  changes,
 	})
 	respondJSON(w, http.StatusOK, map[string]any{"success": true, "deletedCount": count})
 }
@@ -434,10 +443,17 @@ func (a *app) handleCreateMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if roomName, details, metaErr := a.getMeetingRoomAuditMeta(payload.MeetingRoomID); metaErr == nil {
+		bookingDate, bookingTime := formatAuditMeetingRange(payload.StartTime, payload.EndTime)
 		details["start_time"] = payload.StartTime
 		details["end_time"] = payload.EndTime
+		details["booking_date"] = bookingDate
+		details["booking_time"] = bookingTime
 		details["booked_by_employee_id"] = employeeID
 		details["replaced_count"] = replacedCount
+		details["changes"] = []string{
+			fmt.Sprintf("Дата бронирования: %s", details["booking_date"]),
+			fmt.Sprintf("Время бронирования: %s", details["booking_time"]),
+		}
 		a.logAuditEventFromRequest(r, auditActionBook, auditEntityMeetingBooking, payload.MeetingRoomID, roomName, details)
 	}
 
@@ -490,6 +506,7 @@ func (a *app) handleCancelMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	targetLabel := a.resolveBookingTargetLabel(r.Context(), employeeID)
 	result, err := a.db.ExecContext(r.Context(),
 		`UPDATE meeting_room_bookings
 		    SET cancelled_at = now(), canceller_employee_id = $5
@@ -513,9 +530,18 @@ func (a *app) handleCancelMeetingRoomBooking(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if roomName, details, metaErr := a.getMeetingRoomAuditMeta(payload.MeetingRoomID); metaErr == nil {
+		bookingDate, bookingTime := formatAuditMeetingRange(payload.StartTime, payload.EndTime)
 		details["start_time"] = payload.StartTime
 		details["end_time"] = payload.EndTime
+		details["booking_date"] = bookingDate
+		details["booking_time"] = bookingTime
 		details["cancelled_by_employee_id"] = employeeID
+		details["cancelled_booking_for"] = targetLabel
+		details["changes"] = []string{
+			fmt.Sprintf("Дата бронирования: %s", details["booking_date"]),
+			fmt.Sprintf("Время бронирования: %s", details["booking_time"]),
+			fmt.Sprintf("С кого снято бронирование: %s", targetLabel),
+		}
 		a.logAuditEventFromRequest(r, auditActionCancel, auditEntityMeetingBooking, payload.MeetingRoomID, roomName, details)
 	}
 
@@ -640,4 +666,103 @@ func getEmployeeIDByWbUserID(ctx context.Context, queryer rowQueryer, wbUserID s
 		return "", err
 	}
 	return strings.TrimSpace(employeeID), nil
+}
+
+func (a *app) listActiveMeetingBookingSlotsByEmployee(ctx context.Context, employeeID string) ([]string, error) {
+	rows, err := a.db.QueryContext(ctx,
+		`SELECT start_at, end_at
+		   FROM meeting_room_bookings
+		  WHERE applier_employee_id = $1 AND end_at > now() AND cancelled_at IS NULL
+		  ORDER BY start_at ASC`,
+		strings.TrimSpace(employeeID),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	slots := make([]string, 0)
+	for rows.Next() {
+		var startAt time.Time
+		var endAt time.Time
+		if err := rows.Scan(&startAt, &endAt); err != nil {
+			return nil, err
+		}
+		slots = append(slots, formatAuditMeetingSlot(
+			startAt.Format("2006-01-02 15:04"),
+			endAt.Format("2006-01-02 15:04"),
+		))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return slots, nil
+}
+
+func formatAuditMeetingRange(startTime, endTime string) (string, string) {
+	startDate, startClock := formatAuditMeetingDateAndClock(startTime)
+	_, endClock := formatAuditMeetingDateAndClock(endTime)
+	if startDate == "" {
+		startDate = strings.TrimSpace(startTime)
+	}
+	if startClock == "" && len(startTime) >= 16 {
+		startClock = startTime[11:16]
+	}
+	if endClock == "" && len(endTime) >= 16 {
+		endClock = endTime[11:16]
+	}
+	timeRange := strings.TrimSpace(fmt.Sprintf("%s - %s", startClock, endClock))
+	timeRange = strings.Trim(timeRange, "- ")
+	return startDate, timeRange
+}
+
+func formatAuditMeetingDateAndClock(raw string) (string, string) {
+	normalized := strings.TrimSpace(raw)
+	if normalized == "" {
+		return "", ""
+	}
+	layouts := []string{
+		"2006-01-02 15:04",
+		time.RFC3339,
+	}
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, normalized)
+		if err == nil {
+			return parsed.Format("02-01-2006"), parsed.Format("15:04")
+		}
+	}
+	if len(normalized) >= 16 {
+		datePart := normalized[:10]
+		clockPart := normalized[11:16]
+		if parsedDate, err := time.Parse("2006-01-02", datePart); err == nil {
+			return parsedDate.Format("02-01-2006"), clockPart
+		}
+	}
+	return normalized, ""
+}
+
+func formatAuditMeetingSlot(startTime, endTime string) string {
+	date, timeRange := formatAuditMeetingRange(startTime, endTime)
+	if date == "" {
+		return strings.TrimSpace(timeRange)
+	}
+	if timeRange == "" {
+		return date
+	}
+	return fmt.Sprintf("%s %s", date, timeRange)
+}
+
+func formatAuditMeetingBookingSlots(slots []string) []string {
+	formatted := make([]string, 0, len(slots))
+	for _, slot := range slots {
+		parts := strings.Split(slot, " - ")
+		if len(parts) == 2 && len(parts[0]) >= 16 && len(parts[1]) >= 16 {
+			formatted = append(formatted, formatAuditMeetingSlot(parts[0], parts[1]))
+			continue
+		}
+		value := strings.TrimSpace(slot)
+		if value != "" {
+			formatted = append(formatted, value)
+		}
+	}
+	return formatted
 }

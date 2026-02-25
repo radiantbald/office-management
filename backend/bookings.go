@@ -297,9 +297,17 @@ func (a *app) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if deskName, details, metaErr := a.getWorkplaceAuditMeta(payload.WorkplaceID); metaErr == nil {
+		bookingFor := a.resolveBookingTargetLabel(r.Context(), employeeID)
+		formattedDate := formatAuditDeskDate(date)
 		details["date"] = date
+		details["booking_date"] = formattedDate
 		details["booked_for_employee_id"] = employeeID
 		details["requested_by_employee_id"] = requesterEmployeeID
+		details["booking_for"] = bookingFor
+		details["changes"] = []string{
+			fmt.Sprintf("Дата бронирования: %s", formattedDate),
+			fmt.Sprintf("Кому забронировано: %s", bookingFor),
+		}
 		a.logAuditEventFromRequest(r, auditActionBook, auditEntityDeskBooking, payload.WorkplaceID, deskName, details)
 	}
 
@@ -335,6 +343,8 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bookingTargetLabel := a.getActiveDeskBookingTargetLabel(r.Context(), payload.WorkplaceID, date)
+
 	// Try to cancel own booking first.
 	result, err := a.db.ExecContext(r.Context(),
 		`UPDATE workplace_bookings
@@ -354,9 +364,20 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 	affected, _ := result.RowsAffected()
 	if affected > 0 {
 		if deskName, details, metaErr := a.getWorkplaceAuditMeta(payload.WorkplaceID); metaErr == nil {
+			formattedDate := formatAuditDeskDate(date)
+			targetLabel := bookingTargetLabel
+			if strings.TrimSpace(targetLabel) == "" {
+				targetLabel = a.resolveBookingTargetLabel(r.Context(), employeeID)
+			}
 			details["date"] = date
+			details["booking_date"] = formattedDate
 			details["cancelled_by_employee_id"] = employeeID
 			details["scope"] = "own"
+			details["cancelled_booking_for"] = targetLabel
+			details["changes"] = []string{
+				fmt.Sprintf("Дата бронирования: %s", formattedDate),
+				fmt.Sprintf("С кого снято бронирование: %s", targetLabel),
+			}
 			a.logAuditEventFromRequest(r, auditActionCancel, auditEntityDeskBooking, payload.WorkplaceID, deskName, details)
 		}
 		respondJSON(w, http.StatusOK, map[string]any{"success": true})
@@ -390,9 +411,20 @@ func (a *app) handleCancelBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if deskName, details, metaErr := a.getWorkplaceAuditMeta(payload.WorkplaceID); metaErr == nil {
+		formattedDate := formatAuditDeskDate(date)
+		targetLabel := bookingTargetLabel
+		if strings.TrimSpace(targetLabel) == "" {
+			targetLabel = "Сотрудник"
+		}
 		details["date"] = date
+		details["booking_date"] = formattedDate
 		details["cancelled_by_employee_id"] = employeeID
 		details["scope"] = "managed"
+		details["cancelled_booking_for"] = targetLabel
+		details["changes"] = []string{
+			fmt.Sprintf("Дата бронирования: %s", formattedDate),
+			fmt.Sprintf("С кого снято бронирование: %s", targetLabel),
+		}
 		a.logAuditEventFromRequest(r, auditActionCancel, auditEntityDeskBooking, payload.WorkplaceID, deskName, details)
 	}
 
@@ -487,6 +519,7 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cancelledDates, _ := a.listActiveDeskBookingDatesByEmployee(r.Context(), employeeID)
 	result, err := a.db.ExecContext(r.Context(),
 		`UPDATE workplace_bookings
 		    SET cancelled_at = now(), canceller_employee_id = $1
@@ -500,10 +533,17 @@ func (a *app) handleCancelAllBookings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	count, _ := result.RowsAffected()
+	formattedDates := formatAuditDeskDates(cancelledDates)
+	changes := make([]string, 0)
+	if len(formattedDates) > 0 {
+		changes = append(changes, fmt.Sprintf("Даты бронирований: %s", strings.Join(formattedDates, ", ")))
+	}
 	a.logAuditEventFromRequest(r, auditActionCancel, auditEntityDeskBooking, 0, "Все бронирования пользователя", map[string]any{
 		"cancelled_by_employee_id": employeeID,
 		"deleted_count":            count,
 		"scope":                    "all_my_bookings",
+		"booking_dates":            formattedDates,
+		"changes":                  changes,
 	})
 	respondJSON(w, http.StatusOK, map[string]any{"success": true, "deletedCount": count})
 }
@@ -595,6 +635,7 @@ func (a *app) handleCancelAllSpaceBookings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	cancelledDates, _ := a.listActiveDeskBookingDatesByCoworking(r.Context(), spaceIDValue)
 	cancellerID, _ := extractEmployeeIDFromRequest(r, a.db)
 	result, err := a.db.ExecContext(r.Context(),
 		`UPDATE workplace_bookings
@@ -612,11 +653,18 @@ func (a *app) handleCancelAllSpaceBookings(w http.ResponseWriter, r *http.Reques
 	}
 
 	count, _ := result.RowsAffected()
+	formattedDates := formatAuditDeskDates(cancelledDates)
+	changes := make([]string, 0)
+	if len(formattedDates) > 0 {
+		changes = append(changes, fmt.Sprintf("Даты бронирований: %s", strings.Join(formattedDates, ", ")))
+	}
 	a.logAuditEventFromRequest(r, auditActionCancel, auditEntityDeskBooking, spaceIDValue, fmt.Sprintf("Коворкинг #%d", spaceIDValue), map[string]any{
 		"coworking_id":             spaceIDValue,
 		"cancelled_by_employee_id": cancellerID,
 		"deleted_count":            count,
 		"scope":                    "all_coworking_bookings",
+		"booking_dates":            formattedDates,
+		"changes":                  changes,
 	})
 	respondJSON(w, http.StatusOK, map[string]any{"success": true, "deletedCount": count})
 }
@@ -751,10 +799,19 @@ func (a *app) handleCreateMultipleBookings(w http.ResponseWriter, r *http.Reques
 	sort.Strings(failed)
 	if len(created) > 0 {
 		if deskName, details, metaErr := a.getWorkplaceAuditMeta(payload.WorkplaceID); metaErr == nil {
+			bookingFor := a.resolveBookingTargetLabel(r.Context(), employeeID)
+			formattedCreated := formatAuditDeskDates(created)
+			datesText := strings.Join(formattedCreated, ", ")
 			details["created_dates"] = created
 			details["failed_dates"] = failed
+			details["booking_dates"] = formattedCreated
 			details["booked_for_employee_id"] = employeeID
 			details["requested_by_employee_id"] = requesterEmployeeID
+			details["booking_for"] = bookingFor
+			details["changes"] = []string{
+				fmt.Sprintf("Даты бронирований: %s", datesText),
+				fmt.Sprintf("Кому забронировано: %s", bookingFor),
+			}
 			a.logAuditEventFromRequest(r, auditActionBook, auditEntityDeskBooking, payload.WorkplaceID, deskName, details)
 		}
 	}
@@ -811,6 +868,131 @@ func (a *app) canManageCoworkingByWorkplaceID(r *http.Request, workplaceID int64
 	return (buildingResp != "" && buildingResp == eid) ||
 		(floorResp != "" && floorResp == eid) ||
 		(coworkingResp != "" && coworkingResp == eid)
+}
+
+func (a *app) resolveBookingTargetLabel(ctx context.Context, employeeID string) string {
+	targetID := strings.TrimSpace(employeeID)
+	if targetID == "" {
+		return ""
+	}
+	if targetID == "0" {
+		return "Гость"
+	}
+	if a == nil || a.db == nil {
+		return targetID
+	}
+	fullName, err := getUserNameByEmployeeID(ctx, a.db, targetID)
+	if err != nil {
+		return targetID
+	}
+	name := strings.TrimSpace(fullName)
+	if name == "" {
+		return targetID
+	}
+	return fmt.Sprintf("%s (%s)", name, targetID)
+}
+
+func (a *app) listActiveDeskBookingDatesByEmployee(ctx context.Context, employeeID string) ([]string, error) {
+	rows, err := a.db.QueryContext(ctx,
+		`SELECT DISTINCT date
+		   FROM workplace_bookings
+		  WHERE applier_employee_id = $1 AND cancelled_at IS NULL
+		  ORDER BY date ASC`,
+		strings.TrimSpace(employeeID),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	dates := make([]string, 0)
+	for rows.Next() {
+		var date string
+		if err := rows.Scan(&date); err != nil {
+			return nil, err
+		}
+		date = strings.TrimSpace(date)
+		if date != "" {
+			dates = append(dates, date)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return dates, nil
+}
+
+func (a *app) listActiveDeskBookingDatesByCoworking(ctx context.Context, coworkingID int64) ([]string, error) {
+	rows, err := a.db.QueryContext(ctx,
+		`SELECT DISTINCT b.date
+		   FROM workplace_bookings b
+		   JOIN workplaces w ON w.id = b.workplace_id
+		  WHERE w.coworking_id = $1
+		    AND b.date >= CURRENT_DATE::text
+		    AND b.cancelled_at IS NULL
+		  ORDER BY b.date ASC`,
+		coworkingID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	dates := make([]string, 0)
+	for rows.Next() {
+		var date string
+		if err := rows.Scan(&date); err != nil {
+			return nil, err
+		}
+		date = strings.TrimSpace(date)
+		if date != "" {
+			dates = append(dates, date)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return dates, nil
+}
+
+func (a *app) getActiveDeskBookingTargetLabel(ctx context.Context, workplaceID int64, date string) string {
+	if a == nil || a.db == nil || workplaceID <= 0 {
+		return ""
+	}
+	var applierEmployeeID string
+	err := a.db.QueryRowContext(ctx,
+		`SELECT COALESCE(applier_employee_id, '')
+		   FROM workplace_bookings
+		  WHERE workplace_id = $1 AND date = $2 AND cancelled_at IS NULL
+		  LIMIT 1`,
+		workplaceID,
+		strings.TrimSpace(date),
+	).Scan(&applierEmployeeID)
+	if err != nil {
+		return ""
+	}
+	return a.resolveBookingTargetLabel(ctx, applierEmployeeID)
+}
+
+func formatAuditDeskDate(raw string) string {
+	normalized := strings.TrimSpace(raw)
+	if normalized == "" {
+		return ""
+	}
+	parsed, err := time.Parse("2006-01-02", normalized)
+	if err != nil {
+		return normalized
+	}
+	return parsed.Format("02-01-2006")
+}
+
+func formatAuditDeskDates(dates []string) []string {
+	formatted := make([]string, 0, len(dates))
+	for _, date := range dates {
+		value := formatAuditDeskDate(date)
+		if value != "" {
+			formatted = append(formatted, value)
+		}
+	}
+	return formatted
 }
 
 // extractBookingUser returns the user identity from the validated JWT claims

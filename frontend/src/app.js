@@ -2979,6 +2979,67 @@ const getAuditActionLabel = (value) => {
   return auditActionLabels[key] || key || "—";
 };
 
+const getAuditPrimaryEntityLabel = (entityType) => {
+  const key = String(entityType || "").trim();
+  if (key === "desk_booking") {
+    return "Стол";
+  }
+  if (key === "meeting_booking") {
+    return "Переговорка";
+  }
+  return getAuditEntityLabel(key);
+};
+
+const getAuditEntityPath = (item) => {
+  const details = item?.details && typeof item.details === "object" ? item.details : null;
+  const fromDetails = String(details?.entity_path || "").trim();
+  if (fromDetails) {
+    return fromDetails;
+  }
+  const parts = [];
+  const pushPart = (value) => {
+    const text = String(value || "").trim();
+    if (!text) {
+      return;
+    }
+    if (parts.includes(text)) {
+      return;
+    }
+    parts.push(text);
+  };
+  pushPart(details?.building_name);
+  pushPart(details?.floor_name);
+  pushPart(details?.subdivision_level_1 || details?.before_subdivision_1 || details?.after_subdivision_1);
+  pushPart(details?.subdivision_level_2 || details?.before_subdivision_2 || details?.after_subdivision_2);
+  pushPart(details?.coworking_name || details?.meeting_room_name || details?.space_name || item?.entity_name);
+  pushPart(details?.desk_label);
+  return parts.join(" · ");
+};
+
+const normalizeAuditEntityPath = (path, item) => {
+  const rawPath = String(path || "").trim();
+  if (!rawPath) {
+    return "";
+  }
+  const parts = rawPath
+    .split("·")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  if (parts.length === 0) {
+    return "";
+  }
+  const entityType = String(item?.entity_type || "").trim();
+  const shouldKeepTailName = entityType === "desk" || entityType === "desk_booking";
+  const entityName = String(item?.entity_name || "").trim();
+  if (!shouldKeepTailName && entityName && parts.length > 1) {
+    const lastPart = parts[parts.length - 1];
+    if (lastPart.toLowerCase() === entityName.toLowerCase()) {
+      parts.pop();
+    }
+  }
+  return parts.join(" · ");
+};
+
 const formatAuditDateTime = (value) => {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) {
@@ -2996,27 +3057,75 @@ const formatAuditDateTime = (value) => {
 
 const stringifyAuditDetails = (details) => {
   if (!details || typeof details !== "object") {
-    return "—";
+    return "";
   }
-  const entries = Object.entries(details).filter(([, value]) => value !== null && value !== undefined && value !== "");
-  if (entries.length === 0) {
-    return "—";
+
+  const normalizeValue = (value) => {
+    if (value === null || value === undefined) {
+      return "";
+    }
+    if (Array.isArray(value)) {
+      return value.join(", ");
+    }
+    if (typeof value === "object") {
+      try {
+        return JSON.stringify(value);
+      } catch (_error) {
+        return "[object]";
+      }
+    }
+    return String(value);
+  };
+
+  const compareValue = (value) => {
+    if (value === null || value === undefined) {
+      return "";
+    }
+    if (typeof value === "object") {
+      try {
+        return JSON.stringify(value);
+      } catch (_error) {
+        return String(value);
+      }
+    }
+    return String(value);
+  };
+
+  const changes = Array.isArray(details.changes)
+    ? details.changes
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    : [];
+  if (changes.length > 0) {
+    return changes.join("\n");
   }
-  return entries
-    .map(([key, value]) => {
-      if (Array.isArray(value)) {
-        return `${key}: ${value.join(", ")}`;
-      }
-      if (typeof value === "object") {
-        try {
-          return `${key}: ${JSON.stringify(value)}`;
-        } catch (_error) {
-          return `${key}: [object]`;
-        }
-      }
-      return `${key}: ${value}`;
-    })
-    .join("\n");
+
+  // Generic diff fallback: show only pairs before_* -> after_*
+  const diffLines = [];
+  const detailEntries = Object.entries(details);
+  detailEntries.forEach(([key, beforeValue]) => {
+    if (!key.startsWith("before_")) {
+      return;
+    }
+    const suffix = key.slice("before_".length);
+    if (!suffix) {
+      return;
+    }
+    const afterKey = `after_${suffix}`;
+    if (!Object.prototype.hasOwnProperty.call(details, afterKey)) {
+      return;
+    }
+    const afterValue = details[afterKey];
+    if (compareValue(beforeValue) === compareValue(afterValue)) {
+      return;
+    }
+    diffLines.push(`${suffix}: ${normalizeValue(beforeValue)} -> ${normalizeValue(afterValue)}`);
+  });
+  if (diffLines.length > 0) {
+    return diffLines.join("\n");
+  }
+
+  return "";
 };
 
 const buildAuditLogsQuery = () => {
@@ -3076,13 +3185,17 @@ const renderAuditLogs = () => {
     const entityCell = document.createElement("td");
     const entityWrap = document.createElement("div");
     entityWrap.className = "audit-logs-entity";
-    const entityName = document.createElement("span");
-    entityName.className = "audit-logs-entity-name";
-    entityName.textContent = String(item?.entity_name || "").trim() || "—";
     const entityMeta = document.createElement("span");
     entityMeta.className = "audit-logs-muted";
-    entityMeta.textContent = `${getAuditEntityLabel(item?.entity_type)} #${item?.entity_id ?? "—"}`;
-    entityWrap.append(entityName, entityMeta);
+    const entityID = item?.entity_id ?? "—";
+    const primaryEntityText = `${getAuditPrimaryEntityLabel(item?.entity_type)} #${entityID}`;
+    const entityPrimary = document.createElement("span");
+    entityPrimary.className = "audit-logs-entity-name";
+    entityPrimary.textContent = primaryEntityText;
+    const entityPath = normalizeAuditEntityPath(getAuditEntityPath(item), item);
+    entityMeta.textContent = entityPath;
+    entityMeta.classList.toggle("is-hidden", !entityPath);
+    entityWrap.append(entityPrimary, entityMeta);
     entityCell.appendChild(entityWrap);
     row.appendChild(entityCell);
 

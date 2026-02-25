@@ -2583,6 +2583,17 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusBadRequest, "name and address are required")
 				return
 			}
+			existingBuilding, err := a.getBuilding(id)
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					respondError(w, http.StatusNotFound, "building not found")
+					return
+				}
+				log.Printf("internal error: %v", err)
+				respondError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			beforeFloorSummaries := a.getFloorAuditSummaries(existingBuilding.Floors)
 			if payload.ResponsibleEmployeeID != nil {
 				trimmed := strings.TrimSpace(*payload.ResponsibleEmployeeID)
 				payload.ResponsibleEmployeeID = &trimmed
@@ -2598,17 +2609,7 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			}
 			timezone := ""
 			if payload.Timezone == nil {
-				existing, err := a.getBuilding(id)
-				if err != nil {
-					if errors.Is(err, errNotFound) {
-						respondError(w, http.StatusNotFound, "building not found")
-						return
-					}
-					log.Printf("internal error: %v", err)
-					respondError(w, http.StatusInternalServerError, "internal error")
-					return
-				}
-				timezone = existing.Timezone
+				timezone = existingBuilding.Timezone
 			} else {
 				normalized, err := normalizeTimezone(*payload.Timezone)
 				if err != nil {
@@ -2655,14 +2656,36 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			if payload.ResponsibleEmployeeID != nil {
 				a.auditResponsibilityChange(r.Context(), "building", id, previousResponsible, *payload.ResponsibleEmployeeID, requesterEmployeeID)
 			}
-			a.logAuditEventFromRequest(r, auditActionUpdate, auditEntityBuilding, result.ID, result.Name, map[string]any{
-				"building_id":          result.ID,
-				"building_name":        result.Name,
-				"address":              result.Address,
-				"timezone":             result.Timezone,
-				"floor_ids":            result.Floors,
-				"responsible_employee": result.ResponsibleEmployeeID,
-			})
+			afterFloorSummaries := a.getFloorAuditSummaries(result.Floors)
+			changes, addedFloors, removedFloors := describeBuildingAuditChanges(
+				existingBuilding,
+				result,
+				beforeFloorSummaries,
+				afterFloorSummaries,
+			)
+			if len(changes) > 0 {
+				a.logAuditEventFromRequest(r, auditActionUpdate, auditEntityBuilding, result.ID, result.Name, map[string]any{
+					"building_id":          result.ID,
+					"building_name":        result.Name,
+					"address":              result.Address,
+					"timezone":             result.Timezone,
+					"floor_ids":            result.Floors,
+					"responsible_employee": result.ResponsibleEmployeeID,
+					"changes":              changes,
+					"added_floors":         addedFloors,
+					"removed_floors":       removedFloors,
+					"before_name":          existingBuilding.Name,
+					"after_name":           result.Name,
+					"before_address":       existingBuilding.Address,
+					"after_address":        result.Address,
+					"before_timezone":      existingBuilding.Timezone,
+					"after_timezone":       result.Timezone,
+					"before_responsible":   existingBuilding.ResponsibleEmployeeID,
+					"after_responsible":    result.ResponsibleEmployeeID,
+					"before_floor_ids":     existingBuilding.Floors,
+					"after_floor_ids":      result.Floors,
+				})
+			}
 			respondJSON(w, http.StatusOK, result)
 		case http.MethodDelete:
 			if !ensureNotEmployeeRole(w, r, a.db) {
@@ -2728,6 +2751,15 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 						respondError(w, http.StatusInternalServerError, clearErr.Error())
 						return
 					}
+					if strings.TrimSpace(existing.ImageURL) != strings.TrimSpace(updated.ImageURL) {
+						a.logAuditEventFromRequest(r, auditActionUpdate, auditEntityBuilding, existing.ID, existing.Name, map[string]any{
+							"building_id":       existing.ID,
+							"building_name":     existing.Name,
+							"changes":           []string{fmt.Sprintf("Изображение: %q -> %q", existing.ImageURL, updated.ImageURL)},
+							"before_image_url":  existing.ImageURL,
+							"after_image_url":   updated.ImageURL,
+						})
+					}
 					respondJSON(w, http.StatusOK, updated)
 					return
 				}
@@ -2753,9 +2785,28 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 			if existing.ImageURL != "" && existing.ImageURL != imageURL {
 				_ = a.removeUploadedFile(existing.ImageURL)
 			}
+			if strings.TrimSpace(existing.ImageURL) != strings.TrimSpace(updated.ImageURL) {
+				a.logAuditEventFromRequest(r, auditActionUpdate, auditEntityBuilding, existing.ID, existing.Name, map[string]any{
+					"building_id":       existing.ID,
+					"building_name":     existing.Name,
+					"changes":           []string{fmt.Sprintf("Изображение: %q -> %q", existing.ImageURL, updated.ImageURL)},
+					"before_image_url":  existing.ImageURL,
+					"after_image_url":   updated.ImageURL,
+				})
+			}
 			respondJSON(w, http.StatusOK, updated)
 		case http.MethodDelete:
 			if !a.ensureCanManageBuilding(w, r, id) {
+				return
+			}
+			existing, existingErr := a.getBuilding(id)
+			if existingErr != nil {
+				if errors.Is(existingErr, errNotFound) {
+					respondError(w, http.StatusNotFound, "building not found")
+					return
+				}
+				log.Printf("internal error: %v", existingErr)
+				respondError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			updated, err := a.clearBuildingImage(id)
@@ -2767,6 +2818,15 @@ func (a *app) handleBuildingSubroutes(w http.ResponseWriter, r *http.Request) {
 				log.Printf("internal error: %v", err)
 				respondError(w, http.StatusInternalServerError, "internal error")
 				return
+			}
+			if strings.TrimSpace(existing.ImageURL) != strings.TrimSpace(updated.ImageURL) {
+				a.logAuditEventFromRequest(r, auditActionUpdate, auditEntityBuilding, existing.ID, existing.Name, map[string]any{
+					"building_id":       existing.ID,
+					"building_name":     existing.Name,
+					"changes":           []string{fmt.Sprintf("Изображение: %q -> %q", existing.ImageURL, updated.ImageURL)},
+					"before_image_url":  existing.ImageURL,
+					"after_image_url":   updated.ImageURL,
+				})
 			}
 			respondJSON(w, http.StatusOK, updated)
 		default:
@@ -2857,6 +2917,16 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 			if !a.ensureCanManageFloor(w, r, id) {
 				return
 			}
+			existingFloorForAudit, existingFloorErr := a.getFloor(id)
+			if existingFloorErr != nil {
+				if errors.Is(existingFloorErr, errNotFound) {
+					respondError(w, http.StatusNotFound, "floor not found")
+					return
+				}
+				log.Printf("internal error: %v", existingFloorErr)
+				respondError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
 			requesterEmployeeID, err := extractEmployeeIDFromRequest(r, a.db)
 			if err != nil {
 				log.Printf("internal error: %v", err)
@@ -2942,6 +3012,7 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 					a.auditResponsibilityChange(r.Context(), "floor", id, previousResponsible, *payload.ResponsibleEmployeeID, requesterEmployeeID)
 				}
 			}
+			changes := describeFloorAuditChanges(existingFloorForAudit, updated)
 			a.logAuditEventFromRequest(r, auditActionUpdate, auditEntityFloor, updated.ID, updated.Name, map[string]any{
 				"floor_id":             updated.ID,
 				"floor_name":           updated.Name,
@@ -2949,6 +3020,13 @@ func (a *app) handleFloorSubroutes(w http.ResponseWriter, r *http.Request) {
 				"floor_level":          updated.Level,
 				"responsible_employee": updated.ResponsibleEmployeeID,
 				"has_plan_svg":         strings.TrimSpace(updated.PlanSVG) != "",
+				"changes":              changes,
+				"before_name":          existingFloorForAudit.Name,
+				"after_name":           updated.Name,
+				"before_responsible":   existingFloorForAudit.ResponsibleEmployeeID,
+				"after_responsible":    updated.ResponsibleEmployeeID,
+				"before_has_plan_svg":  strings.TrimSpace(existingFloorForAudit.PlanSVG) != "",
+				"after_has_plan_svg":   strings.TrimSpace(updated.PlanSVG) != "",
 			})
 			respondJSON(w, http.StatusOK, updated)
 		case http.MethodDelete:
@@ -3188,6 +3266,16 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			payload.Color = strings.TrimSpace(payload.Color)
 			payload.SubdivisionLevel1 = strings.TrimSpace(payload.SubdivisionLevel1)
 			payload.SubdivisionLevel2 = strings.TrimSpace(payload.SubdivisionLevel2)
+			existingSpaceForAudit, existingSpaceErr := a.getSpace(id)
+			if existingSpaceErr != nil {
+				if errors.Is(existingSpaceErr, errNotFound) {
+					respondError(w, http.StatusNotFound, "space not found")
+					return
+				}
+				log.Printf("internal error: %v", existingSpaceErr)
+				respondError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
 			var lookupErr error
 			previousCoworkingResponsible := ""
 			if payload.ResponsibleEmployeeID != nil {
@@ -3334,6 +3422,7 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 			if result.Kind == "meeting" {
 				entityType = auditEntityMeetingRoom
 			}
+			changes := describeSpaceAuditChanges(existingSpaceForAudit, result)
 			a.logAuditEventFromRequest(r, auditActionUpdate, entityType, result.ID, result.Name, map[string]any{
 				"space_id":              result.ID,
 				"space_name":            result.Name,
@@ -3344,6 +3433,25 @@ func (a *app) handleSpaceSubroutes(w http.ResponseWriter, r *http.Request) {
 				"subdivision_level_2":   result.SubdivisionL2,
 				"responsible_employee":  result.ResponsibleEmployeeID,
 				"snapshot_hidden":       result.SnapshotHidden,
+				"changes":               changes,
+				"before_name":           existingSpaceForAudit.Name,
+				"after_name":            result.Name,
+				"before_kind":           existingSpaceForAudit.Kind,
+				"after_kind":            result.Kind,
+				"before_capacity":       existingSpaceForAudit.Capacity,
+				"after_capacity":        result.Capacity,
+				"before_color":          existingSpaceForAudit.Color,
+				"after_color":           result.Color,
+				"before_subdivision_1":  existingSpaceForAudit.SubdivisionL1,
+				"after_subdivision_1":   result.SubdivisionL1,
+				"before_subdivision_2":  existingSpaceForAudit.SubdivisionL2,
+				"after_subdivision_2":   result.SubdivisionL2,
+				"before_responsible":    existingSpaceForAudit.ResponsibleEmployeeID,
+				"after_responsible":     result.ResponsibleEmployeeID,
+				"before_snapshot_hidden": existingSpaceForAudit.SnapshotHidden,
+				"after_snapshot_hidden":  result.SnapshotHidden,
+				"before_polygon_points": formatPointsForAudit(existingSpaceForAudit.Points),
+				"after_polygon_points":  formatPointsForAudit(result.Points),
 			})
 			respondJSON(w, http.StatusOK, result)
 		case http.MethodDelete:
@@ -3684,6 +3792,16 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "no fields to update")
 			return
 		}
+		existingDeskForAudit, existingDeskErr := a.getDesk(id)
+		if existingDeskErr != nil {
+			if errors.Is(existingDeskErr, errNotFound) {
+				respondError(w, http.StatusNotFound, "desk not found")
+				return
+			}
+			log.Printf("internal error: %v", existingDeskErr)
+			respondError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 		result, err := a.updateDesk(id, payload.Label, payload.X, payload.Y, payload.Width, payload.Height, payload.Rotation)
 		if err != nil {
 			if errors.Is(err, errNotFound) {
@@ -3702,6 +3820,7 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+		changes := describeDeskAuditChanges(existingDeskForAudit, result)
 		a.logAuditEventFromRequest(r, auditActionUpdate, auditEntityDesk, result.ID, result.Label, map[string]any{
 			"desk_id":      result.ID,
 			"desk_label":   result.Label,
@@ -3711,6 +3830,19 @@ func (a *app) handleDeskSubroutes(w http.ResponseWriter, r *http.Request) {
 			"width":        result.Width,
 			"height":       result.Height,
 			"rotation":     result.Rotation,
+			"changes":      changes,
+			"before_label": existingDeskForAudit.Label,
+			"after_label":  result.Label,
+			"before_x":     existingDeskForAudit.X,
+			"after_x":      result.X,
+			"before_y":     existingDeskForAudit.Y,
+			"after_y":      result.Y,
+			"before_width": existingDeskForAudit.Width,
+			"after_width":  result.Width,
+			"before_height": existingDeskForAudit.Height,
+			"after_height":  result.Height,
+			"before_rotation": existingDeskForAudit.Rotation,
+			"after_rotation":  result.Rotation,
 		})
 		respondJSON(w, http.StatusOK, result)
 	case http.MethodDelete:
